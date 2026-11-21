@@ -4,6 +4,7 @@ pub mod camera;
 pub mod command;
 pub mod encoding;
 pub mod folder;
+pub mod highlights;
 pub mod interop;
 pub mod lipsync;
 pub mod preset;
@@ -18,6 +19,10 @@ pub use camera::{Camera3D, Projected3D, Transform3D};
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
 pub use encoding::base64_encode;
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
+pub use highlights::{
+    HighlightCandidate, HighlightConfig, build_motion_track_keyframes_command,
+    build_shorts_clip_scene_command, extract_highlight_candidates,
+};
 pub use interop::{
     SubtitleEntry, decode_exo_utf16le_hex, export_ass_subtitles, export_otio_json,
     export_srt_subtitles, parse_ass_subtitles, parse_aviutl_exo, parse_srt_subtitles,
@@ -30,10 +35,11 @@ pub use lipsync::{
 pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor};
 pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
-    BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, LayerId,
-    MediaKind, PlaybackSettings, Project, ProjectSettings, RgbaColor, Scene, SceneId, ScenePreset,
-    ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
-    Transform2D, TransitionKind,
+    BezierMask, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer,
+    LayerId, MaskMode, MaskVertex, MediaKind, MotionTrackConfig, PlaybackSettings, Project,
+    ProjectSettings, RgbaColor, Scene, SceneId, ScenePreset, ShapeKind, TextAnimator, TextStyle,
+    TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode, TrackPointSample, Transform2D,
+    TransitionKind,
 };
 pub use script_import::{
     ScriptBuildConfig, ScriptLine, build_script_timeline_commands, parse_script_auto,

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0] - 2026-11-21
+
+上級映像表現＆エコシステム拡張の v0.7 ロードマップ（#8〜#10）を全実装し、全 10 項目のロードマップを 100% 完了しました。
+
+### #8 自由ベジェマスク ＆ 自動モーショントラッキング（顔モザイク・テロップ追従）
+* `ve-core` / `ve-render`: 3次ベジェ閉曲線マスク `BezierMask`（楕円/矩形/ひし形プリセット・加算/減算・反転・2パス分離フェザー・`EditCommand::SetMasks` 1ステップ Undo 対応）とスキャンラインラスタライザ `apply_bezier_masks` を実装
+* `ve-app`: プレビューキャンバス上でのベジェマスク輪郭描画および頂点・接線ハンドルの直接ドラッグ編集、インスペクタ編集 UI を追加
+* `ve-render` / `ve-core`: Pure-Rust 1ポイント自動モーショントラッカー `track_point_in_scene`（粗→密テンプレートマッチング＋サブピクセル補間）と、結果を標準 `x`/`y` キーフレームへ焼き込む `build_motion_track_keyframes_command` を実装
+* `ve-mcp`: MCP ツール `set_bezier_mask` を追加
+
+### #9 WASM（WebAssembly）動的プラグインロード
+* `ve-plugin-api`: Pure-Rust・ゼロ `unsafe`・ゼロ追加依存の WebAssembly 1.0 サンドボックス VM（`WasmModule` / `WasmInstance`：ホストインポート禁止・4MiB メモリ境界検証・命令フューエル上限保護）を実装
+* `ve-plugin-api`: `plugins/*.wasm` の動的ロード・自動ホットリロード・破損時ロールバックを担う `WasmPluginManager` と、実行可能な実 `.wasm` サンプル 3 種生成（`emit_sample_wasm_plugins`）を実装
+* `ve-app` / `ve-mcp`: 500ms ホットリロード監視、インスペクタ WASM プラグイン管理 UI、バックグラウンド書き出し時の自動ロード、MCP ツール `list_or_reload_wasm_plugins` を追加
+
+### #10 AI ハイライト自動抽出 ＆ ショート動画自動切り抜き
+* `ve-core`: 音声エネルギーピーク・発話/字幕密度・強調キーワード・マーカーを複合スコアリングして非重複（NMS）抽出する `extract_highlight_candidates` を実装
+* `ve-core`: 抽出候補から **1080×1920（9:16）ショート動画シーン** を自動トリム（`source_offset`/キーフレーム補正）＆セーフゾーン 13 文字改行リレイアウトする `build_shorts_clip_scene_command`（`EditCommand::CreateScene` 1ステップ Undo）を実装
+* `ve-app` / `ve-mcp`: `AudioAi3DPanel` のハイライト抽出＆1クリック 9:16 ショート生成 UI および MCP ツール `extract_highlights` を追加
+
 ## [0.6.0] - 2026-11-21
 
 解説・実況・ショート動画の量産性を飛躍させる v0.6 ロードマップ（#4〜#7）をすべて実装しました。

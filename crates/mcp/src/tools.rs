@@ -9,21 +9,23 @@ use ve_ai::{
 };
 use ve_audio::AudioGraph;
 use ve_core::{
-    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, Camera3D, CharacterSpriteConfig,
-    CommandSource, CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind,
-    JumpCutConfig, Keyframe, LipSyncMode, MediaKind, MotionPreset, PsdCharacterConfig,
-    RationalTime, RgbaColor, ScriptBuildConfig, ShapeKind, TextAnimator, TimelineItem,
-    TimelineMarker, TrackMatte, TrackMatteMode, base64_encode, build_align_commands,
-    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_jump_cut_commands,
-    build_motion_preset_commands, build_replace_text_commands, build_script_timeline_commands,
+    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, Camera3D,
+    CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode, FrameRate,
+    HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, LipSyncMode, MaskMode,
+    MaskVertex, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
+    ScriptBuildConfig, ShapeKind, TextAnimator, TimelineItem, TimelineMarker, TrackMatte,
+    TrackMatteMode, base64_encode, build_align_commands, build_close_gaps_commands,
+    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_motion_preset_commands,
+    build_replace_text_commands, build_script_timeline_commands, build_shorts_clip_scene_command,
     detect_speech_intervals_from_rms, export_ass_subtitles, export_otio_json, export_srt_subtitles,
-    format_youtube_chapters, parse_ass_subtitles, parse_aviutl_exo, parse_script_auto,
-    parse_srt_subtitles, search_text_items, subtitle_entries_to_commands, wrap_subtitle_japanese,
+    extract_highlight_candidates, format_youtube_chapters, parse_ass_subtitles, parse_aviutl_exo,
+    parse_script_auto, parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
+    wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, decode_audio_file, write_wav_pcm16,
 };
-use ve_plugin_api::PluginRegistry;
+use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
 use ve_render::{RenderGraph, validate_wgsl};
 
 const MAX_BATCH_COMMANDS: usize = 500;
@@ -553,6 +555,63 @@ pub fn tool_definitions() -> Value {
         }
     ]) {
         tools.extend(v06_extra);
+    }
+    if let Value::Array(v07_extra) = json!([
+        {
+            "name": "set_bezier_mask",
+            "description": "アイテムへ自由ベジェマスク（楕円/矩形/ひし形/カスタム頂点、加算・減算・反転・フェザー）を設定またはクリアする（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "action": { "type": "string", "enum": ["add_preset", "clear"], "default": "add_preset" },
+                    "preset": { "type": "string", "enum": ["ellipse", "rectangle", "diamond"], "default": "ellipse" },
+                    "mode": { "type": "string", "enum": ["add", "subtract"], "default": "add" },
+                    "inverted": { "type": "boolean", "default": false },
+                    "feather_px": { "type": "number", "default": 4.0 },
+                    "opacity": { "type": "number", "default": 1.0 },
+                    "vertices": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "x": { "type": "number" },
+                                "y": { "type": "number" }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "name": "list_or_reload_wasm_plugins",
+            "description": "plugins/*.wasm のサンドボックス WebAssembly プラグインを検証・一覧取得し、任意でサンプル .wasm を生成する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "plugins_dir": { "type": "string" },
+                    "emit_samples": { "type": "boolean", "default": false }
+                }
+            }
+        },
+        {
+            "name": "extract_highlights",
+            "description": "音声エネルギー・字幕密度・強調キーワード・マーカーから見どころハイライト区間を自動抽出し、任意で 9:16 ショート動画シーンを自動生成する（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target_clip_count": { "type": "integer", "default": 3 },
+                    "clip_duration_sec": { "type": "number", "default": 15.0 },
+                    "audio_layer_index": { "type": "integer", "default": 3 },
+                    "create_shorts_scene": { "type": "boolean", "default": false },
+                    "candidate_index": { "type": "integer", "default": 0 },
+                    "shorts_name": { "type": "string" }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v07_extra);
     }
     Value::Array(tools)
 }
@@ -2414,6 +2473,235 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 }]
             }))
         }
+        "set_bezier_mask" => {
+            let item_id = parse_uuid(args, "id")?;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("add_preset");
+            let mut masks = guard
+                .project
+                .active_scene()
+                .and_then(|s| {
+                    s.layers
+                        .iter()
+                        .flat_map(|l| l.items.iter())
+                        .find(|i| i.id == item_id)
+                        .map(|i| i.masks.clone())
+                })
+                .ok_or_else(|| format!("object not found: {item_id}"))?;
+
+            if action == "clear" {
+                masks.clear();
+            } else {
+                let mut mask = match args.get("preset").and_then(Value::as_str) {
+                    Some("rectangle") => BezierMask::rectangle(),
+                    Some("diamond") => BezierMask::diamond(),
+                    _ => BezierMask::ellipse(),
+                };
+                if let Some(m) = args.get("mode").and_then(Value::as_str) {
+                    mask.mode = if m == "subtract" {
+                        MaskMode::Subtract
+                    } else {
+                        MaskMode::Add
+                    };
+                }
+                if let Some(inv) = args.get("inverted").and_then(Value::as_bool) {
+                    mask.inverted = inv;
+                }
+                mask.feather_px = finite_clamped(
+                    args.get("feather_px"),
+                    f64::from(mask.feather_px),
+                    0.0,
+                    96.0,
+                ) as f32;
+                mask.opacity =
+                    finite_clamped(args.get("opacity"), f64::from(mask.opacity), 0.0, 1.0) as f32;
+                if let Some(verts) = args.get("vertices").and_then(Value::as_array)
+                    && verts.len() >= 3
+                {
+                    let parsed: Vec<MaskVertex> = verts
+                        .iter()
+                        .filter_map(|v| {
+                            let x = v.get("x")?.as_f64()? as f32;
+                            let y = v.get("y")?.as_f64()? as f32;
+                            if x.is_finite() && y.is_finite() {
+                                Some(MaskVertex::corner(x.clamp(-0.5, 1.5), y.clamp(-0.5, 1.5)))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if parsed.len() >= 3 {
+                        mask.vertices = parsed;
+                    }
+                }
+                masks.push(mask);
+            }
+
+            let count = masks.len();
+            let s = &mut *guard;
+            s.bus
+                .execute(
+                    &mut s.project,
+                    EditCommand::SetMasks { item_id, masks },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({ "item_id": item_id, "mask_count": count }).to_string()
+                }]
+            }))
+        }
+        "list_or_reload_wasm_plugins" => {
+            let dir = if let Some(p) = args.get("plugins_dir").and_then(Value::as_str) {
+                PathBuf::from(p)
+            } else if let Some(f) = guard.folder.as_ref() {
+                f.root().join("plugins")
+            } else {
+                PathBuf::from("plugins")
+            };
+            if args
+                .get("emit_samples")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                emit_sample_wasm_plugins(&dir).map_err(|e| e.to_string())?;
+            }
+            let mut reg = PluginRegistry::with_builtins();
+            let mut mgr = WasmPluginManager::new(&dir);
+            let events = mgr.poll_and_sync(&mut reg);
+            let statuses: Vec<Value> = mgr
+                .list_status()
+                .into_iter()
+                .map(|st| {
+                    json!({
+                        "id": st.id,
+                        "name": st.name,
+                        "path": st.path.display().to_string(),
+                        "last_error": st.last_error,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "plugins_dir": dir.display().to_string(),
+                        "events": events,
+                        "wasm_plugins": statuses
+                    }).to_string()
+                }]
+            }))
+        }
+        "extract_highlights" => {
+            let cfg = HighlightConfig {
+                audio_layer_index: args
+                    .get("audio_layer_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3) as usize,
+                target_clip_count: (args
+                    .get("target_clip_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3) as usize)
+                    .clamp(1, 10),
+                clip_duration_sec: finite_clamped(args.get("clip_duration_sec"), 15.0, 2.0, 120.0),
+                ..Default::default()
+            };
+
+            let scene_id = guard.project.active_scene_id;
+            let total_dur = guard
+                .project
+                .active_scene()
+                .map(|s| s.total_duration())
+                .ok_or_else(|| "no active scene".to_string())?;
+            let sr = guard.project.settings.audio_sample_rate.max(8_000);
+            let graph =
+                AudioGraph::from_project_scene(&guard.project, scene_id, guard.folder.as_ref(), sr);
+            let mut rms_samples: Vec<(f64, f32)> = Vec::new();
+            if !graph.clips.is_empty() {
+                let capped = total_dur.min(RationalTime::from_seconds(600.0));
+                let pcm = graph.render_range(RationalTime::ZERO, capped);
+                let frames_per_bucket = (sr as usize / 2).max(1); // 0.5s buckets
+                let total_frames = pcm.len() / graph.channels.max(1);
+                let mut f = 0usize;
+                while f < total_frames {
+                    let end_f = (f + frames_per_bucket).min(total_frames);
+                    let mut sum_sq = 0.0f64;
+                    let mut cnt = 0usize;
+                    for fi in f..end_f {
+                        let l = pcm[fi * graph.channels];
+                        sum_sq += f64::from(l) * f64::from(l);
+                        cnt += 1;
+                    }
+                    let rms = if cnt > 0 {
+                        (sum_sq / cnt as f64).sqrt() as f32
+                    } else {
+                        0.0
+                    };
+                    rms_samples.push(((f as f64 + (end_f - f) as f64 * 0.5) / sr as f64, rms));
+                    f = end_f;
+                }
+            }
+
+            let candidates = {
+                let scene = guard.project.active_scene().ok_or("no active scene")?;
+                extract_highlight_candidates(scene, &rms_samples, &cfg)
+            };
+
+            let mut created_shorts_scene_id: Option<Uuid> = None;
+            if args
+                .get("create_shorts_scene")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let c_idx = args
+                    .get("candidate_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let cand = candidates
+                    .get(c_idx)
+                    .ok_or("該当するハイライト候補が見つかりません")?;
+                let shorts_name = args
+                    .get("shorts_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("Shorts: {}", cand.suggested_title));
+                let (new_sid, cmd) =
+                    build_shorts_clip_scene_command(&guard.project, scene_id, cand, shorts_name)
+                        .ok_or("ショートシーン生成に失敗しました")?;
+                let s = &mut *guard;
+                s.bus
+                    .execute(&mut s.project, cmd, CommandSource::Mcp, None)
+                    .map_err(|e| e.to_string())?;
+                created_shorts_scene_id = Some(new_sid);
+            }
+
+            let cand_json: Vec<Value> = candidates
+                .iter()
+                .map(|c| {
+                    json!({
+                        "start_sec": c.start.as_seconds(),
+                        "end_sec": c.end.as_seconds(),
+                        "score": c.score,
+                        "reason": c.reason,
+                        "suggested_title": c.suggested_title,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "candidates": cand_json,
+                        "created_shorts_scene_id": created_shorts_scene_id
+                    }).to_string()
+                }]
+            }))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -2668,5 +2956,70 @@ mod tests {
                 .unwrap()
                 .contains("\"imported_count\":2")
         );
+    }
+
+    #[test]
+    fn v07_mcp_tools_mask_wasm_and_extract_highlights() {
+        let mut proj = Project::new("McpV07", ProjectSettings::default());
+        let item = TimelineItem::new(
+            "HeroSub",
+            RationalTime::from_seconds(2.0),
+            RationalTime::from_seconds(8.0),
+            ItemKind::Text {
+                content: "これはヤバい！すごい結論まとめポイント！".into(),
+                font_family: "sans-serif".into(),
+                font_size: 46.0,
+                color: RgbaColor::WHITE,
+                animator: TextAnimator::default(),
+            },
+        );
+        let item_id = item.id;
+        proj.active_scene_mut().unwrap().layers[1].items.push(item);
+        let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+        // 1. set_bezier_mask
+        call_tool(
+            &session,
+            "set_bezier_mask",
+            &json!({"id": item_id.to_string(), "preset": "ellipse", "feather_px": 6.0}),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            assert_eq!(
+                g.project.active_scene().unwrap().layers[1].items[0]
+                    .masks
+                    .len(),
+                1
+            );
+        }
+
+        // 2. list_or_reload_wasm_plugins with emit_samples in temp dir
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v07_wasm_{}", Uuid::new_v4()));
+        let wasm_res = call_tool(
+            &session,
+            "list_or_reload_wasm_plugins",
+            &json!({"plugins_dir": tmp_dir.display().to_string(), "emit_samples": true}),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let wasm_txt = wasm_res["content"][0]["text"].as_str().unwrap();
+        assert!(wasm_txt.contains("wasm.wasm_invert"), "wasm_txt={wasm_txt}");
+
+        // 3. extract_highlights + auto create 9:16 Shorts scene
+        let hl_res = call_tool(
+            &session,
+            "extract_highlights",
+            &json!({"clip_duration_sec": 5.0, "create_shorts_scene": true, "shorts_name": "AutoShorts"}),
+        )
+        .unwrap();
+        let hl_txt = hl_res["content"][0]["text"].as_str().unwrap();
+        assert!(hl_txt.contains("created_shorts_scene_id"));
+        {
+            let g = session.lock().unwrap();
+            let s = g.project.active_scene().unwrap();
+            assert_eq!(s.name, "AutoShorts");
+            assert_eq!((s.width, s.height), (1080, 1920));
+        }
     }
 }

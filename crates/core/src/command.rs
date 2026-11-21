@@ -4,9 +4,9 @@ use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
 use crate::lipsync::CharacterSpriteConfig;
 use crate::preset::ColorPalette;
 use crate::project::{
-    AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BlendMode, EffectId, EffectNode,
-    ItemId, ItemKind, Layer, Project, RgbaColor, Scene, SceneId, TextAnimator, TextStyle,
-    TimelineItem, TimelineMarker, TrackMatte, Transform2D, TransitionKind,
+    AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BezierMask, BlendMode, EffectId,
+    EffectNode, ItemId, ItemKind, Layer, Project, RgbaColor, Scene, SceneId, TextAnimator,
+    TextStyle, TimelineItem, TimelineMarker, TrackMatte, Transform2D, TransitionKind,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -242,6 +242,16 @@ pub enum EditCommand {
         item_id: ItemId,
         reactive: AudioReactiveConfig,
     },
+    /// v0.7 #8: アイテムの自由ベジェマスク列を更新する
+    SetMasks {
+        item_id: ItemId,
+        masks: Vec<BezierMask>,
+    },
+    /// v0.7 #10: 新規シーンを追加し、任意でアクティブ切替する（ショート動画自動切り抜き等）
+    CreateScene {
+        scene: Scene,
+        switch_to: bool,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -293,6 +303,8 @@ impl EditCommand {
             Self::SetSceneSettings { .. } => "set_scene_settings",
             Self::SetAudioDucking { .. } => "set_audio_ducking",
             Self::SetAudioReactive { .. } => "set_audio_reactive",
+            Self::SetMasks { .. } => "set_masks",
+            Self::CreateScene { .. } => "create_scene",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1087,7 +1099,8 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                         }
                         match &mut item.kind {
                             ItemKind::Shape { width, height, .. }
-                            | ItemKind::CharacterSprite { width, height, .. } => {
+                            | ItemKind::CharacterSprite { width, height, .. }
+                            | ItemKind::AudioSpectrum { width, height, .. } => {
                                 *width = (*width * uniform).max(4.0);
                                 *height = (*height * uniform).max(4.0);
                             }
@@ -1114,6 +1127,23 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
         EditCommand::SetAudioReactive { item_id, reactive } => {
             let item = find_item_mut(project, *item_id)?;
             item.audio_reactive = *reactive;
+            Ok(())
+        }
+        EditCommand::SetMasks { item_id, masks } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.masks = masks.clone();
+            Ok(())
+        }
+        EditCommand::CreateScene { scene, switch_to } => {
+            let new_id = scene.id;
+            if let Some(existing) = project.scenes.iter_mut().find(|s| s.id == new_id) {
+                *existing = scene.clone();
+            } else {
+                project.scenes.push(scene.clone());
+            }
+            if *switch_to {
+                project.active_scene_id = new_id;
+            }
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

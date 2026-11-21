@@ -60,22 +60,26 @@
 
 ---
 
-## 🥉 v0.7+（長期・差別化）：上級映像表現 ＆ エコシステム拡張
+## 🥉 v0.7（✅ 実装済み）：上級映像表現 ＆ エコシステム拡張
 
-### 8. 自由ベジェマスク ＆ 自動モーショントラッキング（顔モザイク・テロップ追従）
-- **設計メモ**:
-  - プレビュー上で頂点・ベジェハンドルを編集できる多角形／曲線マスク（フェザー・反転・加算減算対応）
-  - テンプレートマッチング／オプティカルフロー（純 Rust）による 1 ポイント自動追従。結果を通常の `x`/`y` キーフレームとして焼き込み、後から手動微調整も可能にする
+### 8. ~~自由ベジェマスク ＆ 自動モーショントラッキング（顔モザイク・テロップ追従）~~ ✅ 実装済み（v0.7）
+- **実装内容**:
+  - `ve-core` / `ve-render`: 3次ベジェ閉曲線マスク `BezierMask`（楕円/矩形/ひし形プリセット・加算/減算・反転・2パス分離フェザーぼかし、`EditCommand::SetMasks` 1ステップ Undo 対応）
+  - `ve-app`: プレビューキャンバス上のベジェマスク輪郭描画と頂点・接線ハンドルの直接ドラッグ編集（`Shift` で対称ハンドル）＋ インスペクタ編集 UI
+  - `ve-render` / `ve-core`: Pure-Rust 1ポイント自動モーショントラッカー `track_point_in_scene`（粗→密テンプレートマッチング＋放物線サブピクセル補間）と、追跡結果を標準 `x`/`y` キーフレームへ焼き込む `build_motion_track_keyframes_command`
+  - `ve-mcp`: AI エージェントからマスク操作できる `set_bezier_mask` ツールを追加
 
-### 9. WASM（WebAssembly）動的プラグインロード
-- **既存フック**: `crates/plugin-api/src/lib.rs`
-- **設計メモ**:
-  - ネイティブ DLL の `unsafe`・OS 依存・クラッシュ波及を排除し、`plugins/*.wasm` を置くだけで安全にサードパーティ製エフェクト／タイムラインジェネレータを動的ロード＆ホットリロードできるサンドボックス基盤
+### 9. ~~WASM（WebAssembly）動的プラグインロード~~ ✅ 実装済み（v0.7）
+- **実装内容**:
+  - `ve-plugin-api`: Pure-Rust・ゼロ `unsafe`・外部依存ゼロの WebAssembly 1.0 バイナリインタプリタ VM `WasmModule` / `WasmInstance`（ホストインポート禁止・4MiB 線形メモリ境界チェック・命令フューエル上限による無限ループ遮断）
+  - `ve-plugin-api`: `plugins/*.wasm` の動的ロード＆自動ホットリロード＆破損時自動ロールバックを担う `WasmPluginManager` と、即座に試せる実バイナリ `.wasm` 3種（色反転・ウォームティント・グレースケール）のビルダー `emit_sample_wasm_plugins`
+  - `ve-app` / `ve-mcp`: 500ms 自動ホットリロード・インスペクタ WASM プラグイン管理 UI・バックグラウンド書き出し時の自動ロード・MCP `list_or_reload_wasm_plugins`
 
-### 10. AI ハイライト自動抽出 ＆ ショート動画自動切り抜き
-- **既存フック**: `crates/core/src/timeline_ops.rs`, `crates/ai/src/transcribe.rs`, `crates/mcp/src/tools.rs`
-- **設計メモ**:
-  - 音声ピーク（盛り上がり）・発話密度・字幕文脈・マーカーを複合評価して見どころ区間を自動提案し、9:16 縦動画シーンへ自動カット＆字幕リレイアウトする GUI＋MCP ワークフロー（`extract_highlights`）
+### 10. ~~AI ハイライト自動抽出 ＆ ショート動画自動切り抜き~~ ✅ 実装済み（v0.7）
+- **実装内容**:
+  - `ve-core`: 音声エネルギーピーク・発話/字幕密度・強調キーワード・マーカーを複合スコアリングし NMS で非重複抽出する `extract_highlight_candidates`
+  - `ve-core`: 選択候補から **1080×1920（9:16）ショート動画シーン** を自動トリム（`source_offset`・キーフレーム補正）＆セーフゾーン 13 文字改行リレイアウトする `build_shorts_clip_scene_command`（`EditCommand::CreateScene` 1ステップ Undo 対応）
+  - `ve-app` / `ve-mcp`: `AudioAi3DPanel` のハイライト抽出＆1クリック 9:16 ショート生成 UI および MCP `extract_highlights`
 
 ---
 

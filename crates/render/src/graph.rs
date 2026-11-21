@@ -272,6 +272,9 @@ impl RenderGraph {
                     }
                 }
                 item.audio_reactive.y_bounce_px *= sy;
+                for m in &mut item.masks {
+                    m.feather_px *= uniform;
+                }
                 match &mut item.kind {
                     ItemKind::Shape { width, height, .. }
                     | ItemKind::CharacterSprite { width, height, .. }
@@ -394,6 +397,9 @@ impl RenderGraph {
                                 time.as_seconds(),
                                 &self.plugins,
                             );
+                            if !item.masks.is_empty() {
+                                crate::mask_tracker::apply_bezier_masks(&mut item_img, &item.masks);
+                            }
 
                             let (mut draw_x, mut draw_y) =
                                 (tf.x + layer.offset_x, tf.y + layer.offset_y);

@@ -571,6 +571,201 @@ impl Default for AudioDuckingConfig {
     }
 }
 
+/// v0.7 #8: ベジェマスクの合成モード（加算／減算）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskMode {
+    #[default]
+    Add,
+    Subtract,
+}
+
+/// v0.7 #8: 自由ベジェマスクの頂点（アイテムローカル正規化座標 0.0..=1.0）
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MaskVertex {
+    pub x: f32,
+    pub y: f32,
+    /// 頂点からの相対インハンドル（[0, 0] で鋭角コーナー）
+    pub in_handle: [f32; 2],
+    /// 頂点からの相対アウトハンドル（[0, 0] で鋭角コーナー）
+    pub out_handle: [f32; 2],
+}
+
+impl MaskVertex {
+    pub fn corner(x: f32, y: f32) -> Self {
+        Self {
+            x,
+            y,
+            in_handle: [0.0, 0.0],
+            out_handle: [0.0, 0.0],
+        }
+    }
+}
+
+/// v0.7 #8: 閉曲線自由ベジェマスク（フェザー・反転・加算/減算対応）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BezierMask {
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    pub mode: MaskMode,
+    pub inverted: bool,
+    pub feather_px: f32,
+    pub opacity: f32,
+    pub vertices: Vec<MaskVertex>,
+}
+
+impl BezierMask {
+    /// 矩形プリセットマスク（0.15..0.85）
+    pub fn rectangle() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: "矩形マスク".to_string(),
+            enabled: true,
+            mode: MaskMode::Add,
+            inverted: false,
+            feather_px: 0.0,
+            opacity: 1.0,
+            vertices: vec![
+                MaskVertex::corner(0.15, 0.15),
+                MaskVertex::corner(0.85, 0.15),
+                MaskVertex::corner(0.85, 0.85),
+                MaskVertex::corner(0.15, 0.85),
+            ],
+        }
+    }
+
+    /// 楕円プリセットマスク（3次ベジェ曲線による正確な円近似 κ=0.55228475）
+    pub fn ellipse() -> Self {
+        let r = 0.38_f32;
+        let k = 0.552_284_8 * r;
+        Self {
+            id: Uuid::new_v4(),
+            name: "楕円マスク".to_string(),
+            enabled: true,
+            mode: MaskMode::Add,
+            inverted: false,
+            feather_px: 4.0,
+            opacity: 1.0,
+            vertices: vec![
+                MaskVertex {
+                    x: 0.5,
+                    y: 0.5 - r,
+                    in_handle: [-k, 0.0],
+                    out_handle: [k, 0.0],
+                },
+                MaskVertex {
+                    x: 0.5 + r,
+                    y: 0.5,
+                    in_handle: [0.0, -k],
+                    out_handle: [0.0, k],
+                },
+                MaskVertex {
+                    x: 0.5,
+                    y: 0.5 + r,
+                    in_handle: [k, 0.0],
+                    out_handle: [-k, 0.0],
+                },
+                MaskVertex {
+                    x: 0.5 - r,
+                    y: 0.5,
+                    in_handle: [0.0, k],
+                    out_handle: [0.0, -k],
+                },
+            ],
+        }
+    }
+
+    /// ひし形プリセットマスク
+    pub fn diamond() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: "ひし形マスク".to_string(),
+            enabled: true,
+            mode: MaskMode::Add,
+            inverted: false,
+            feather_px: 2.0,
+            opacity: 1.0,
+            vertices: vec![
+                MaskVertex::corner(0.5, 0.10),
+                MaskVertex::corner(0.90, 0.5),
+                MaskVertex::corner(0.5, 0.90),
+                MaskVertex::corner(0.10, 0.5),
+            ],
+        }
+    }
+
+    /// 3次ベジェ閉曲線をポリゴン頂点列（正規化座標）へ分割展開する
+    pub fn flatten_polygon(&self, samples_per_segment: usize) -> Vec<[f32; 2]> {
+        let n = self.vertices.len();
+        if n < 3 {
+            return Vec::new();
+        }
+        let steps = samples_per_segment.clamp(2, 64);
+        let mut pts = Vec::with_capacity(n * steps);
+        for i in 0..n {
+            let v0 = self.vertices[i];
+            let v1 = self.vertices[(i + 1) % n];
+            let p0 = [v0.x, v0.y];
+            let p1 = [v0.x + v0.out_handle[0], v0.y + v0.out_handle[1]];
+            let p2 = [v1.x + v1.in_handle[0], v1.y + v1.in_handle[1]];
+            let p3 = [v1.x, v1.y];
+            for s in 0..steps {
+                let t = s as f32 / steps as f32;
+                let u = 1.0 - t;
+                let b0 = u * u * u;
+                let b1 = 3.0 * u * u * t;
+                let b2 = 3.0 * u * t * t;
+                let b3 = t * t * t;
+                pts.push([
+                    b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0],
+                    b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1],
+                ]);
+            }
+        }
+        pts
+    }
+}
+
+/// v0.7 #8: 1ポイント自動モーショントラッキング設定
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MotionTrackConfig {
+    pub start_time: RationalTime,
+    pub end_time: RationalTime,
+    /// 何フレームおきに追跡サンプルを取得するか（既定 2 フレーム）
+    pub step_frames: u32,
+    /// 開始フレームでの追跡アンカー位置（シーン座標 px）
+    pub anchor_x: f32,
+    pub anchor_y: f32,
+    /// テンプレートパッチ半径（px、既定 12）
+    pub patch_radius: u32,
+    /// フレーム間探索半径（px、既定 28）
+    pub search_radius: u32,
+}
+
+impl Default for MotionTrackConfig {
+    fn default() -> Self {
+        Self {
+            start_time: RationalTime::ZERO,
+            end_time: RationalTime::from_seconds(2.0),
+            step_frames: 2,
+            anchor_x: 640.0,
+            anchor_y: 360.0,
+            patch_radius: 12,
+            search_radius: 28,
+        }
+    }
+}
+
+/// v0.7 #8: 追跡された1サンプル点
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackPointSample {
+    pub time: RationalTime,
+    pub x: f32,
+    pub y: f32,
+    pub confidence: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineItem {
     pub id: ItemId,
@@ -603,6 +798,9 @@ pub struct TimelineItem {
     /// v0.6 #4: オーディオリアクティブ（音声エネルギー連動アニメーション）
     #[serde(default)]
     pub audio_reactive: AudioReactiveConfig,
+    /// v0.7 #8: 自由ベジェマスク列（加算・減算・フェザー・反転）
+    #[serde(default)]
+    pub masks: Vec<BezierMask>,
     pub kind: ItemKind,
 }
 
@@ -628,6 +826,7 @@ impl TimelineItem {
             text_style: TextStyle::default(),
             audio_effects: Vec::new(),
             audio_reactive: AudioReactiveConfig::default(),
+            masks: Vec::new(),
             kind,
         }
     }

@@ -1,4 +1,11 @@
 pub mod builtin;
+pub mod wasm_runtime;
+
+pub use wasm_runtime::{
+    WasmEffectPlugin, WasmError, WasmInstance, WasmModule, WasmPluginManager, WasmPluginStatus,
+    WasmVal, build_sample_wasm_grayscale, build_sample_wasm_invert, build_sample_wasm_warm_tint,
+    emit_sample_wasm_plugins,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -77,7 +84,7 @@ pub trait TimelineGeneratorPlugin: Send + Sync {
     fn generate_items(&self, ctx: &GeneratorContext) -> Vec<TimelineItem>;
 }
 
-/// ホスト側のプラグインレジストリ（APIバージョン検証・実行ディスパッチ）
+/// ホスト側のプラグインレジストリ（APIバージョン検証・実行ディスパッチ・WASMホットリロード対応）
 #[derive(Default)]
 pub struct PluginRegistry {
     effects: BTreeMap<String, Arc<dyn EffectPlugin>>,
@@ -110,6 +117,26 @@ impl PluginRegistry {
         }
         self.effects.insert(manifest.id, plugin);
         Ok(())
+    }
+
+    /// ホットリロード用: 既存 ID があれば安全に最新プラグインへ差し替える
+    pub fn register_or_replace_effect(
+        &mut self,
+        plugin: Arc<dyn EffectPlugin>,
+    ) -> Result<(), PluginError> {
+        let manifest = plugin.manifest();
+        if manifest.api_version != PLUGIN_API_VERSION {
+            return Err(PluginError::IncompatibleApiVersion {
+                found: manifest.api_version,
+                expected: PLUGIN_API_VERSION,
+            });
+        }
+        self.effects.insert(manifest.id, plugin);
+        Ok(())
+    }
+
+    pub fn unregister_effect(&mut self, id: &str) -> bool {
+        self.effects.remove(id).is_some()
     }
 
     pub fn register_generator(
