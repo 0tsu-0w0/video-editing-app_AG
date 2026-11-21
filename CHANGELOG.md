@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.1] - 2026-11-21
+
+v0.3〜v0.4 の残課題（プリセット管理・専用インスペクタ・ショートカット・マーカー編集・UI 残骸整理・ドキュメント最新化）をすべて補完しました。
+
+### 字幕スタイル＆エフェクトチェーン プリセット管理（`presets/*.json`）＋ 影色・座布団色 RGBA ピッカー
+* `ve-core`: `TextStylePreset`（4 種の標準 YouTube/ゆっくり/シネマプリセット）と `EffectPreset::default_presets()`（3 種の標準エフェクトチェーン）を追加し、`ProjectFolder` に `presets/text_styles/*.json`・`presets/effects/*.json` の安全な保存・読込・削除（パストラバーサル防止）を実装
+* `ve-app`: 字幕装飾インスペクタへ影色（`shadow_color`）・座布団色（`box_color`）の RGBA カラーピッカーおよび 1 クリックプリセット適用・保存・削除 UI を追加。映像エフェクト欄へエフェクトチェーンプリセット保存・適用・削除 UI を追加
+* `ve-mcp`: MCP ツール `manage_presets`（`list` / `apply_text_style` / `apply_effect_preset` / `save_text_style` / `save_effect_preset`）を追加（全 44 ツール）
+
+### フィルタオブジェクト・グループ制御・オーディオスペクトラム専用インスペクタ
+* `ve-core`: Undo 対応コマンド `EditCommand::SetFilterObject` / `SetGroupControl` / `SetAudioSpectrum` を追加
+* `ve-app`: `ItemKind::FilterObject`（組み込み＋プラグイン種別・適用レイヤー範囲・パラメータ）、`ItemKind::GroupControl`（対象レイヤー数）、`ItemKind::AudioSpectrum`（連動音声レイヤー・サイズ・バー本数・感度・基本色/ピーク色）の専用編集 UI をインスペクタへ統合
+
+### タイムライン操作ショートカット補完 ＆ マーカー編集 UI
+* `ve-core` / `ve-mcp`: `EditCommand::UpdateMarker` および MCP `manage_markers` の `update` アクション（ラベル・`color_hex` 更新）を追加
+* `ve-app`: タイムラインへ `Ctrl+C`（コピー）、`Ctrl+V`（再生ヘッド位置へ相対オフセット維持で貼り付け）、`Ctrl+D`（複製）、`Ctrl+A`（全選択）、`Backspace`（削除 / `Shift+Backspace` リップル削除）、`Home`/`End`（先頭・末尾ジャンプ）を追加。ルーラー上のマーカークリックでラベル＆5 色パレットをその場で編集可能に拡張
+
+### UI 残骸クリーンアップ ＆ ドキュメント最新化
+* `ve-app`: 旧 Phase 1a / Phase 2 の仮文言（`"Phase 2 Hybrid Motion Project"`、`"日本語IME PoC 検証 (Phase 1a)"` および未使用 1 行テスト欄）を本番向けの簡潔な字幕エディタ＋折りたたみ IME 診断ログへ整理
+* `README.md`: v0.7.1 現在の全機能・44 MCP ツール・WASM プラグイン・GitHub Releases ビルド情報へ最新化
+
 ## [0.7.0] - 2026-11-21
 
 上級映像表現＆エコシステム拡張の v0.7 ロードマップ（#8〜#10）を全実装し、全 10 項目のロードマップを 100% 完了しました。

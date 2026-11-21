@@ -10,11 +10,11 @@ use ve_ai::{
 use ve_audio::AudioGraph;
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, Camera3D,
-    CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode, FrameRate,
-    HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, LipSyncMode, MaskMode,
-    MaskVertex, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
-    ScriptBuildConfig, ShapeKind, TextAnimator, TimelineItem, TimelineMarker, TrackMatte,
-    TrackMatteMode, base64_encode, build_align_commands, build_close_gaps_commands,
+    CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode, EffectPreset,
+    FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, LipSyncMode,
+    MaskMode, MaskVertex, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
+    ScriptBuildConfig, ShapeKind, TextAnimator, TextStylePreset, TimelineItem, TimelineMarker,
+    TrackMatte, TrackMatteMode, base64_encode, build_align_commands, build_close_gaps_commands,
     build_fit_duration_to_layer_commands, build_jump_cut_commands, build_motion_preset_commands,
     build_replace_text_commands, build_script_timeline_commands, build_shorts_clip_scene_command,
     detect_speech_intervals_from_rms, export_ass_subtitles, export_otio_json, export_srt_subtitles,
@@ -453,14 +453,15 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "manage_markers",
-            "description": "タイムラインマーカーの追加・削除・一覧・YouTubeチャプターテキスト出力を行う",
+            "description": "タイムラインマーカーの追加・更新・削除・一覧・YouTubeチャプターテキスト出力を行う",
             "inputSchema": {
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "add", "remove", "youtube_chapters"] },
+                    "action": { "type": "string", "enum": ["list", "add", "update", "remove", "youtube_chapters"] },
                     "time_sec": { "type": "number" },
                     "label": { "type": "string" },
+                    "color_hex": { "type": "string" },
                     "marker_id": { "type": "string" }
                 }
             }
@@ -607,6 +608,22 @@ pub fn tool_definitions() -> Value {
                     "create_shorts_scene": { "type": "boolean", "default": false },
                     "candidate_index": { "type": "integer", "default": 0 },
                     "shorts_name": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "manage_presets",
+            "description": "字幕スタイルプリセット・エフェクトチェーンプリセット（presets/*.json＋組み込み）の一覧取得・保存・1クリック適用を行う（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "apply_text_style", "apply_effect_preset", "save_text_style", "save_effect_preset"]
+                    },
+                    "id": { "type": "string" },
+                    "name": { "type": "string" }
                 }
             }
         }
@@ -2028,7 +2045,12 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                         .get("label")
                         .and_then(Value::as_str)
                         .unwrap_or("マーカー");
-                    let marker = TimelineMarker::new(time, label);
+                    let mut marker = TimelineMarker::new(time, label);
+                    if let Some(hex) = args.get("color_hex").and_then(Value::as_str)
+                        && let Some(c) = RgbaColor::from_hex(hex)
+                    {
+                        marker.color = c;
+                    }
                     let mid = marker.id;
                     let sess = &mut *guard;
                     sess.bus
@@ -2041,6 +2063,40 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                         .map_err(|e| e.to_string())?;
                     Ok(json!({
                         "content": [{ "type": "text", "text": json!({"marker_id": mid, "time_sec": time.as_seconds()}).to_string() }]
+                    }))
+                }
+                "update" => {
+                    let marker_id = parse_uuid(args, "marker_id")?;
+                    let existing = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| s.markers.iter().find(|m| m.id == marker_id).cloned())
+                        .ok_or_else(|| format!("marker not found: {marker_id}"))?;
+                    let label = args
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or(existing.label);
+                    let color = args
+                        .get("color_hex")
+                        .and_then(Value::as_str)
+                        .and_then(RgbaColor::from_hex)
+                        .unwrap_or(existing.color);
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::UpdateMarker {
+                                marker_id,
+                                label: label.clone(),
+                                color,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({"updated": marker_id, "label": label, "color_hex": color.to_hex_rgb()}).to_string() }]
                     }))
                 }
                 "remove" => {
@@ -2702,6 +2758,205 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 }]
             }))
         }
+        "manage_presets" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            match action {
+                "list" => {
+                    let mut text_presets = TextStylePreset::default_presets();
+                    let mut effect_presets = EffectPreset::default_presets();
+                    if let Some(folder) = guard.folder.as_ref() {
+                        text_presets.extend(folder.load_text_style_presets());
+                        effect_presets.extend(folder.load_effect_presets());
+                    }
+                    let text_names: Vec<&str> =
+                        text_presets.iter().map(|p| p.name.as_str()).collect();
+                    let fx_names: Vec<&str> =
+                        effect_presets.iter().map(|p| p.name.as_str()).collect();
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "text_style_presets": text_names,
+                                "effect_presets": fx_names,
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "apply_text_style" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let preset_name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or("missing 'name'")?;
+                    let preset = guard
+                        .folder
+                        .as_ref()
+                        .and_then(|f| {
+                            f.load_text_style_presets()
+                                .into_iter()
+                                .find(|p| p.name == preset_name)
+                        })
+                        .or_else(|| {
+                            TextStylePreset::default_presets()
+                                .into_iter()
+                                .find(|p| p.name == preset_name)
+                        })
+                        .ok_or_else(|| format!("text style preset not found: {preset_name}"))?;
+                    let batch = EditCommand::Batch {
+                        label: format!("apply_text_style:{preset_name}"),
+                        commands: vec![
+                            EditCommand::SetTextFont {
+                                item_id,
+                                font_family: preset.font_family,
+                                font_size: preset.font_size,
+                            },
+                            EditCommand::SetItemColor {
+                                item_id,
+                                color: preset.color,
+                            },
+                            EditCommand::SetTextStyle {
+                                item_id,
+                                style: preset.text_style,
+                            },
+                        ],
+                    };
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, batch, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({"applied_text_style": preset_name, "id": item_id}).to_string()
+                        }]
+                    }))
+                }
+                "apply_effect_preset" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let preset_name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or("missing 'name'")?;
+                    let preset = guard
+                        .folder
+                        .as_ref()
+                        .and_then(|f| {
+                            f.load_effect_presets()
+                                .into_iter()
+                                .find(|p| p.name == preset_name)
+                        })
+                        .or_else(|| {
+                            EffectPreset::default_presets()
+                                .into_iter()
+                                .find(|p| p.name == preset_name)
+                        })
+                        .ok_or_else(|| format!("effect preset not found: {preset_name}"))?;
+                    let effects = preset.instantiate();
+                    let count = effects.len();
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::PasteEffects { item_id, effects },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({"applied_effect_preset": preset_name, "added_effects": count}).to_string()
+                        }]
+                    }))
+                }
+                "save_text_style" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let preset_name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or("missing 'name'")?;
+                    let folder = guard
+                        .folder
+                        .as_ref()
+                        .ok_or("プロジェクトフォルダが未保存のためプリセットを保存できません")?;
+                    let item = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| {
+                            s.layers
+                                .iter()
+                                .flat_map(|l| l.items.iter())
+                                .find(|i| i.id == item_id)
+                        })
+                        .ok_or_else(|| format!("object not found: {item_id}"))?;
+                    let ItemKind::Text {
+                        font_family,
+                        font_size,
+                        color,
+                        ..
+                    } = &item.kind
+                    else {
+                        return Err("指定オブジェクトはテキストではありません".into());
+                    };
+                    let preset = TextStylePreset {
+                        name: preset_name.trim().to_string(),
+                        font_family: font_family.clone(),
+                        font_size: *font_size,
+                        color: *color,
+                        text_style: item.text_style,
+                    };
+                    let path = folder
+                        .save_text_style_preset(&preset)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({"saved_text_style": preset.name, "path": path.display().to_string()}).to_string()
+                        }]
+                    }))
+                }
+                "save_effect_preset" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let preset_name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or("missing 'name'")?;
+                    let folder = guard
+                        .folder
+                        .as_ref()
+                        .ok_or("プロジェクトフォルダが未保存のためプリセットを保存できません")?;
+                    let item = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| {
+                            s.layers
+                                .iter()
+                                .flat_map(|l| l.items.iter())
+                                .find(|i| i.id == item_id)
+                        })
+                        .ok_or_else(|| format!("object not found: {item_id}"))?;
+                    let preset = EffectPreset {
+                        name: preset_name.trim().to_string(),
+                        effects: item.effect_chain.clone(),
+                    };
+                    let path = folder
+                        .save_effect_preset(&preset)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({"saved_effect_preset": preset.name, "path": path.display().to_string()}).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown preset action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -3021,5 +3276,96 @@ mod tests {
             assert_eq!(s.name, "AutoShorts");
             assert_eq!((s.width, s.height), (1080, 1920));
         }
+    }
+
+    #[test]
+    fn v071_mcp_tools_presets_and_marker_update() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v071_presets_{}", Uuid::new_v4()));
+        let mut proj = Project::new("McpV071", ProjectSettings::default());
+        let item = TimelineItem::new(
+            "Sub",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::Text {
+                content: "プリセットテスト".into(),
+                font_family: "sans-serif".into(),
+                font_size: 40.0,
+                color: RgbaColor::WHITE,
+                animator: TextAnimator::default(),
+            },
+        );
+        let item_id = item.id;
+        proj.active_scene_mut().unwrap().layers[1].items.push(item);
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let mut ed = EditorSession::new(proj);
+        ed.folder = Some(folder);
+        let session = Arc::new(Mutex::new(ed));
+
+        // 1. manage_markers add + update
+        let added = call_tool(
+            &session,
+            "manage_markers",
+            &json!({"action": "add", "time_sec": 4.0, "label": "仮ラベル"}),
+        )
+        .unwrap();
+        let added_json: Value =
+            serde_json::from_str(added["content"][0]["text"].as_str().unwrap()).unwrap();
+        let mid = added_json["marker_id"].as_str().unwrap();
+
+        call_tool(
+            &session,
+            "manage_markers",
+            &json!({"action": "update", "marker_id": mid, "label": "確定チャプター", "color_hex": "#ff4466"}),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            let m = &g.project.active_scene().unwrap().markers[0];
+            assert_eq!(m.label, "確定チャプター");
+            assert_eq!(m.color.to_hex_rgb(), "#ff4466");
+        }
+
+        // 2. manage_presets list + apply_text_style + save_text_style + apply_effect_preset + save_effect_preset
+        let list = call_tool(&session, "manage_presets", &json!({"action": "list"})).unwrap();
+        let list_txt = list["content"][0]["text"].as_str().unwrap();
+        assert!(list_txt.contains("ゆっくり座布団字幕"));
+        assert!(list_txt.contains("シネマティック暖色"));
+
+        call_tool(
+            &session,
+            "manage_presets",
+            &json!({"action": "apply_text_style", "id": item_id.to_string(), "name": "ゆっくり座布団字幕"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "manage_presets",
+            &json!({"action": "apply_effect_preset", "id": item_id.to_string(), "name": "シネマティック暖色"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "manage_presets",
+            &json!({"action": "save_text_style", "id": item_id.to_string(), "name": "カスタム座布団"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "manage_presets",
+            &json!({"action": "save_effect_preset", "id": item_id.to_string(), "name": "カスタムシネマ"}),
+        )
+        .unwrap();
+
+        let list2 = call_tool(&session, "manage_presets", &json!({"action": "list"})).unwrap();
+        let list2_txt = list2["content"][0]["text"].as_str().unwrap();
+        assert!(list2_txt.contains("カスタム座布団"));
+        assert!(list2_txt.contains("カスタムシネマ"));
+        {
+            let g = session.lock().unwrap();
+            let it = &g.project.active_scene().unwrap().layers[1].items[0];
+            assert!(it.text_style.box_enabled);
+            assert_eq!(it.effect_chain.len(), 2);
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

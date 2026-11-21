@@ -32,7 +32,7 @@ pub use lipsync::{
     CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
     evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
 };
-pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor};
+pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor, TextStylePreset};
 pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
     BezierMask, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer,

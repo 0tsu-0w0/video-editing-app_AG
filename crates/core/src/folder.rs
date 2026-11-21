@@ -1,4 +1,4 @@
-use crate::preset::ItemAlias;
+use crate::preset::{EffectPreset, ItemAlias, TextStylePreset};
 use crate::project::{AssetRef, Project};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -73,6 +73,18 @@ impl ProjectFolder {
         self.root.join("aliases")
     }
 
+    pub fn presets_dir(&self) -> PathBuf {
+        self.root.join("presets")
+    }
+
+    pub fn effect_presets_dir(&self) -> PathBuf {
+        self.presets_dir().join("effects")
+    }
+
+    pub fn text_style_presets_dir(&self) -> PathBuf {
+        self.presets_dir().join("text_styles")
+    }
+
     pub fn cache_precomp_dir(&self) -> PathBuf {
         self.root.join("cache").join("precomp")
     }
@@ -97,6 +109,8 @@ impl ProjectFolder {
         fs::create_dir_all(&self.root)?;
         fs::create_dir_all(self.assets_dir())?;
         fs::create_dir_all(self.aliases_dir())?;
+        fs::create_dir_all(self.effect_presets_dir())?;
+        fs::create_dir_all(self.text_style_presets_dir())?;
         fs::create_dir_all(self.cache_precomp_dir())?;
         fs::create_dir_all(self.cache_waveforms_dir())?;
         fs::create_dir_all(self.cache_proxy_dir())?;
@@ -238,6 +252,84 @@ impl ProjectFolder {
     pub fn delete_alias(&self, name: &str) -> Result<(), FolderError> {
         let file_name = format!("{}.json", sanitize_alias_filename(name));
         let path = self.aliases_dir().join(file_name);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// エフェクトチェーンプリセットを `presets/effects/<safe_name>.json` へ保存する
+    pub fn save_effect_preset(&self, preset: &EffectPreset) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.effect_presets_dir())?;
+        let file_name = format!("{}.json", sanitize_alias_filename(&preset.name));
+        let path = self.effect_presets_dir().join(file_name);
+        let json = serde_json::to_string_pretty(preset)?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// `presets/effects/` 内の保存済みエフェクトチェーンプリセットを名前順で全件読み込む
+    pub fn load_effect_presets(&self) -> Vec<EffectPreset> {
+        let dir = self.effect_presets_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(preset) = serde_json::from_str::<EffectPreset>(&text)
+            {
+                out.push(preset);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    pub fn delete_effect_preset(&self, name: &str) -> Result<(), FolderError> {
+        let file_name = format!("{}.json", sanitize_alias_filename(name));
+        let path = self.effect_presets_dir().join(file_name);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// 字幕スタイルプリセットを `presets/text_styles/<safe_name>.json` へ保存する
+    pub fn save_text_style_preset(&self, preset: &TextStylePreset) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.text_style_presets_dir())?;
+        let file_name = format!("{}.json", sanitize_alias_filename(&preset.name));
+        let path = self.text_style_presets_dir().join(file_name);
+        let json = serde_json::to_string_pretty(preset)?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// `presets/text_styles/` 内の保存済み字幕スタイルプリセットを名前順で全件読み込む
+    pub fn load_text_style_presets(&self) -> Vec<TextStylePreset> {
+        let dir = self.text_style_presets_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(preset) = serde_json::from_str::<TextStylePreset>(&text)
+            {
+                out.push(preset);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    pub fn delete_text_style_preset(&self, name: &str) -> Result<(), FolderError> {
+        let file_name = format!("{}.json", sanitize_alias_filename(name));
+        let path = self.text_style_presets_dir().join(file_name);
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -518,5 +610,34 @@ mod tests {
         assert_eq!(list.len(), 3, "should rotate to max_keep=3");
         let latest = folder.load_backup(&list[0]).unwrap();
         assert_eq!(latest.name, "Rev 5");
+    }
+
+    #[test]
+    fn saves_loads_and_deletes_effect_and_text_style_presets_safely() {
+        let tmp = tempdir().unwrap();
+        let project = Project::new("PresetTest", ProjectSettings::default());
+        let folder = ProjectFolder::init(tmp.path().join("proj"), &project).unwrap();
+        assert!(folder.effect_presets_dir().exists());
+        assert!(folder.text_style_presets_dir().exists());
+
+        let mut fx = EffectPreset::default_presets().remove(0);
+        fx.name = "../evil/マイシネマ".into();
+        let fx_path = folder.save_effect_preset(&fx).unwrap();
+        assert!(fx_path.starts_with(folder.effect_presets_dir()));
+        let loaded_fx = folder.load_effect_presets();
+        assert_eq!(loaded_fx.len(), 1);
+        assert_eq!(loaded_fx[0].name, "../evil/マイシネマ");
+        folder.delete_effect_preset(&fx.name).unwrap();
+        assert!(folder.load_effect_presets().is_empty());
+
+        let mut ts = TextStylePreset::default_presets().remove(0);
+        ts.name = "../evil/赤太テロップ".into();
+        let ts_path = folder.save_text_style_preset(&ts).unwrap();
+        assert!(ts_path.starts_with(folder.text_style_presets_dir()));
+        let loaded_ts = folder.load_text_style_presets();
+        assert_eq!(loaded_ts.len(), 1);
+        assert_eq!(loaded_ts[0].name, "../evil/赤太テロップ");
+        folder.delete_text_style_preset(&ts.name).unwrap();
+        assert!(folder.load_text_style_presets().is_empty());
     }
 }
