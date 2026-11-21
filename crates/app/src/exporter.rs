@@ -246,6 +246,16 @@ fn run_export_worker(
     for (id, path) in &req.shader_files {
         let _ = rg.hot_shaders.register_file(id.clone(), path);
     }
+    // v0.7 #9: 書き出し時も plugins/*.wasm 動的プラグインを自動ロード
+    {
+        let mut default_wasm = ve_plugin_api::WasmPluginManager::new(PathBuf::from("plugins"));
+        default_wasm.poll_and_sync(&mut rg.plugins);
+        if let Some(folder) = req.folder.as_ref() {
+            let mut proj_wasm =
+                ve_plugin_api::WasmPluginManager::new(folder.root().join("plugins"));
+            proj_wasm.poll_and_sync(&mut rg.plugins);
+        }
+    }
 
     // GPU オフロードが有効な場合はヘッドレス wgpu::Device 経由でポストプロセスを実行（非搭載環境は CPU 自動フォールバック）
     let mut gpu_offloader = if !req.gpu_passes.is_empty() {

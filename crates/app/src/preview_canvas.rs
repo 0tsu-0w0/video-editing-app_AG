@@ -1,6 +1,7 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ve_core::{
-    CommandSource, EditCommand, ItemId, ItemKind, RationalTime, Scene, TimelineItem, Transform2D,
+    BezierMask, CommandSource, EditCommand, ItemId, ItemKind, MaskMode, RationalTime, Scene,
+    TimelineItem, Transform2D,
 };
 use ve_mcp::EditorSession;
 
@@ -37,6 +38,27 @@ enum GizmoDrag {
         initial_tf: Transform2D,
         center_scene: Pos2,
         start_angle_deg: f32,
+    },
+    MaskVertex {
+        item_id: ItemId,
+        mask_idx: usize,
+        vert_idx: usize,
+        origin_x: f32,
+        origin_y: f32,
+        scaled_w: f32,
+        scaled_h: f32,
+        masks: Vec<BezierMask>,
+    },
+    MaskHandle {
+        item_id: ItemId,
+        mask_idx: usize,
+        vert_idx: usize,
+        is_out: bool,
+        origin_x: f32,
+        origin_y: f32,
+        scaled_w: f32,
+        scaled_h: f32,
+        masks: Vec<BezierMask>,
     },
     Pan {
         start_pointer: Pos2,
@@ -203,11 +225,27 @@ impl PreviewCanvasState {
                 .and_then(|scene| find_visible_item_geometry(scene, sel_id, playhead))
         });
 
-        // ギズモ描画（バウンディングボックス・4隅スケールハンドル・回転ハンドル）
+        // ギズモ描画（バウンディングボックス・4隅スケールハンドル・回転ハンドル）＆ v0.7 ベジェマスク頂点
         let mut handle_rects: Option<GizmoScreenHandles> = None;
+        let selected_masks: Vec<BezierMask> = selected_geo
+            .as_ref()
+            .and_then(|geo| {
+                session.project.active_scene().and_then(|s| {
+                    s.layers
+                        .iter()
+                        .flat_map(|l| l.items.iter())
+                        .find(|i| i.id == geo.item_id)
+                        .map(|i| i.masks.clone())
+                })
+            })
+            .unwrap_or_default();
+
         if let Some(ref geo) = selected_geo {
             let handles = compute_screen_handles(geo, &scene_to_screen);
             draw_gizmo(&painter, &handles, geo.tf.rotation_deg);
+            if !selected_masks.is_empty() {
+                draw_bezier_mask_overlay(&painter, geo, &selected_masks, &scene_to_screen);
+            }
             handle_rects = Some(handles);
         }
 
@@ -223,7 +261,7 @@ impl PreviewCanvasState {
             painter.line_segment([p0, p1], Stroke::new(1.5, Color32::from_rgb(0, 230, 255)));
         }
 
-        // ポインタ操作開始（パン / 回転 / スケール / 移動 / クリック選択）
+        // ポインタ操作開始（パン / マスク頂点・ハンドル / 回転 / スケール / 移動 / クリック選択）
         if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
@@ -235,7 +273,12 @@ impl PreviewCanvasState {
             } else if let (Some(geo), Some(handles)) = (&selected_geo, &handle_rects) {
                 let s_pos = screen_to_scene(pos);
                 let hit_r = 10.0;
-                if handles.rotate_knob.distance(pos) <= hit_r {
+                if let Some(mask_drag) =
+                    hit_test_bezier_masks(geo, &selected_masks, pos, hit_r, &scene_to_screen)
+                {
+                    self.drag = Some(mask_drag);
+                    session.bus.set_gui_drag_locked(true);
+                } else if handles.rotate_knob.distance(pos) <= hit_r {
                     let start_ang = (s_pos.y - geo.center_y)
                         .atan2(s_pos.x - geo.center_x)
                         .to_degrees();
@@ -335,6 +378,7 @@ impl PreviewCanvasState {
         self.active_snap_x = None;
         self.active_snap_y = None;
         if let Some(drag) = self.drag.clone() {
+            let was_edit = !matches!(drag, GizmoDrag::Pan { .. });
             if response.dragged()
                 && let Some(pos) = response.interact_pointer_pos()
             {
@@ -476,10 +520,112 @@ impl PreviewCanvasState {
                             modified = true;
                         }
                     }
+                    GizmoDrag::MaskVertex {
+                        item_id,
+                        mask_idx,
+                        vert_idx,
+                        origin_x,
+                        origin_y,
+                        scaled_w,
+                        scaled_h,
+                        mut masks,
+                    } => {
+                        let cur_scene = screen_to_scene(pos);
+                        let nx = ((cur_scene.x - origin_x) / scaled_w.max(1.0)).clamp(-0.5, 1.5);
+                        let ny = ((cur_scene.y - origin_y) / scaled_h.max(1.0)).clamp(-0.5, 1.5);
+                        if let Some(m) = masks.get_mut(mask_idx)
+                            && let Some(v) = m.vertices.get_mut(vert_idx)
+                        {
+                            v.x = nx;
+                            v.y = ny;
+                            if session
+                                .bus
+                                .execute(
+                                    &mut session.project,
+                                    EditCommand::SetMasks {
+                                        item_id,
+                                        masks: masks.clone(),
+                                    },
+                                    CommandSource::Gui,
+                                    Some("preview_mask_drag"),
+                                )
+                                .is_ok()
+                            {
+                                modified = true;
+                            }
+                            self.drag = Some(GizmoDrag::MaskVertex {
+                                item_id,
+                                mask_idx,
+                                vert_idx,
+                                origin_x,
+                                origin_y,
+                                scaled_w,
+                                scaled_h,
+                                masks,
+                            });
+                        }
+                    }
+                    GizmoDrag::MaskHandle {
+                        item_id,
+                        mask_idx,
+                        vert_idx,
+                        is_out,
+                        origin_x,
+                        origin_y,
+                        scaled_w,
+                        scaled_h,
+                        mut masks,
+                    } => {
+                        let cur_scene = screen_to_scene(pos);
+                        let nx = (cur_scene.x - origin_x) / scaled_w.max(1.0);
+                        let ny = (cur_scene.y - origin_y) / scaled_h.max(1.0);
+                        if let Some(m) = masks.get_mut(mask_idx)
+                            && let Some(v) = m.vertices.get_mut(vert_idx)
+                        {
+                            let dx = (nx - v.x).clamp(-1.0, 1.0);
+                            let dy = (ny - v.y).clamp(-1.0, 1.0);
+                            if is_out {
+                                v.out_handle = [dx, dy];
+                                if shift_held {
+                                    v.in_handle = [-dx, -dy];
+                                }
+                            } else {
+                                v.in_handle = [dx, dy];
+                                if shift_held {
+                                    v.out_handle = [-dx, -dy];
+                                }
+                            }
+                            if session
+                                .bus
+                                .execute(
+                                    &mut session.project,
+                                    EditCommand::SetMasks {
+                                        item_id,
+                                        masks: masks.clone(),
+                                    },
+                                    CommandSource::Gui,
+                                    Some("preview_mask_handle_drag"),
+                                )
+                                .is_ok()
+                            {
+                                modified = true;
+                            }
+                            self.drag = Some(GizmoDrag::MaskHandle {
+                                item_id,
+                                mask_idx,
+                                vert_idx,
+                                is_out,
+                                origin_x,
+                                origin_y,
+                                scaled_w,
+                                scaled_h,
+                                masks,
+                            });
+                        }
+                    }
                 }
             }
             if response.drag_stopped() {
-                let was_edit = !matches!(drag, GizmoDrag::Pan { .. });
                 self.drag = None;
                 self.active_snap_x = None;
                 self.active_snap_y = None;
@@ -780,6 +926,143 @@ fn draw_rule_of_thirds(painter: &egui::Painter, rect: Rect) {
             Stroke::new(1.0, col),
         );
     }
+}
+
+fn draw_bezier_mask_overlay(
+    painter: &egui::Painter,
+    geo: &ItemGeometry,
+    masks: &[BezierMask],
+    scene_to_screen: &impl Fn(f32, f32) -> Pos2,
+) {
+    let ox = geo.tf.x + geo.layer_offset_x;
+    let oy = geo.tf.y + geo.layer_offset_y;
+    let sw = geo.scaled_w.max(1.0);
+    let sh = geo.scaled_h.max(1.0);
+
+    for mask in masks {
+        if !mask.enabled || mask.vertices.len() < 3 {
+            continue;
+        }
+        let stroke_col = match mask.mode {
+            MaskMode::Add => Color32::from_rgb(255, 200, 64),
+            MaskMode::Subtract => Color32::from_rgb(255, 92, 136),
+        };
+        let poly = mask.flatten_polygon(12);
+        if poly.len() >= 3 {
+            let pts: Vec<Pos2> = poly
+                .iter()
+                .map(|[nx, ny]| scene_to_screen(ox + nx * sw, oy + ny * sh))
+                .collect();
+            for i in 0..pts.len() {
+                painter.line_segment(
+                    [pts[i], pts[(i + 1) % pts.len()]],
+                    Stroke::new(1.8, stroke_col),
+                );
+            }
+        }
+        let tan_col = Color32::from_rgba_unmultiplied(255, 230, 150, 190);
+        for v in &mask.vertices {
+            let vp = scene_to_screen(ox + v.x * sw, oy + v.y * sh);
+            // ベジェ接線ハンドル（長さが 0 より大きい場合のみ描画）
+            if v.in_handle[0].hypot(v.in_handle[1]) > 1e-4 {
+                let hp = scene_to_screen(
+                    ox + (v.x + v.in_handle[0]) * sw,
+                    oy + (v.y + v.in_handle[1]) * sh,
+                );
+                painter.line_segment([vp, hp], Stroke::new(1.0, tan_col));
+                painter.circle_filled(hp, 3.5, tan_col);
+            }
+            if v.out_handle[0].hypot(v.out_handle[1]) > 1e-4 {
+                let hp = scene_to_screen(
+                    ox + (v.x + v.out_handle[0]) * sw,
+                    oy + (v.y + v.out_handle[1]) * sh,
+                );
+                painter.line_segment([vp, hp], Stroke::new(1.0, tan_col));
+                painter.circle_filled(hp, 3.5, tan_col);
+            }
+            let r = Rect::from_center_size(vp, Vec2::splat(8.5));
+            painter.rect_filled(r, 1.5, stroke_col);
+            painter.rect_stroke(
+                r,
+                1.5,
+                Stroke::new(1.0, Color32::BLACK),
+                StrokeKind::Outside,
+            );
+        }
+    }
+}
+
+fn hit_test_bezier_masks(
+    geo: &ItemGeometry,
+    masks: &[BezierMask],
+    pointer: Pos2,
+    hit_r: f32,
+    scene_to_screen: &impl Fn(f32, f32) -> Pos2,
+) -> Option<GizmoDrag> {
+    let ox = geo.tf.x + geo.layer_offset_x;
+    let oy = geo.tf.y + geo.layer_offset_y;
+    let sw = geo.scaled_w.max(1.0);
+    let sh = geo.scaled_h.max(1.0);
+
+    for (mi, mask) in masks.iter().enumerate() {
+        if !mask.enabled {
+            continue;
+        }
+        for (vi, v) in mask.vertices.iter().enumerate() {
+            let vp = scene_to_screen(ox + v.x * sw, oy + v.y * sh);
+            if vp.distance(pointer) <= hit_r {
+                return Some(GizmoDrag::MaskVertex {
+                    item_id: geo.item_id,
+                    mask_idx: mi,
+                    vert_idx: vi,
+                    origin_x: ox,
+                    origin_y: oy,
+                    scaled_w: sw,
+                    scaled_h: sh,
+                    masks: masks.to_vec(),
+                });
+            }
+            if v.out_handle[0].hypot(v.out_handle[1]) > 1e-4 {
+                let hp = scene_to_screen(
+                    ox + (v.x + v.out_handle[0]) * sw,
+                    oy + (v.y + v.out_handle[1]) * sh,
+                );
+                if hp.distance(pointer) <= hit_r {
+                    return Some(GizmoDrag::MaskHandle {
+                        item_id: geo.item_id,
+                        mask_idx: mi,
+                        vert_idx: vi,
+                        is_out: true,
+                        origin_x: ox,
+                        origin_y: oy,
+                        scaled_w: sw,
+                        scaled_h: sh,
+                        masks: masks.to_vec(),
+                    });
+                }
+            }
+            if v.in_handle[0].hypot(v.in_handle[1]) > 1e-4 {
+                let hp = scene_to_screen(
+                    ox + (v.x + v.in_handle[0]) * sw,
+                    oy + (v.y + v.in_handle[1]) * sh,
+                );
+                if hp.distance(pointer) <= hit_r {
+                    return Some(GizmoDrag::MaskHandle {
+                        item_id: geo.item_id,
+                        mask_idx: mi,
+                        vert_idx: vi,
+                        is_out: false,
+                        origin_x: ox,
+                        origin_y: oy,
+                        scaled_w: sw,
+                        scaled_h: sh,
+                        masks: masks.to_vec(),
+                    });
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 1軸方向についてアイテム中心・左/上端・右/下端をキャンバス中央＆セーフ枠へ吸着させる

@@ -3,19 +3,31 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 use ve_audio::{AudioGraph, AudioMeterSnapshot, linear_to_db, measure_integrated_lufs};
 use ve_core::{
-    AudioEffectNode, AudioReactiveBand, CommandSource, CubicBezier, EditCommand, EffectNode,
-    Interpolation, ItemId, ItemKind, Keyframe, MotionPreset, RationalTime, RgbaColor, TextStyle,
-    TimelineItem, TransitionKind, build_motion_preset_commands,
+    AudioEffectNode, AudioReactiveBand, BezierMask, CommandSource, CubicBezier, EditCommand,
+    EffectNode, Interpolation, ItemId, ItemKind, Keyframe, MaskMode, MaskVertex, MotionPreset,
+    MotionTrackConfig, RationalTime, RgbaColor, TextStyle, TimelineItem, TransitionKind,
+    build_motion_preset_commands,
 };
 use ve_mcp::EditorSession;
+use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
 
-/// インスペクタ拡張機能の状態（エフェクトクリップボード・カラーパレット追加欄・制御文字補完・LUFS計測結果）
+/// インスペクタ拡張機能の状態（エフェクトクリップボード・カラーパレット追加欄・制御文字補完・LUFS・トラッカー）
 pub struct InspectorExtrasState {
     pub copied_effects: Vec<EffectNode>,
     pub new_palette_name: String,
     pub new_palette_rgb: [f32; 3],
     pub show_tag_completion: bool,
     pub measured_lufs: Option<f32>,
+    // v0.7 #8: モーショントラッカー設定
+    pub track_anchor_x: f32,
+    pub track_anchor_y: f32,
+    pub track_duration_sec: f64,
+    pub track_step_frames: u32,
+    pub track_patch_radius: u32,
+    pub track_search_radius: u32,
+    pub track_status: String,
+    // v0.7 #9: WASM プラグイン操作メッセージ
+    pub wasm_status: String,
 }
 
 impl Default for InspectorExtrasState {
@@ -26,6 +38,14 @@ impl Default for InspectorExtrasState {
             new_palette_rgb: [1.0, 0.45, 0.15],
             show_tag_completion: false,
             measured_lufs: None,
+            track_anchor_x: 640.0,
+            track_anchor_y: 360.0,
+            track_duration_sec: 2.0,
+            track_step_frames: 2,
+            track_patch_radius: 12,
+            track_search_radius: 28,
+            track_status: "待機中".to_string(),
+            wasm_status: "plugins/*.wasm 監視中".to_string(),
         }
     }
 }
@@ -872,6 +892,249 @@ pub fn show_audio_reactive_ui(ui: &mut Ui, session: &mut EditorSession, item: &T
             }
         },
     );
+}
+
+/// v0.7 #8: 自由ベジェマスク編集 UI（プリセット追加・加算/減算・反転・フェザー・頂点細分化）
+pub fn show_bezier_masks_ui(ui: &mut Ui, session: &mut EditorSession, item: &TimelineItem) {
+    if matches!(
+        item.kind,
+        ItemKind::Audio { .. }
+            | ItemKind::FilterObject { .. }
+            | ItemKind::Transition { .. }
+            | ItemKind::GroupControl { .. }
+    ) {
+        return;
+    }
+    ui.collapsing(
+        format!(
+            "✂ 自由ベジェマスク ({}件) — プレビュー上で頂点ドラッグ可",
+            item.masks.len()
+        ),
+        |ui| {
+            let mut masks = item.masks.clone();
+            let prev = masks.clone();
+
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("＋ 楕円マスク").clicked() {
+                    masks.push(BezierMask::ellipse());
+                }
+                if ui.small_button("＋ 矩形マスク").clicked() {
+                    masks.push(BezierMask::rectangle());
+                }
+                if ui.small_button("＋ ひし形マスク").clicked() {
+                    masks.push(BezierMask::diamond());
+                }
+            });
+
+            let mut delete_idx: Option<usize> = None;
+            for (idx, m) in masks.iter_mut().enumerate() {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.checkbox(&mut m.enabled, format!("#{} {}", idx + 1, m.name));
+                        ui.selectable_value(&mut m.mode, MaskMode::Add, "加算");
+                        ui.selectable_value(&mut m.mode, MaskMode::Subtract, "減算");
+                        ui.checkbox(&mut m.inverted, "反転");
+                        if ui
+                            .small_button("＋頂点")
+                            .on_hover_text("辺の中点に頂点を追加")
+                            .clicked()
+                            && m.vertices.len() >= 3
+                            && m.vertices.len() < 24
+                        {
+                            let v0 = m.vertices[0];
+                            let v1 = m.vertices[1];
+                            m.vertices.insert(
+                                1,
+                                MaskVertex::corner((v0.x + v1.x) * 0.5, (v0.y + v1.y) * 0.5),
+                            );
+                        }
+                        if ui.small_button("✖").clicked() {
+                            delete_idx = Some(idx);
+                        }
+                    });
+                    ui.add(egui::Slider::new(&mut m.feather_px, 0.0..=64.0).text("フェザー(px)"));
+                    ui.add(egui::Slider::new(&mut m.opacity, 0.0..=1.0).text("不透明度"));
+                });
+            }
+            if let Some(di) = delete_idx {
+                masks.remove(di);
+            }
+
+            if masks != prev {
+                let _ = session.bus.execute(
+                    &mut session.project,
+                    EditCommand::SetMasks {
+                        item_id: item.id,
+                        masks,
+                    },
+                    CommandSource::Gui,
+                    Some("bezier_mask_ui_edit"),
+                );
+            }
+        },
+    );
+}
+
+/// v0.7 #8: 自動モーショントラッキング設定 UI（押下時に追跡リクエストを返す）
+pub fn show_motion_tracker_ui(
+    ui: &mut Ui,
+    extras: &mut InspectorExtrasState,
+    session: &EditorSession,
+    item: &TimelineItem,
+) -> Option<MotionTrackConfig> {
+    if matches!(
+        item.kind,
+        ItemKind::Audio { .. }
+            | ItemKind::FilterObject { .. }
+            | ItemKind::Transition { .. }
+            | ItemKind::GroupControl { .. }
+    ) {
+        return None;
+    }
+    let mut trigger: Option<MotionTrackConfig> = None;
+    ui.collapsing(
+        "🎯 自動モーショントラッキング（顔モザイク・テロップ追従）",
+        |ui| {
+            ui.weak("指定座標の模様を追跡し、このオブジェクトの X/Y キーフレームへ焼き込みます。");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("追跡起点:");
+                ui.add(egui::DragValue::new(&mut extras.track_anchor_x).prefix("X:"));
+                ui.add(egui::DragValue::new(&mut extras.track_anchor_y).prefix("Y:"));
+                if ui.small_button("現在位置をセット").clicked() {
+                    let tf = item.eval_transform(session.playhead);
+                    extras.track_anchor_x = tf.x + 60.0;
+                    extras.track_anchor_y = tf.y + 40.0;
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("追跡尺:");
+                ui.add(
+                    egui::DragValue::new(&mut extras.track_duration_sec)
+                        .speed(0.1)
+                        .range(0.2..=20.0)
+                        .suffix("s"),
+                );
+                ui.label("間隔:");
+                ui.add(
+                    egui::DragValue::new(&mut extras.track_step_frames)
+                        .range(1..=10)
+                        .suffix("F"),
+                );
+                ui.label("探索半径:");
+                ui.add(
+                    egui::DragValue::new(&mut extras.track_search_radius)
+                        .range(8..=80)
+                        .suffix("px"),
+                );
+            });
+            if ui
+                .button("🎯 自動追跡を実行 → X/Y キーフレーム焼き込み (Undo可)")
+                .clicked()
+            {
+                let start = session.playhead;
+                let end = start + RationalTime::from_seconds(extras.track_duration_sec);
+                trigger = Some(MotionTrackConfig {
+                    start_time: start,
+                    end_time: end,
+                    step_frames: extras.track_step_frames,
+                    anchor_x: extras.track_anchor_x,
+                    anchor_y: extras.track_anchor_y,
+                    patch_radius: extras.track_patch_radius,
+                    search_radius: extras.track_search_radius,
+                });
+            }
+            ui.weak(format!("トラッカー状態: {}", extras.track_status));
+        },
+    );
+    trigger
+}
+
+/// v0.7 #9: WASM 動的プラグイン管理 UI（`plugins/*.wasm` ホットリロード＆適用）
+pub fn show_wasm_plugins_ui(
+    ui: &mut Ui,
+    extras: &mut InspectorExtrasState,
+    session: &mut EditorSession,
+    selected_item_id: Option<ItemId>,
+    wasm_mgr: &mut WasmPluginManager,
+    registry: &mut PluginRegistry,
+) -> bool {
+    let mut dirty = false;
+    ui.collapsing("🧩 WASM 動的プラグイン (plugins/*.wasm サンドボックス)", |ui| {
+        if let Some(dir) = wasm_mgr.plugin_dir() {
+            ui.weak(format!("監視フォルダ: {}", dir.display()));
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button("🔄 今すぐ再読込").clicked() {
+                let events = wasm_mgr.poll_and_sync(registry);
+                extras.wasm_status = if events.is_empty() {
+                    "変更なし".into()
+                } else {
+                    dirty = true;
+                    events.join(" / ")
+                };
+            }
+            if ui.small_button("📦 サンプル .wasm 3種を生成＆読込").clicked()
+                && let Some(dir) = wasm_mgr.plugin_dir().map(std::path::Path::to_path_buf)
+            {
+                match emit_sample_wasm_plugins(&dir) {
+                    Ok(_) => {
+                        let events = wasm_mgr.poll_and_sync(registry);
+                        extras.wasm_status = format!(
+                            "サンプルWASM読込完了 ({}件)",
+                            events.len()
+                        );
+                        dirty = true;
+                    }
+                    Err(e) => extras.wasm_status = format!("生成エラー: {e}"),
+                }
+            }
+        });
+
+        let statuses = wasm_mgr.list_status();
+        if statuses.is_empty() {
+            ui.weak("plugins/*.wasm が未配置です。「サンプル .wasm 3種を生成＆読込」ですぐ試せます。");
+        } else {
+            for st in statuses {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(err) = &st.last_error {
+                        ui.colored_label(Color32::from_rgb(245, 110, 110), format!("⚠ {}", st.path.display()));
+                        ui.weak(err);
+                    } else {
+                        ui.strong(&st.name);
+                        ui.weak(format!("({})", st.id));
+                        if let Some(item_id) = selected_item_id
+                            && ui.small_button("＋ 選択アイテムへ適用").clicked()
+                        {
+                            let mut params = BTreeMap::new();
+                            params.insert("strength".into(), 1.0);
+                            if session
+                                .bus
+                                .execute(
+                                    &mut session.project,
+                                    EditCommand::AddEffect {
+                                        item_id,
+                                        effect: EffectNode {
+                                            id: Uuid::new_v4(),
+                                            effect_type: st.id.clone(),
+                                            enabled: true,
+                                            params,
+                                        },
+                                    },
+                                    CommandSource::Gui,
+                                    None,
+                                )
+                                .is_ok()
+                            {
+                                dirty = true;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        ui.weak(format!("WASM状態: {}", extras.wasm_status));
+    });
+    dirty
 }
 
 fn show_dsp_chain_editor(

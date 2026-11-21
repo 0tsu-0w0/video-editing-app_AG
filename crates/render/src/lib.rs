@@ -1,6 +1,7 @@
 pub mod color;
 pub mod graph;
 pub mod hot_shader;
+pub mod mask_tracker;
 pub mod pipeline;
 pub mod psd_sprite;
 pub mod sprite;
@@ -11,6 +12,7 @@ pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph};
 pub use hot_shader::{
     HotShaderEntry, ShaderHotReloader, ShaderReloadStatus, register_shader_dir, validate_wgsl,
 };
+pub use mask_tracker::{apply_bezier_masks, track_point_across_frames, track_point_in_scene};
 pub use pipeline::{
     GpuEffectUniform, GpuPostProcessPass, HeadlessGpuOffloader, WgpuPreviewPipeline,
 };

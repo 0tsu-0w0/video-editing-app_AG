@@ -7,14 +7,15 @@ use ve_ai::{
     LocalTtsClient, LocalWhisperTranscriber, OsCredentialStore, SubtitleSegment, TtsEngine,
     import_tts_file_pair, segments_to_subtitle_items,
 };
-use ve_audio::{WaveformBucket, WaveformPeaks};
+use ve_audio::{AudioGraph, WaveformBucket, WaveformPeaks};
 use ve_core::{
-    AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, ItemId, ItemKind, LipSyncMode,
-    MediaKind, MouthShape, PhonemeSegment, PsdCharacterConfig, RationalTime, RgbaColor,
-    ScriptBuildConfig, TextAnimator, TimelineItem, Transform2D, build_script_timeline_commands,
-    export_ass_subtitles, export_otio_json, export_srt_subtitles, parse_ass_subtitles,
-    parse_aviutl_exo, parse_script_auto, parse_srt_subtitles, subtitle_entries_to_commands,
-    wrap_subtitle_japanese,
+    AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, HighlightCandidate,
+    HighlightConfig, ItemId, ItemKind, LipSyncMode, MediaKind, MouthShape, PhonemeSegment,
+    PsdCharacterConfig, RationalTime, RgbaColor, ScriptBuildConfig, TextAnimator, TimelineItem,
+    Transform2D, build_script_timeline_commands, build_shorts_clip_scene_command,
+    export_ass_subtitles, export_otio_json, export_srt_subtitles, extract_highlight_candidates,
+    parse_ass_subtitles, parse_aviutl_exo, parse_script_auto, parse_srt_subtitles,
+    subtitle_entries_to_commands, wrap_subtitle_japanese,
 };
 use ve_mcp::EditorSession;
 use ve_media::decode_audio_file;
@@ -49,6 +50,11 @@ pub struct AudioAi3DPanel {
     script_use_tts: bool,
     // v0.6 #6: SRT / ASS / AviUtl .exo / OTIO 互換
     interop_export_stem: String,
+    // v0.7 #10: AI ハイライト自動抽出 ＆ 9:16 ショート動画自動切り抜き
+    highlight_clip_count: usize,
+    highlight_clip_sec: f64,
+    highlight_audio_layer: usize,
+    highlight_candidates: Vec<HighlightCandidate>,
     status_msg: String,
 }
 
@@ -74,6 +80,10 @@ impl Default for AudioAi3DPanel {
             script_show_speaker: false,
             script_use_tts: false,
             interop_export_stem: "project_export".to_string(),
+            highlight_clip_count: 3,
+            highlight_clip_sec: 15.0,
+            highlight_audio_layer: 3,
+            highlight_candidates: Vec::new(),
             status_msg: "待機中".to_string(),
         }
     }
@@ -777,6 +787,91 @@ impl AudioAi3DPanel {
             });
 
             ui.separator();
+
+            // ===== 7. AI ハイライト自動抽出 ＆ 9:16 ショート動画自動切り抜き (v0.7 #10) =====
+            ui.heading("7. AI ハイライト自動抽出 ＆ 9:16 ショート切り抜き");
+            ui.weak("音量ピーク・字幕密度・強調ワード・マーカーを複合評価して見どころを自動提案します。");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("抽出数:");
+                ui.add(
+                    egui::DragValue::new(&mut self.highlight_clip_count)
+                        .range(1..=8)
+                        .suffix("本"),
+                );
+                ui.label("1本尺:");
+                ui.add(
+                    egui::DragValue::new(&mut self.highlight_clip_sec)
+                        .speed(1.0)
+                        .range(3.0..=60.0)
+                        .suffix("s"),
+                );
+                ui.label("音声L:");
+                ui.add(egui::DragValue::new(&mut self.highlight_audio_layer).range(0..=15));
+                if ui.button("🔥 見どころハイライトを自動抽出").clicked() {
+                    self.run_highlight_extraction(session, waveforms);
+                }
+            });
+
+            if !self.highlight_candidates.is_empty() {
+                let mut jump_to: Option<RationalTime> = None;
+                let mut create_idx: Option<usize> = None;
+                for (idx, cand) in self.highlight_candidates.iter().enumerate() {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(format!("#{} {}", idx + 1, cand.suggested_title));
+                            ui.monospace(format!(
+                                "{:.1}s - {:.1}s (Score {:.0}%)",
+                                cand.start.as_seconds(),
+                                cand.end.as_seconds(),
+                                cand.score * 100.0
+                            ));
+                        });
+                        ui.weak(&cand.reason);
+                        ui.horizontal(|ui| {
+                            if ui.small_button("▶ ここへ移動").clicked() {
+                                jump_to = Some(cand.start);
+                            }
+                            if ui
+                                .small_button("📱 9:16 ショートシーン自動生成 (Undo可)")
+                                .clicked()
+                            {
+                                create_idx = Some(idx);
+                            }
+                        });
+                    });
+                }
+                if let Some(t) = jump_to {
+                    session.playhead = t;
+                }
+                if let Some(ci) = create_idx
+                    && let Some(cand) = self.highlight_candidates.get(ci).cloned()
+                {
+                    let name = format!("Shorts #{}: {}", ci + 1, cand.suggested_title);
+                    if let Some((_, cmd)) = build_shorts_clip_scene_command(
+                        &session.project,
+                        session.project.active_scene_id,
+                        &cand,
+                        name.clone(),
+                    ) {
+                        match session.bus.execute(
+                            &mut session.project,
+                            cmd,
+                            CommandSource::Gui,
+                            None,
+                        ) {
+                            Ok(()) => {
+                                session.playhead = RationalTime::ZERO;
+                                self.status_msg = format!(
+                                    "9:16 ショートシーン「{name}」を生成＆切替しました（Ctrl+Zで元に戻せます）"
+                                );
+                            }
+                            Err(e) => self.status_msg = format!("ショート生成エラー: {e}"),
+                        }
+                    }
+                }
+            }
+
+            ui.separator();
             ui.monospace(format!("ステータス: {}", self.status_msg));
         });
     }
@@ -1335,5 +1430,84 @@ impl AudioAi3DPanel {
             }
             Err(e) => self.status_msg = format!("書出エラー: {e}"),
         }
+    }
+
+    fn run_highlight_extraction(
+        &mut self,
+        session: &EditorSession,
+        waveforms: &BTreeMap<Uuid, WaveformPeaks>,
+    ) {
+        let Some(scene) = session.project.active_scene() else {
+            self.status_msg = "アクティブシーンがありません".into();
+            return;
+        };
+
+        // 1. 事前解析済み WaveformPeaks があれば最速で RMS 列を収集
+        let mut rms_samples: Vec<(f64, f32)> = Vec::new();
+        if let Some(layer) = scene.layers.get(self.highlight_audio_layer) {
+            for item in &layer.items {
+                if let ItemKind::Audio {
+                    asset_id, volume, ..
+                }
+                | ItemKind::Video {
+                    asset_id, volume, ..
+                } = &item.kind
+                    && let Some(peaks) = waveforms.get(asset_id)
+                    && peaks.sample_rate > 0
+                {
+                    let sec_per_bucket =
+                        peaks.samples_per_bucket.max(1) as f64 / f64::from(peaks.sample_rate);
+                    for (bi, bk) in peaks.buckets.iter().enumerate() {
+                        let t = item.start.as_seconds() + bi as f64 * sec_per_bucket;
+                        if t <= item.end().as_seconds() {
+                            rms_samples.push((t, bk.rms * volume.max(0.0)));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 波形キャッシュが無い場合は AudioGraph から 0.5秒単位 RMS を算出
+        if rms_samples.is_empty() {
+            let sr = session.project.settings.audio_sample_rate.max(8_000);
+            let graph = AudioGraph::from_project_scene(
+                &session.project,
+                session.project.active_scene_id,
+                session.folder.as_ref(),
+                sr,
+            );
+            if !graph.clips.is_empty() {
+                let dur = scene
+                    .total_duration()
+                    .min(RationalTime::from_seconds(600.0));
+                let pcm = graph.render_range(RationalTime::ZERO, dur);
+                let step_f = (sr as usize / 2).max(1);
+                let total_f = pcm.len() / graph.channels.max(1);
+                let mut f = 0usize;
+                while f < total_f {
+                    let end_f = (f + step_f).min(total_f);
+                    let mut sum_sq = 0.0f64;
+                    for fi in f..end_f {
+                        let v = pcm[fi * graph.channels];
+                        sum_sq += f64::from(v) * f64::from(v);
+                    }
+                    let rms = (sum_sq / (end_f - f).max(1) as f64).sqrt() as f32;
+                    rms_samples.push(((f as f64 + (end_f - f) as f64 * 0.5) / sr as f64, rms));
+                    f = end_f;
+                }
+            }
+        }
+
+        let cfg = HighlightConfig {
+            audio_layer_index: self.highlight_audio_layer,
+            target_clip_count: self.highlight_clip_count,
+            clip_duration_sec: self.highlight_clip_sec,
+            ..Default::default()
+        };
+        self.highlight_candidates = extract_highlight_candidates(scene, &rms_samples, &cfg);
+        self.status_msg = format!(
+            "ハイライト候補 {} 件を抽出しました（「9:16 ショートシーン自動生成」で即切り抜き可）",
+            self.highlight_candidates.len()
+        );
     }
 }

@@ -35,12 +35,14 @@ use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand, EffectNode,
     FilterTargetScope, FrameRate, HistoryEntry, Interpolation, ItemKind, Keyframe, Project,
     ProjectSettings, RationalTime, RgbaColor, ScenePreset, ShapeKind, TextAnimator, TimelineItem,
-    TrackMatte, TrackMatteMode, Transform2D,
+    TrackMatte, TrackMatteMode, Transform2D, build_motion_track_keyframes_command,
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
+use ve_plugin_api::WasmPluginManager;
 use ve_render::{
     GpuPostProcessPass, RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, register_shader_dir,
+    track_point_in_scene,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +153,8 @@ struct EditorApp {
     // v0.6 #7: レンダーキュー（バッチ連続書き出し）
     render_queue: RenderQueueState,
     show_render_queue: bool,
+    // v0.7 #9: WASM 動的プラグインマネージャー (plugins/*.wasm)
+    wasm_manager: WasmPluginManager,
     preview_scale: u32,
     last_rendered_key: Option<(u64, i64, u32, u32, usize, Uuid)>,
     preview_dirty: bool,
@@ -274,6 +278,8 @@ impl EditorApp {
             &mut render_graph.hot_shaders,
             std::path::Path::new("shaders"),
         );
+        let mut wasm_manager = WasmPluginManager::new(PathBuf::from("plugins"));
+        let _ = wasm_manager.poll_and_sync(&mut render_graph.plugins);
 
         let (proxy_tx, proxy_rx) = mpsc::channel();
 
@@ -334,6 +340,7 @@ impl EditorApp {
             export_status: "待機中".to_string(),
             render_queue: RenderQueueState::default(),
             show_render_queue: false,
+            wasm_manager,
             preview_scale: 2,
             last_rendered_key: None,
             preview_dirty: true,
@@ -1156,19 +1163,73 @@ impl TabViewer for EditorTabViewer<'_> {
                         }
 
                         // v0.6 #4: オーディオリアクティブ（音声エネルギー連動アニメーション）
+                        // v0.7 #8: 自由ベジェマスク ＆ 自動モーショントラッキング
+                        // v0.7 #9: WASM 動的プラグイン管理
                         // B-3: 音声DSPエフェクト（クリップ＆マスター）＋ BGM自動ダッキング ＋ LUFS ラウドネス正規化
-                        {
+                        let track_req = {
                             let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_bezier_masks_ui(ui, &mut g, &item);
+                            let req = inspector_extras::show_motion_tracker_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &g,
+                                &item,
+                            );
                             inspector_extras::show_audio_reactive_ui(ui, &mut g, &item);
+                            if inspector_extras::show_wasm_plugins_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                                Some(item.id),
+                                &mut self.app.wasm_manager,
+                                &mut self.app.render_graph.plugins,
+                            ) {
+                                self.app.preview_dirty = true;
+                            }
                             inspector_extras::show_audio_dsp_and_lufs_ui(
                                 ui,
                                 &mut self.app.inspector_extras,
                                 &mut g,
                                 Some(&item),
                             );
+                            req
+                        };
+                        if let Some(cfg) = track_req {
+                            let (proj_clone, scene_id) = {
+                                let g = self.app.session.lock().unwrap();
+                                (g.project.clone(), g.project.active_scene_id)
+                            };
+                            let samples = track_point_in_scene(
+                                &mut self.app.render_graph,
+                                &proj_clone,
+                                scene_id,
+                                &cfg,
+                            );
+                            let init_tf = item.eval_transform(cfg.start_time);
+                            let off_x = init_tf.x - cfg.anchor_x;
+                            let off_y = init_tf.y - cfg.anchor_y;
+                            if let Some(cmd) =
+                                build_motion_track_keyframes_command(&item, &samples, off_x, off_y)
+                            {
+                                let mut g = self.app.session.lock().unwrap();
+                                let s = &mut *g;
+                                if s.bus
+                                    .execute(&mut s.project, cmd, CommandSource::Gui, None)
+                                    .is_ok()
+                                {
+                                    self.app.preview_dirty = true;
+                                    self.app.inspector_extras.track_status = format!(
+                                        "追跡完了: {} 点の X/Y キーフレームを焼き込みました",
+                                        samples.len()
+                                    );
+                                }
+                            } else {
+                                self.app.inspector_extras.track_status =
+                                    "追跡サンプルを取得できませんでした".into();
+                            }
                         }
                     } else {
-                        // 未選択時でもカラーパレットとマスター音声DSP/LUFSは操作可能
+                        // 未選択時でもカラーパレット・WASMプラグイン・マスター音声DSP/LUFSは操作可能
                         {
                             let mut g = self.app.session.lock().unwrap();
                             inspector_extras::show_color_palette_ui(
@@ -1176,6 +1237,16 @@ impl TabViewer for EditorTabViewer<'_> {
                                 &mut self.app.inspector_extras,
                                 &mut g,
                             );
+                            if inspector_extras::show_wasm_plugins_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                                None,
+                                &mut self.app.wasm_manager,
+                                &mut self.app.render_graph.plugins,
+                            ) {
+                                self.app.preview_dirty = true;
+                            }
                             inspector_extras::show_audio_dsp_and_lufs_ui(
                                 ui,
                                 &mut self.app.inspector_extras,
@@ -1538,12 +1609,19 @@ impl eframe::App for EditorApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
 
-        // カスタム WGSL シェーダーの自動ホットリロードポーリング（500ms 間隔にスロットルして毎フレームI/Oを回避）
+        // カスタム WGSL シェーダー ＆ WASM プラグイン (plugins/*.wasm) の自動ホットリロードポーリング（500ms 間隔）
         if self.last_shader_poll.elapsed() >= std::time::Duration::from_millis(500) {
             self.last_shader_poll = std::time::Instant::now();
             let reloaded = self.render_graph.hot_shaders.poll_reload();
             if !reloaded.is_empty() {
                 self.custom_wgsl_msg = format!("自動ホットリロード: {}", reloaded.join(", "));
+                self.preview_dirty = true;
+            }
+            let wasm_events = self
+                .wasm_manager
+                .poll_and_sync(&mut self.render_graph.plugins);
+            if !wasm_events.is_empty() {
+                self.inspector_extras.wasm_status = wasm_events.join(" / ");
                 self.preview_dirty = true;
             }
         }
@@ -2120,7 +2198,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v0.6.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v0.7.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };
