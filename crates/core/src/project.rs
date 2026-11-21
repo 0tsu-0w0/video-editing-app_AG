@@ -1,4 +1,6 @@
 use crate::animation::{CubicBezier, Keyframe, evaluate_track};
+use crate::camera::{Camera3D, Transform3D};
+use crate::lipsync::{CharacterSpriteConfig, PhonemeSegment};
 use crate::time::{FrameRate, RationalTime};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -215,6 +217,12 @@ pub enum ItemKind {
     GroupControl {
         target_layer_count: usize,
     },
+    /// Phase 3: PNG差分立ち絵オブジェクト（音量連動／母音連動自動口パク）
+    CharacterSprite {
+        config: CharacterSpriteConfig,
+        width: f32,
+        height: f32,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -227,11 +235,17 @@ pub struct TimelineItem {
     pub start: RationalTime,
     pub duration: RationalTime,
     pub transform: Transform2D,
+    /// Phase 3: 3D 空間配置（Z座標・3軸回転）
+    #[serde(default)]
+    pub transform_3d: Transform3D,
     #[serde(default)]
     pub blend_mode: BlendMode,
-    /// プロパティ名（"x", "y", "scale_x", "scale_y", "rotation_deg", "opacity"）ごとのキーフレーム列
+    /// プロパティ名（"x", "y", "scale_x", "scale_y", "rotation_deg", "opacity", "z"）ごとのキーフレーム列
     #[serde(default)]
     pub keyframes: BTreeMap<String, Vec<Keyframe>>,
+    /// TTS / 文字起こし由来の音素タイミング列（立ち絵の母音連動口パク参照用）
+    #[serde(default)]
+    pub phoneme_segments: Vec<PhonemeSegment>,
     /// オブジェクト個別のAE風エフェクトチェーン
     pub effect_chain: Vec<EffectNode>,
     pub kind: ItemKind,
@@ -250,8 +264,10 @@ impl TimelineItem {
             start,
             duration,
             transform: Transform2D::default(),
+            transform_3d: Transform3D::default(),
             blend_mode: BlendMode::Normal,
             keyframes: BTreeMap::new(),
+            phoneme_segments: Vec::new(),
             effect_chain: Vec::new(),
             kind,
         }
@@ -281,6 +297,23 @@ impl TimelineItem {
             scale_y: eval("scale_y", self.transform.scale_y),
             rotation_deg: eval("rotation_deg", self.transform.rotation_deg),
             opacity: eval("opacity", self.transform.opacity).clamp(0.0, 1.0),
+        }
+    }
+
+    /// 指定グローバル時刻でのアニメーション済み Transform3D を評価する
+    pub fn eval_transform_3d(&self, global_time: RationalTime) -> Transform3D {
+        let local = global_time - self.start;
+        let eval = |prop: &str, base: f32| -> f32 {
+            self.keyframes
+                .get(prop)
+                .map(|kfs| evaluate_track(base, kfs, local))
+                .unwrap_or(base)
+        };
+        Transform3D {
+            enable_3d: self.transform_3d.enable_3d,
+            z: eval("z", self.transform_3d.z),
+            rotation_x_deg: eval("rotation_x_deg", self.transform_3d.rotation_x_deg),
+            rotation_y_deg: eval("rotation_y_deg", self.transform_3d.rotation_y_deg),
         }
     }
 }
@@ -316,6 +349,8 @@ pub struct Scene {
     pub width: u32,
     pub height: u32,
     pub fps: FrameRate,
+    #[serde(default)]
+    pub camera: Camera3D,
     pub layers: Vec<Layer>,
 }
 
@@ -327,10 +362,12 @@ impl Scene {
             width,
             height,
             fps,
+            camera: Camera3D::default(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),
                 Layer::new("Layer 3"),
+                Layer::new("Audio 1"),
             ],
         }
     }

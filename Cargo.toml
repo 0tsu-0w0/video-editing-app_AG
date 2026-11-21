@@ -5,6 +5,7 @@ members = [
     "crates/media",
     "crates/audio",
     "crates/render",
+    "crates/ai",
     "crates/mcp",
     "crates/app",
 ]
@@ -21,6 +22,7 @@ ve-core = { path = "crates/core" }
 ve-media = { path = "crates/media" }
 ve-audio = { path = "crates/audio" }
 ve-render = { path = "crates/render" }
+ve-ai = { path = "crates/ai" }
 ve-mcp = { path = "crates/mcp" }
 
 # Serialization & Core utilities
@@ -34,6 +36,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Media & Audio
 symphonia = { version = "0.6", features = ["all"] }
 cpal = "0.15"
+
+# AI & Networking & OS Credentials
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "query", "native-tls"] }
+keyring = { version = "3.6", features = ["windows-native", "apple-native", "linux-native"] }
 
 # Rendering & Text
 wgpu = "30.0"

@@ -1,0 +1,18 @@
+[package]
+name = "ve-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ve-core.workspace = true
+ve-media.workspace = true
+reqwest.workspace = true
+keyring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

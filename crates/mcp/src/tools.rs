@@ -1,11 +1,13 @@
 use crate::session::SharedEditorSession;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use uuid::Uuid;
+use ve_ai::{ApiProvider, CloudUploadGuard, import_tts_file_pair};
 use ve_core::{
-    CommandSource, CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind,
-    Keyframe, RationalTime, RgbaColor, ShapeKind, TextAnimator, TimelineItem, TrackMatte,
-    TrackMatteMode,
+    AssetRef, Camera3D, CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode,
+    FrameRate, Interpolation, ItemKind, Keyframe, LipSyncMode, MediaKind, RationalTime, RgbaColor,
+    ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode,
 };
 use ve_render::RenderGraph;
 
@@ -205,6 +207,64 @@ pub fn tool_definitions() -> Value {
                 "type": "object",
                 "required": ["scene_id"],
                 "properties": { "scene_id": { "type": "string" } }
+            }
+        },
+        {
+            "name": "set_camera_3d",
+            "description": "アクティブシーンの3Dカメラ位置・注視点・FOV・被写界深度を設定する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "enabled": { "type": "boolean" },
+                    "position": { "type": "array", "items": { "type": "number" } },
+                    "target": { "type": "array", "items": { "type": "number" } },
+                    "fov_deg": { "type": "number" },
+                    "dof_enabled": { "type": "boolean" },
+                    "focus_distance": { "type": "number" },
+                    "aperture": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "add_character_sprite",
+            "description": "指定音声レイヤーと自動連動するPNG差分立ち絵（自動口パク）オブジェクトを配置する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["layer_index", "name"],
+                "properties": {
+                    "layer_index": { "type": "integer" },
+                    "name": { "type": "string" },
+                    "linked_audio_layer": { "type": "integer" },
+                    "mode": { "type": "string", "enum": ["volume_rms", "vowel_phoneme"] },
+                    "start_sec": { "type": "number" },
+                    "duration_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "import_tts_file_pair",
+            "description": "voice.wav と同名の .txt / .lab を自動取込し、音声・字幕・音素タイミングを一括配置する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["wav_path"],
+                "properties": {
+                    "wav_path": { "type": "string" },
+                    "audio_layer_index": { "type": "integer" },
+                    "subtitle_layer_index": { "type": "integer" },
+                    "start_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "estimate_transcription_cost",
+            "description": "外部AI文字起こし（Gemini / Claude）送信前の概算トークンとコストを安全見積りする",
+            "inputSchema": {
+                "type": "object",
+                "required": ["provider", "duration_sec"],
+                "properties": {
+                    "provider": { "type": "string", "enum": ["gemini", "claude"] },
+                    "duration_sec": { "type": "number" }
+                }
             }
         },
         {
@@ -733,6 +793,215 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 )
                 .map_err(|e| e.to_string())?;
             Ok(json!({ "content": [{ "type": "text", "text": "switched" }] }))
+        }
+        "set_camera_3d" => {
+            let mut cam = guard
+                .project
+                .active_scene()
+                .map(|s| s.camera)
+                .unwrap_or_else(Camera3D::default);
+            if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                cam.enabled = en;
+            }
+            if let Some(arr) = args.get("position").and_then(Value::as_array)
+                && arr.len() == 3
+            {
+                cam.position = [
+                    arr[0].as_f64().unwrap_or(0.0) as f32,
+                    arr[1].as_f64().unwrap_or(0.0) as f32,
+                    arr[2].as_f64().unwrap_or(-1000.0) as f32,
+                ];
+            }
+            if let Some(arr) = args.get("target").and_then(Value::as_array)
+                && arr.len() == 3
+            {
+                cam.target = [
+                    arr[0].as_f64().unwrap_or(0.0) as f32,
+                    arr[1].as_f64().unwrap_or(0.0) as f32,
+                    arr[2].as_f64().unwrap_or(0.0) as f32,
+                ];
+            }
+            if let Some(fov) = args.get("fov_deg").and_then(Value::as_f64) {
+                cam.fov_deg = fov as f32;
+            }
+            if let Some(dof) = args.get("dof_enabled").and_then(Value::as_bool) {
+                cam.dof_enabled = dof;
+            }
+            if let Some(fd) = args.get("focus_distance").and_then(Value::as_f64) {
+                cam.focus_distance = fd as f32;
+            }
+            if let Some(ap) = args.get("aperture").and_then(Value::as_f64) {
+                cam.aperture = ap as f32;
+            }
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SetCamera3D { camera: cam },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "camera_3d_updated" }] }))
+        }
+        "add_character_sprite" => {
+            let layer_index = args
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .ok_or("missing layer_index")? as usize;
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("立ち絵")
+                .to_string();
+            let linked_audio_layer = args
+                .get("linked_audio_layer")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize);
+            let mode = match args.get("mode").and_then(Value::as_str) {
+                Some("vowel_phoneme") => LipSyncMode::VowelPhoneme,
+                _ => LipSyncMode::default(),
+            };
+            let start = RationalTime::from_seconds(
+                args.get("start_sec").and_then(Value::as_f64).unwrap_or(0.0),
+            );
+            let duration = RationalTime::from_seconds(
+                args.get("duration_sec")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(5.0),
+            );
+            let item = TimelineItem::new(
+                name,
+                start,
+                duration,
+                ItemKind::CharacterSprite {
+                    config: CharacterSpriteConfig {
+                        linked_audio_layer,
+                        mode,
+                        png_paths: BTreeMap::new(),
+                        phoneme_override: Vec::new(),
+                    },
+                    width: 260.0,
+                    height: 320.0,
+                },
+            );
+            let id = item.id;
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::AddObject { layer_index, item },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"created_id": id}).to_string() }] }),
+            )
+        }
+        "import_tts_file_pair" => {
+            let wav_str = args
+                .get("wav_path")
+                .and_then(Value::as_str)
+                .ok_or("missing wav_path")?;
+            let audio_layer = args
+                .get("audio_layer_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(3) as usize;
+            let sub_layer = args
+                .get("subtitle_layer_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as usize;
+            let start = RationalTime::from_seconds(
+                args.get("start_sec")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_else(|| guard.playhead.as_seconds()),
+            );
+
+            let bundle =
+                import_tts_file_pair(&PathBuf::from(wav_str)).map_err(|e| e.to_string())?;
+            let asset_id = Uuid::new_v4();
+            guard.project.assets.push(AssetRef {
+                id: asset_id,
+                name: PathBuf::from(wav_str)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "voice.wav".into()),
+                kind: MediaKind::Audio,
+                relative_path: None,
+                fallback_absolute_path: Some(PathBuf::from(wav_str)),
+                collected: false,
+            });
+
+            let mut audio_item = TimelineItem::new(
+                "TTS音声",
+                start,
+                bundle.duration,
+                ItemKind::Audio {
+                    asset_id,
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            );
+            audio_item.phoneme_segments = bundle.phonemes.clone();
+            let sub_item = TimelineItem::new(
+                "TTS字幕",
+                start,
+                bundle.duration,
+                ItemKind::Text {
+                    content: bundle.subtitle_text.clone(),
+                    font_family: "sans-serif".to_string(),
+                    font_size: 46.0,
+                    color: RgbaColor::WHITE,
+                    animator: TextAnimator::default(),
+                },
+            );
+
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::Batch {
+                        label: "import_tts_file_pair".into(),
+                        commands: vec![
+                            EditCommand::AddObject {
+                                layer_index: audio_layer,
+                                item: audio_item,
+                            },
+                            EditCommand::AddObject {
+                                layer_index: sub_layer,
+                                item: sub_item,
+                            },
+                        ],
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "subtitle": bundle.subtitle_text,
+                        "phoneme_count": bundle.phonemes.len(),
+                        "duration_sec": bundle.duration.as_seconds()
+                    }).to_string()
+                }]
+            }))
+        }
+        "estimate_transcription_cost" => {
+            let provider = match args.get("provider").and_then(Value::as_str) {
+                Some("claude") => ApiProvider::Claude,
+                _ => ApiProvider::Gemini,
+            };
+            let duration_sec = args
+                .get("duration_sec")
+                .and_then(Value::as_f64)
+                .unwrap_or(60.0);
+            let est =
+                CloudUploadGuard::default().estimate_audio_transcription(provider, duration_sec);
+            let text = serde_json::to_string_pretty(&est).unwrap_or_default();
+            Ok(json!({ "content": [{ "type": "text", "text": text }] }))
         }
         "batch_execute" => {
             let label = args

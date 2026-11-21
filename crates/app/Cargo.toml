@@ -10,6 +10,7 @@ ve-core.workspace = true
 ve-media.workspace = true
 ve-audio.workspace = true
 ve-render.workspace = true
+ve-ai.workspace = true
 ve-mcp.workspace = true
 egui.workspace = true
 eframe.workspace = true
