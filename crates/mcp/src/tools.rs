@@ -9,14 +9,16 @@ use ve_ai::{
 };
 use ve_audio::AudioGraph;
 use ve_core::{
-    AlignMode, AssetRef, AudioEffectNode, Camera3D, CharacterSpriteConfig, CommandSource,
-    CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind, JumpCutConfig,
-    Keyframe, LipSyncMode, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
-    ShapeKind, TextAnimator, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
-    base64_encode, build_align_commands, build_close_gaps_commands,
-    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_motion_preset_commands,
-    build_replace_text_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
-    search_text_items, wrap_subtitle_japanese,
+    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, Camera3D, CharacterSpriteConfig,
+    CommandSource, CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind,
+    JumpCutConfig, Keyframe, LipSyncMode, MediaKind, MotionPreset, PsdCharacterConfig,
+    RationalTime, RgbaColor, ScriptBuildConfig, ShapeKind, TextAnimator, TimelineItem,
+    TimelineMarker, TrackMatte, TrackMatteMode, base64_encode, build_align_commands,
+    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_jump_cut_commands,
+    build_motion_preset_commands, build_replace_text_commands, build_script_timeline_commands,
+    detect_speech_intervals_from_rms, export_ass_subtitles, export_otio_json, export_srt_subtitles,
+    format_youtube_chapters, parse_ass_subtitles, parse_aviutl_exo, parse_script_auto,
+    parse_srt_subtitles, search_text_items, subtitle_entries_to_commands, wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, decode_audio_file, write_wav_pcm16,
@@ -490,6 +492,67 @@ pub fn tool_definitions() -> Value {
         }
     ]) {
         tools.extend(extra);
+    }
+    if let Value::Array(v06_extra) = json!([
+        {
+            "name": "set_audio_ducking",
+            "description": "発話レイヤー（サイドチェイン）に応じて BGM レイヤーの音量を自動減衰させるダッキングを設定する（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "enabled": { "type": "boolean" },
+                    "voice_layer_index": { "type": "integer" },
+                    "bgm_layer_index": { "type": "integer" },
+                    "threshold_rms": { "type": "number" },
+                    "reduction_db": { "type": "number" },
+                    "attack_sec": { "type": "number" },
+                    "release_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "import_script",
+            "description": "CSV（話者,セリフ,表情,背景画像）または Markdown 対話台本から話者カラー付き字幕タイムラインを一括生成する（1ステップUndo）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["content"],
+                "properties": {
+                    "content": { "type": "string" },
+                    "start_sec": { "type": "number" },
+                    "chars_per_sec": { "type": "number", "default": 6.5 },
+                    "pause_gap_sec": { "type": "number", "default": 0.25 },
+                    "subtitle_layer": { "type": "integer", "default": 1 },
+                    "show_speaker_prefix": { "type": "boolean", "default": false }
+                }
+            }
+        },
+        {
+            "name": "import_subtitles_or_exo",
+            "description": "SRT / ASS 字幕または AviUtl .exo データをタイムラインへ一括インポートする（1ステップUndo）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["format", "content"],
+                "properties": {
+                    "format": { "type": "string", "enum": ["srt", "ass", "exo"] },
+                    "content": { "type": "string" },
+                    "layer_index": { "type": "integer", "default": 1 }
+                }
+            }
+        },
+        {
+            "name": "export_subtitles_or_otio",
+            "description": "アクティブシーンを SRT / ASS 字幕または OpenTimelineIO (.otio JSON) へエクスポートする",
+            "inputSchema": {
+                "type": "object",
+                "required": ["format"],
+                "properties": {
+                    "format": { "type": "string", "enum": ["srt", "ass", "otio"] },
+                    "file_name": { "type": "string" }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v06_extra);
     }
     Value::Array(tools)
 }
@@ -2108,6 +2171,249 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 }]
             }))
         }
+        "set_audio_ducking" => {
+            let mut ducking = guard
+                .project
+                .active_scene()
+                .map(|s| s.audio_ducking)
+                .unwrap_or_else(AudioDuckingConfig::default);
+            let max_layer = guard
+                .project
+                .active_scene()
+                .map(|s| s.layers.len().saturating_sub(1))
+                .unwrap_or(0);
+            if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                ducking.enabled = en;
+            }
+            if let Some(vl) = args.get("voice_layer_index").and_then(Value::as_u64) {
+                ducking.voice_layer_index = (vl as usize).min(max_layer);
+            }
+            if let Some(bl) = args.get("bgm_layer_index").and_then(Value::as_u64) {
+                ducking.bgm_layer_index = (bl as usize).min(max_layer);
+            }
+            if args.get("threshold_rms").is_some() {
+                ducking.threshold_rms = finite_clamped(
+                    args.get("threshold_rms"),
+                    f64::from(ducking.threshold_rms),
+                    0.001,
+                    0.9,
+                ) as f32;
+            }
+            if args.get("reduction_db").is_some() {
+                ducking.reduction_db = finite_clamped(
+                    args.get("reduction_db"),
+                    f64::from(ducking.reduction_db),
+                    -48.0,
+                    0.0,
+                ) as f32;
+            }
+            if args.get("attack_sec").is_some() {
+                ducking.attack_sec = finite_clamped(
+                    args.get("attack_sec"),
+                    f64::from(ducking.attack_sec),
+                    0.002,
+                    2.0,
+                ) as f32;
+            }
+            if args.get("release_sec").is_some() {
+                ducking.release_sec = finite_clamped(
+                    args.get("release_sec"),
+                    f64::from(ducking.release_sec),
+                    0.01,
+                    5.0,
+                ) as f32;
+            }
+            let s = &mut *guard;
+            s.bus
+                .execute(
+                    &mut s.project,
+                    EditCommand::SetAudioDucking { ducking },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&ducking).unwrap_or_default()
+                }]
+            }))
+        }
+        "import_script" => {
+            let content = args
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or("missing 'content'")?;
+            let lines = parse_script_auto(content);
+            if lines.is_empty() {
+                return Err("台本から有効なセリフ行を検出できませんでした".to_string());
+            }
+            let (scene_w, scene_h, max_layer) = guard
+                .project
+                .active_scene()
+                .map(|s| (s.width, s.height, s.layers.len().saturating_sub(1)))
+                .ok_or_else(|| "no active scene".to_string())?;
+            let cfg = ScriptBuildConfig {
+                start_time: RationalTime::from_seconds(finite_clamped(
+                    args.get("start_sec"),
+                    guard.playhead.as_seconds(),
+                    0.0,
+                    86_400.0,
+                )),
+                chars_per_sec: finite_clamped(args.get("chars_per_sec"), 6.5, 1.0, 30.0),
+                pause_gap_sec: finite_clamped(args.get("pause_gap_sec"), 0.25, 0.0, 10.0),
+                subtitle_layer: (args
+                    .get("subtitle_layer")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1) as usize)
+                    .min(max_layer),
+                show_speaker_prefix: args
+                    .get("show_speaker_prefix")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                ..Default::default()
+            };
+            let (count, end_time, cmd) =
+                build_script_timeline_commands(&lines, None, &cfg, scene_w, scene_h)
+                    .ok_or("failed to build script timeline")?;
+            let s = &mut *guard;
+            s.bus
+                .execute(&mut s.project, cmd, CommandSource::Mcp, None)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "imported_lines": count,
+                        "end_sec": end_time.as_seconds(),
+                        "subtitle_layer": cfg.subtitle_layer
+                    }).to_string()
+                }]
+            }))
+        }
+        "import_subtitles_or_exo" => {
+            let format = args
+                .get("format")
+                .and_then(Value::as_str)
+                .ok_or("missing 'format'")?;
+            let content = args
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or("missing 'content'")?;
+            let (scene_w, scene_h, scene_fps, max_layer) = guard
+                .project
+                .active_scene()
+                .map(|s| (s.width, s.height, s.fps, s.layers.len().saturating_sub(1)))
+                .ok_or_else(|| "no active scene".to_string())?;
+            let layer_index = (args.get("layer_index").and_then(Value::as_u64).unwrap_or(1)
+                as usize)
+                .min(max_layer);
+
+            let (count, batch_cmd) = match format {
+                "srt" => {
+                    let entries = parse_srt_subtitles(content);
+                    let n = entries.len();
+                    let cmd = subtitle_entries_to_commands(&entries, layer_index, scene_w, scene_h)
+                        .ok_or("SRT から有効な字幕を検出できませんでした")?;
+                    (n, cmd)
+                }
+                "ass" => {
+                    let entries = parse_ass_subtitles(content);
+                    let n = entries.len();
+                    let cmd = subtitle_entries_to_commands(&entries, layer_index, scene_w, scene_h)
+                        .ok_or("ASS から有効な字幕を検出できませんでした")?;
+                    (n, cmd)
+                }
+                "exo" => {
+                    let parsed = parse_aviutl_exo(content, scene_fps);
+                    if parsed.is_empty() {
+                        return Err("AviUtl .exo からオブジェクトを検出できませんでした".into());
+                    }
+                    let n = parsed.len();
+                    let commands = parsed
+                        .into_iter()
+                        .map(|(l_idx, item)| EditCommand::AddObject {
+                            layer_index: l_idx.min(max_layer),
+                            item,
+                        })
+                        .collect();
+                    (
+                        n,
+                        EditCommand::Batch {
+                            label: "import_aviutl_exo".into(),
+                            commands,
+                        },
+                    )
+                }
+                other => return Err(format!("unsupported format: {other}")),
+            };
+            let s = &mut *guard;
+            s.bus
+                .execute(&mut s.project, batch_cmd, CommandSource::Mcp, None)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({ "format": format, "imported_count": count }).to_string()
+                }]
+            }))
+        }
+        "export_subtitles_or_otio" => {
+            let format = args
+                .get("format")
+                .and_then(Value::as_str)
+                .ok_or("missing 'format'")?;
+            let (ext, payload) = match format {
+                "srt" => {
+                    let scene = guard.project.active_scene().ok_or("no active scene")?;
+                    ("srt", export_srt_subtitles(scene))
+                }
+                "ass" => {
+                    let scene = guard.project.active_scene().ok_or("no active scene")?;
+                    ("ass", export_ass_subtitles(scene))
+                }
+                "otio" => (
+                    "otio",
+                    export_otio_json(&guard.project, guard.project.active_scene_id)
+                        .ok_or("failed to export OTIO")?,
+                ),
+                other => return Err(format!("unsupported export format: {other}")),
+            };
+
+            let mut saved_path: Option<String> = None;
+            if let Some(raw_name) = args.get("file_name").and_then(Value::as_str) {
+                let safe_stem: String = raw_name
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .take(48)
+                    .collect();
+                let stem = if safe_stem.is_empty() {
+                    format!("export_{ext}")
+                } else {
+                    safe_stem
+                };
+                let out_dir = guard
+                    .folder
+                    .as_ref()
+                    .map(|f| f.exports_dir())
+                    .unwrap_or_else(|| std::env::temp_dir().join("ve_mcp_exports"));
+                std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                let out_path = out_dir.join(format!("{stem}.{ext}"));
+                std::fs::write(&out_path, &payload).map_err(|e| e.to_string())?;
+                saved_path = Some(out_path.display().to_string());
+            }
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "format": format,
+                        "saved_path": saved_path,
+                        "content": payload
+                    }).to_string()
+                }]
+            }))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -2280,5 +2586,87 @@ mod tests {
         let out_str = exp["content"][0]["text"].as_str().unwrap();
         assert!(out_str.contains("escape_test.wav"));
         assert!(!out_str.contains(".."));
+    }
+
+    #[test]
+    fn v06_mcp_tools_ducking_script_and_interop() {
+        let proj = Project::new("McpV06", ProjectSettings::default());
+        let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+        // 1. set_audio_ducking
+        call_tool(
+            &session,
+            "set_audio_ducking",
+            &json!({
+                "enabled": true,
+                "voice_layer_index": 3,
+                "bgm_layer_index": 2,
+                "reduction_db": -14.0
+            }),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            let d = g.project.active_scene().unwrap().audio_ducking;
+            assert!(d.enabled);
+            assert_eq!(d.voice_layer_index, 3);
+            assert_eq!(d.bgm_layer_index, 2);
+            assert!((d.reduction_db - (-14.0)).abs() < 1e-4);
+        }
+
+        // 2. import_script (Markdown dialogue)
+        let md = "**霊夢** [smile]: こんにちは！\n**魔理沙**: v0.6 の新機能を紹介するぜ！\n";
+        let res = call_tool(
+            &session,
+            "import_script",
+            &json!({"content": md, "subtitle_layer": 1, "start_sec": 0.0}),
+        )
+        .unwrap();
+        assert!(
+            res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"imported_lines\":2")
+        );
+
+        // 3. export_subtitles_or_otio (SRT + OTIO)
+        let srt_res = call_tool(
+            &session,
+            "export_subtitles_or_otio",
+            &json!({"format": "srt"}),
+        )
+        .unwrap();
+        let srt_json: Value =
+            serde_json::from_str(srt_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        let srt_body = srt_json["content"].as_str().unwrap();
+        assert!(srt_body.contains("こんにちは！"));
+        assert!(srt_body.contains("-->"));
+
+        let otio_res = call_tool(
+            &session,
+            "export_subtitles_or_otio",
+            &json!({"format": "otio"}),
+        )
+        .unwrap();
+        assert!(
+            otio_res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Timeline.1")
+        );
+
+        // 4. import_subtitles_or_exo (SRT back into layer 0)
+        let imp = call_tool(
+            &session,
+            "import_subtitles_or_exo",
+            &json!({"format": "srt", "content": srt_body, "layer_index": 0}),
+        )
+        .unwrap();
+        assert!(
+            imp["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"imported_count\":2")
+        );
     }
 }

@@ -1,15 +1,18 @@
-use crate::dsp::{apply_audio_effect_chain, compute_lufs_gain, measure_integrated_lufs};
+use crate::dsp::{
+    apply_audio_effect_chain, apply_sidechain_ducking, compute_lufs_gain, measure_integrated_lufs,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use ve_core::{
-    AssetId, AssetResolution, AudioEffectNode, ItemKind, Keyframe, Project, ProjectFolder,
-    RationalTime, SceneId, evaluate_track,
+    AssetId, AssetResolution, AudioDuckingConfig, AudioEffectNode, ItemKind, Keyframe, Project,
+    ProjectFolder, RationalTime, SceneId, evaluate_track,
 };
 use ve_media::{AudioBuffer, FfmpegCli, decode_audio_file};
 
 #[derive(Debug, Clone)]
 pub struct AudioClip {
+    pub layer_index: usize,
     pub timeline_start: RationalTime,
     pub duration: RationalTime,
     pub source_offset: RationalTime,
@@ -22,7 +25,7 @@ pub struct AudioClip {
     pub buffer: Arc<AudioBuffer>,
 }
 
-/// プレビュー再生・FFmpeg書き出し共通の Audio Graph（リサンプリング＋速度/ループ＋DSP＋LUFS＋ステレオミキサー）
+/// プレビュー再生・FFmpeg書き出し共通の Audio Graph（リサンプリング＋速度/ループ＋DSP＋ダッキング＋LUFS＋ステレオミキサー）
 #[derive(Debug, Clone)]
 pub struct AudioGraph {
     pub sample_rate: u32,
@@ -30,6 +33,7 @@ pub struct AudioGraph {
     pub master_gain: f32,
     pub master_effects: Vec<AudioEffectNode>,
     pub target_lufs: Option<f32>,
+    pub ducking: AudioDuckingConfig,
     pub clips: Vec<AudioClip>,
 }
 
@@ -41,6 +45,7 @@ impl AudioGraph {
             master_gain: 1.0,
             master_effects: Vec::new(),
             target_lufs: None,
+            ducking: AudioDuckingConfig::default(),
             clips: Vec::new(),
         }
     }
@@ -61,6 +66,7 @@ impl AudioGraph {
         if let Some(scene) = project.scene(scene_id) {
             graph.master_effects = scene.master_audio_effects.clone();
             graph.target_lufs = scene.target_lufs;
+            graph.ducking = scene.audio_ducking;
         }
         let mut decoded_cache: HashMap<AssetId, Option<Arc<AudioBuffer>>> = HashMap::new();
         let ffmpeg = FfmpegCli::default();
@@ -70,6 +76,7 @@ impl AudioGraph {
             folder,
             RationalTime::ZERO,
             1.0,
+            None,
             0,
             &ffmpeg,
             &mut decoded_cache,
@@ -85,6 +92,7 @@ impl AudioGraph {
         folder: Option<&ProjectFolder>,
         time_offset: RationalTime,
         gain_mul: f32,
+        parent_layer_index: Option<usize>,
         depth: u8,
         ffmpeg: &FfmpegCli,
         decoded_cache: &mut HashMap<AssetId, Option<Arc<AudioBuffer>>>,
@@ -95,7 +103,7 @@ impl AudioGraph {
         let Some(scene) = project.scene(scene_id) else {
             return;
         };
-        for layer in &scene.layers {
+        for (layer_idx, layer) in scene.layers.iter().enumerate() {
             if layer.muted {
                 continue;
             }
@@ -103,6 +111,7 @@ impl AudioGraph {
             if layer_gain <= 0.0 {
                 continue;
             }
+            let effective_layer = parent_layer_index.unwrap_or(layer_idx);
             for item in &layer.items {
                 match &item.kind {
                     ItemKind::Audio {
@@ -131,6 +140,7 @@ impl AudioGraph {
                                 .cloned()
                                 .unwrap_or_default();
                             self.clips.push(AudioClip {
+                                layer_index: effective_layer,
                                 timeline_start: time_offset + item.start,
                                 duration: item.duration,
                                 source_offset: *source_offset,
@@ -153,6 +163,7 @@ impl AudioGraph {
                             folder,
                             time_offset + item.start,
                             gain_mul * layer_gain,
+                            Some(effective_layer),
                             depth + 1,
                             ffmpeg,
                             decoded_cache,
@@ -177,6 +188,20 @@ impl AudioGraph {
         let block_start_t = RationalTime::from_audio_samples(start_sample, self.sample_rate);
         let block_end_t =
             RationalTime::from_audio_samples(start_sample + frame_count as i64, self.sample_rate);
+
+        let ducking_active = self.ducking.enabled
+            && self.channels == 2
+            && self.ducking.voice_layer_index != self.ducking.bgm_layer_index;
+        let mut voice_bus = if ducking_active {
+            vec![0.0f32; total_samples]
+        } else {
+            Vec::new()
+        };
+        let mut bgm_bus = if ducking_active {
+            vec![0.0f32; total_samples]
+        } else {
+            Vec::new()
+        };
 
         for clip in &self.clips {
             if clip.muted
@@ -221,6 +246,18 @@ impl AudioGraph {
                 vec![0.0f32; (i_end - i_start) * self.channels]
             } else {
                 Vec::new()
+            };
+
+            let target_bus: &mut [f32] = if ducking_active {
+                if clip.layer_index == self.ducking.voice_layer_index {
+                    &mut voice_bus
+                } else if clip.layer_index == self.ducking.bgm_layer_index {
+                    &mut bgm_bus
+                } else {
+                    &mut out[..total_samples]
+                }
+            } else {
+                &mut out[..total_samples]
             };
 
             let speed = f64::from(clip.speed);
@@ -289,9 +326,9 @@ impl AudioGraph {
                         }
                     } else {
                         let base = i * self.channels;
-                        out[base] += l * clip.gain;
+                        target_bus[base] += l * clip.gain;
                         if self.channels > 1 {
-                            out[base + 1] += r * clip.gain;
+                            target_bus[base + 1] += r * clip.gain;
                         }
                     }
                 }
@@ -307,11 +344,23 @@ impl AudioGraph {
                 );
                 for (rel_i, frame) in clip_scratch.chunks_exact(self.channels).enumerate() {
                     let base = (i_start + rel_i) * self.channels;
-                    out[base] += frame[0];
+                    target_bus[base] += frame[0];
                     if self.channels > 1 {
-                        out[base + 1] += frame[1];
+                        target_bus[base + 1] += frame[1];
                     }
                 }
+            }
+        }
+
+        // v0.6 #4: 発話レイヤーに応じて BGM レイヤーをサイドチェイン減衰して合成
+        if ducking_active {
+            apply_sidechain_ducking(&voice_bus, &mut bgm_bus, self.sample_rate, &self.ducking);
+            for ((dst, v), b) in out[..total_samples]
+                .iter_mut()
+                .zip(voice_bus.iter())
+                .zip(bgm_bus.iter())
+            {
+                *dst += *v + *b;
             }
         }
 
@@ -423,6 +472,7 @@ mod tests {
 
         let mut graph = AudioGraph::new(48_000);
         graph.add_clip(AudioClip {
+            layer_index: 0,
             timeline_start: RationalTime::ZERO,
             duration: RationalTime::from_seconds(1.0),
             source_offset: RationalTime::ZERO,
@@ -435,6 +485,7 @@ mod tests {
             buffer: buf_44k,
         });
         graph.add_clip(AudioClip {
+            layer_index: 1,
             timeline_start: RationalTime::ZERO,
             duration: RationalTime::from_seconds(1.0),
             source_offset: RationalTime::ZERO,
@@ -466,6 +517,7 @@ mod tests {
         // 2x speed with loop over 1.0s (covers two full cycles)
         let mut graph = AudioGraph::new(1000);
         graph.add_clip(AudioClip {
+            layer_index: 0,
             timeline_start: RationalTime::ZERO,
             duration: RationalTime::from_seconds(1.0),
             source_offset: RationalTime::ZERO,
@@ -484,6 +536,7 @@ mod tests {
         // Reverse playback (-1x) starts near end (~0.999) and decreases toward 0.0
         let mut rev_graph = AudioGraph::new(1000);
         rev_graph.add_clip(AudioClip {
+            layer_index: 0,
             timeline_start: RationalTime::ZERO,
             duration: RationalTime::from_seconds(1.0),
             source_offset: RationalTime::ZERO,
@@ -535,5 +588,67 @@ mod tests {
         let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(0.1));
         // 0.4 * clip(0.5) * layer(0.5) = 0.1
         assert!((pcm[20] - 0.1).abs() < 0.01, "got {}", pcm[20]);
+    }
+
+    #[test]
+    fn sidechain_ducking_in_audio_graph_ducks_bgm_layer_on_voice() {
+        let sr = 48_000;
+        let bgm_buf = Arc::new(AudioBuffer {
+            sample_rate: sr,
+            channels: 1,
+            samples: vec![0.4; sr as usize],
+        });
+        let voice_buf = Arc::new(AudioBuffer {
+            sample_rate: sr,
+            channels: 1,
+            samples: vec![0.25; sr as usize / 2],
+        });
+
+        let mut graph = AudioGraph::new(sr);
+        graph.ducking = AudioDuckingConfig {
+            enabled: true,
+            voice_layer_index: 3,
+            bgm_layer_index: 2,
+            threshold_rms: 0.05,
+            reduction_db: -18.0,
+            attack_sec: 0.01,
+            release_sec: 0.03,
+        };
+        // BGM on layer 2 from 0..1s
+        graph.add_clip(AudioClip {
+            layer_index: 2,
+            timeline_start: RationalTime::ZERO,
+            duration: RationalTime::from_seconds(1.0),
+            source_offset: RationalTime::ZERO,
+            gain: 1.0,
+            muted: false,
+            speed: 1.0,
+            loop_playback: false,
+            time_remap_kfs: Vec::new(),
+            effects: Vec::new(),
+            buffer: bgm_buf,
+        });
+        // Voice on layer 3 from 0.25..0.75s
+        graph.add_clip(AudioClip {
+            layer_index: 3,
+            timeline_start: RationalTime::from_seconds(0.25),
+            duration: RationalTime::from_seconds(0.5),
+            source_offset: RationalTime::ZERO,
+            gain: 1.0,
+            muted: false,
+            speed: 1.0,
+            loop_playback: false,
+            time_remap_kfs: Vec::new(),
+            effects: Vec::new(),
+            buffer: voice_buf,
+        });
+
+        let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
+        // Before voice (t=0.1s): full BGM (~0.4)
+        let before = pcm[(sr as usize / 10) * 2];
+        // During voice (t=0.5s): voice(0.25) + ducked BGM(0.4 * 0.125 = 0.05) ~= 0.30 < un-ducked (0.65)
+        let during = pcm[(sr as usize / 2) * 2];
+        assert!((before - 0.4).abs() < 0.02, "before={before}");
+        assert!(during < 0.38, "expected ducked sum < 0.38, got {during}");
     }
 }

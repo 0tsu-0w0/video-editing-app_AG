@@ -34,29 +34,29 @@
 
 ---
 
-## 🥈 v0.6（中期）：解説・実況・ショート動画の生産性を跳ね上げる機能
+## 🥈 v0.6（✅ 実装済み）：解説・実況・ショート動画の生産性を跳ね上げる機能
 
-### 4. BGM 自動ダッキング（サイドチェイン音量減衰）＆ オーディオリアクティブ
-- **既存フック**: `crates/audio/src/mixer.rs`, `crates/audio/src/dsp.rs`, `crates/audio/src/waveform.rs`
-- **設計メモ**:
-  - 発話レイヤー（声）の RMS エンベロープをサイドチェイン入力とし、アタック／リリース付きで BGM レイヤーの音量を自動減衰するダッカー DSP
-  - FFT 帯域解析（Low / Mid / High）によるオーディオスペクトラムオブジェクト描画と、音量・ビート連動のパラメータエクスプレッション（`wiggle`, `audio_band("low")`）
+### 4. ~~BGM 自動ダッキング（サイドチェイン音量減衰）＆ オーディオリアクティブ~~ ✅ 実装済み（v0.6）
+- **実装内容**:
+  - `ve-audio`: 発話レイヤー（サイドチェイン入力）の高速エンベロープ検出に応じて BGM レイヤーを滑らかに自動減衰させる `apply_sidechain_ducking` DSP を `AudioGraph` へ統合（プレビュー再生＆書き出し完全一致）
+  - `ve-audio`: Pure-Rust Hann窓付き Goertzel 対数帯域スペクトラム解析器 `analyze_spectrum_bands`（Low / Mid / High / RMS）
+  - `ve-render` / `ve-core`: `ItemKind::AudioSpectrum`（音声連動リアルタイムスペクトラムバー描画）と `AudioReactiveConfig`（帯域エネルギーに応じた拡大率・Yバウンス・不透明度の自動連動アニメーション）
+  - `ve-app` / `ve-mcp`: インスペクタのダッキング＆オーディオリアクティブ設定 UI、タイムライン「＋ スペクトラム」配置（Transform Gizmo 対応）、MCP `set_audio_ducking`
 
-### 5. 台本（Markdown / CSV）→ タイムライン一括自動生成（ゆっくり・解説動画量産モード）
-- **既存フック**: `crates/ai/src/tts.rs`, `crates/render/src/psd_sprite.rs`, `crates/mcp/src/tools.rs`
-- **設計メモ**:
-  - `話者, セリフ, 表情, 背景画像` 形式の CSV / Markdown 台本を読み込み、TTS 音声生成・字幕配置・話者別スタイル適用・PSD 表情差分切替・セリフ間ポーズ調整を 1 アクション（GUI＋MCP）で一括組み立て
+### 5. ~~台本（Markdown / CSV）→ タイムライン一括自動生成（ゆっくり・解説動画量産モード）~~ ✅ 実装済み（v0.6）
+- **実装内容**:
+  - `ve-core`: `parse_script_csv`（`話者,セリフ,表情,背景画像`）/ `parse_script_markdown`（`**霊夢** [smile]: セリフ`, `![bg](path)`）/ `parse_script_auto` と、話者別自動配色・日本語自動改行・座布団字幕・ポーズ間調整・背景画像配置を 1 ステップ Undo 可能な `EditCommand::Batch` へ組み立てる `build_script_timeline_commands`
+  - `ve-app` / `ve-mcp`: `AudioAi3DPanel` の台本一括生成 UI（`.csv`/`.md` 読込、任意で `LocalTtsClient` 実尺連携）および MCP `import_script`
 
-### 6. SRT / ASS 字幕入出力 ＆ 他ソフト互換（AviUtl `.exo` / OpenTimelineIO）
-- **既存フック**: `crates/ai/src/transcribe.rs` (`parse_srt_segments`), `crates/core/src/project.rs`
-- **設計メモ**:
-  - YouTube 字幕アップロード直結の `.srt` / `.ass` インポート＆エクスポート
-  - AviUtl `.exo`（テキスト・音声・基本図形・座標・文字色）の簡易変換インポートおよび OpenTimelineIO / FCPXML 基礎出力
+### 6. ~~SRT / ASS 字幕入出力 ＆ 他ソフト互換（AviUtl `.exo` / OpenTimelineIO）~~ ✅ 実装済み（v0.6）
+- **実装内容**:
+  - `ve-core`: Pure-Rust SRT / ASS (v4+) 字幕インポート＆エクスポート（`parse_srt_subtitles` / `export_srt_subtitles` / `parse_ass_subtitles` / `export_ass_subtitles`）
+  - `ve-core`: AviUtl `.exo` パーサ `parse_aviutl_exo`（AviUtl 固有の UTF-16LE 16進 `text=` 日本語復号＋X/Y/拡大率/透明度/回転対応）および OpenTimelineIO `.otio` JSON エクスポート `export_otio_json`
+  - `ve-app` / `ve-mcp`: `AudioAi3DPanel` の一括入出力 UI および MCP `import_subtitles_or_exo` / `export_subtitles_or_otio`
 
-### 7. レンダーキュー（バッチ連続書き出し）
-- **既存フック**: `crates/app/src/exporter.rs` (`ExportJobHandle`)
-- **設計メモ**:
-  - 複数シーン・複数フォーマット（例: 本編 16:9 MP4 ＋ 切り抜き 9:16 MP4 ＋ 音声 WAV ＋ SRT 字幕）をキューへ積み、順次バックグラウンド書き出し＆完了通知
+### 7. ~~レンダーキュー（バッチ連続書き出し）~~ ✅ 実装済み（v0.6）
+- **実装内容**:
+  - `ve-app`: `RenderQueueState`（MP4 H.264 / 9:16 縦動画自動リフレーム MP4 / H.265 / WebM Alpha / WAV / SRT / ASS / OTIO の複数ジョブ登録、YouTube 一括セット追加、並び替え・削除、順次バックグラウンド連続実行、全体＆個別進捗バー、安全キャンセル）
 
 ---
 

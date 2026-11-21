@@ -404,6 +404,65 @@ impl TimelineState {
                     session.selected_items = vec![new_id];
                 }
             }
+            if ui
+                .button("＋ スペクトラム")
+                .on_hover_text("音声レイヤー連動のオーディオスペクトラムビジュアライザーを配置")
+                .clicked()
+            {
+                let (scene_w, scene_h, audio_layer) = session
+                    .project
+                    .active_scene()
+                    .map(|s| {
+                        (
+                            s.width as f32,
+                            s.height as f32,
+                            s.layers.len().saturating_sub(1),
+                        )
+                    })
+                    .unwrap_or((1280.0, 720.0, 3));
+                let mut item = TimelineItem::new(
+                    "オーディオスペクトラム",
+                    session.playhead,
+                    RationalTime::from_seconds(5.0),
+                    ItemKind::AudioSpectrum {
+                        linked_audio_layer: audio_layer.min(3),
+                        width: (scene_w * 0.60).round().clamp(160.0, 1400.0),
+                        height: (scene_h * 0.22).round().clamp(64.0, 400.0),
+                        bar_count: 24,
+                        color: RgbaColor {
+                            r: 0.16,
+                            g: 0.82,
+                            b: 1.0,
+                            a: 0.95,
+                        },
+                        peak_color: RgbaColor {
+                            r: 1.0,
+                            g: 0.35,
+                            b: 0.65,
+                            a: 1.0,
+                        },
+                        sensitivity: 1.8,
+                    },
+                );
+                item.transform.x = (scene_w * 0.20).round();
+                item.transform.y = (scene_h * 0.68).round();
+                let new_id = item.id;
+                if session
+                    .bus
+                    .execute(
+                        &mut session.project,
+                        EditCommand::AddObject {
+                            layer_index: 1,
+                            item,
+                        },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    session.selected_items = vec![new_id];
+                }
+            }
 
             ui.separator();
             ui.toggle_value(&mut self.show_jump_cut_bar, "⚡ 無音カット");
@@ -1985,6 +2044,7 @@ fn clip_color_for_kind(kind: &ItemKind) -> Color32 {
         ItemKind::Transition { .. } => Color32::from_rgb(214, 118, 52),
         ItemKind::GroupControl { .. } => Color32::from_rgb(196, 140, 56),
         ItemKind::CharacterSprite { .. } => Color32::from_rgb(208, 102, 140),
+        ItemKind::AudioSpectrum { .. } => Color32::from_rgb(46, 178, 212),
         ItemKind::Precomp { .. } => Color32::from_rgb(42, 152, 148),
         ItemKind::Audio { .. } => Color32::from_rgb(64, 152, 108),
         _ => Color32::from_rgb(88, 104, 138),

@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 use ve_audio::{AudioGraph, AudioMeterSnapshot, linear_to_db, measure_integrated_lufs};
 use ve_core::{
-    AudioEffectNode, CommandSource, CubicBezier, EditCommand, EffectNode, Interpolation, ItemId,
-    ItemKind, Keyframe, MotionPreset, RationalTime, RgbaColor, TextStyle, TimelineItem,
-    TransitionKind, build_motion_preset_commands,
+    AudioEffectNode, AudioReactiveBand, CommandSource, CubicBezier, EditCommand, EffectNode,
+    Interpolation, ItemId, ItemKind, Keyframe, MotionPreset, RationalTime, RgbaColor, TextStyle,
+    TimelineItem, TransitionKind, build_motion_preset_commands,
 };
 use ve_mcp::EditorSession;
 
@@ -717,6 +717,159 @@ pub fn show_audio_dsp_and_lufs_ui(
                     ui.monospace(format!("Integrated: {lufs:.1} LUFS"));
                 }
             });
+
+            // v0.6 #4: BGM 自動ダッキング（サイドチェイン減衰）
+            ui.separator();
+            ui.strong("🦆 BGM 自動ダッキング（サイドチェイン音量減衰）");
+            if let Some(scene) = session.project.active_scene() {
+                let mut ducking = scene.audio_ducking;
+                let prev_ducking = ducking;
+                let layer_names: Vec<String> = scene
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| format!("L{i}: {}", l.name))
+                    .collect();
+
+                ui.checkbox(
+                    &mut ducking.enabled,
+                    "発話レイヤーの声に合わせて BGM を自動で下げる",
+                );
+                if ducking.enabled {
+                    let voice_lbl = layer_names
+                        .get(ducking.voice_layer_index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("L{}", ducking.voice_layer_index));
+                    egui::ComboBox::from_id_salt("duck_voice_layer")
+                        .selected_text(voice_lbl)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in layer_names.iter().enumerate() {
+                                ui.selectable_value(&mut ducking.voice_layer_index, i, name);
+                            }
+                        })
+                        .response
+                        .on_hover_text("サイドチェイン入力（発話・声レイヤー）");
+                    let bgm_lbl = layer_names
+                        .get(ducking.bgm_layer_index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("L{}", ducking.bgm_layer_index));
+                    egui::ComboBox::from_id_salt("duck_bgm_layer")
+                        .selected_text(bgm_lbl)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in layer_names.iter().enumerate() {
+                                ui.selectable_value(&mut ducking.bgm_layer_index, i, name);
+                            }
+                        })
+                        .response
+                        .on_hover_text("自動減衰させる対象（BGM レイヤー）");
+
+                    ui.add(
+                        egui::Slider::new(&mut ducking.reduction_db, -30.0..=-1.0)
+                            .text("減衰量 (dB)"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut ducking.threshold_rms, 0.005..=0.25)
+                            .text("発話検出しきい値"),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Attack(s):");
+                        ui.add(
+                            egui::DragValue::new(&mut ducking.attack_sec)
+                                .speed(0.005)
+                                .range(0.005..=0.5),
+                        );
+                        ui.label("Release(s):");
+                        ui.add(
+                            egui::DragValue::new(&mut ducking.release_sec)
+                                .speed(0.01)
+                                .range(0.02..=2.0),
+                        );
+                    });
+                }
+                if ducking != prev_ducking {
+                    let _ = session.bus.execute(
+                        &mut session.project,
+                        EditCommand::SetAudioDucking { ducking },
+                        CommandSource::Gui,
+                        Some("audio_ducking_edit"),
+                    );
+                }
+            }
+        },
+    );
+}
+
+/// v0.6 #4: オーディオリアクティブ（音声エネルギー連動アニメーション）設定 UI
+pub fn show_audio_reactive_ui(ui: &mut Ui, session: &mut EditorSession, item: &TimelineItem) {
+    if matches!(
+        item.kind,
+        ItemKind::Audio { .. }
+            | ItemKind::FilterObject { .. }
+            | ItemKind::Transition { .. }
+            | ItemKind::GroupControl { .. }
+    ) {
+        return;
+    }
+    ui.collapsing(
+        "🎵 オーディオリアクティブ（音連動バウンス＆拡大）",
+        |ui| {
+            let mut cfg = item.audio_reactive;
+            let prev = cfg;
+            let layer_names: Vec<String> = session
+                .project
+                .active_scene()
+                .map(|s| {
+                    s.layers
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| format!("L{i}: {}", l.name))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            ui.checkbox(&mut cfg.enabled, "音声に合わせて自動アニメーション");
+            if cfg.enabled {
+                let cur_layer = layer_names
+                    .get(cfg.linked_audio_layer)
+                    .cloned()
+                    .unwrap_or_else(|| format!("L{}", cfg.linked_audio_layer));
+                egui::ComboBox::from_label("連動音声レイヤー")
+                    .selected_text(cur_layer)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in layer_names.iter().enumerate() {
+                            ui.selectable_value(&mut cfg.linked_audio_layer, i, name);
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    ui.label("帯域:");
+                    for (band, label) in [
+                        (AudioReactiveBand::Rms, "全体RMS"),
+                        (AudioReactiveBand::Low, "低音(キック)"),
+                        (AudioReactiveBand::Mid, "中音(声)"),
+                        (AudioReactiveBand::High, "高音(アタック)"),
+                    ] {
+                        ui.selectable_value(&mut cfg.band, band, label);
+                    }
+                });
+                ui.add(egui::Slider::new(&mut cfg.sensitivity, 0.2..=6.0).text("反応感度"));
+                ui.add(egui::Slider::new(&mut cfg.scale_amount, -0.5..=1.0).text("拡大率ブースト"));
+                ui.add(
+                    egui::Slider::new(&mut cfg.y_bounce_px, -160.0..=160.0)
+                        .text("Yバウンス(px, 負=上へ跳ねる)"),
+                );
+                ui.add(egui::Slider::new(&mut cfg.opacity_amount, -0.8..=0.8).text("不透明度連動"));
+            }
+            if cfg != prev {
+                let _ = session.bus.execute(
+                    &mut session.project,
+                    EditCommand::SetAudioReactive {
+                        item_id: item.id,
+                        reactive: cfg,
+                    },
+                    CommandSource::Gui,
+                    Some("audio_reactive_edit"),
+                );
+            }
         },
     );
 }

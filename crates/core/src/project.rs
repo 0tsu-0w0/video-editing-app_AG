@@ -484,9 +484,91 @@ pub enum ItemKind {
         width: f32,
         height: f32,
     },
+    /// v0.6 #4: オーディオスペクトラム ビジュアライザー（音声レイヤーの周波数帯域バー描画）
+    AudioSpectrum {
+        linked_audio_layer: usize,
+        width: f32,
+        height: f32,
+        bar_count: usize,
+        color: RgbaColor,
+        peak_color: RgbaColor,
+        sensitivity: f32,
+    },
     Precomp {
         scene_id: SceneId,
     },
+}
+
+/// オーディオリアクティブ連動対象の周波数帯域
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioReactiveBand {
+    #[default]
+    Rms,
+    Low,
+    Mid,
+    High,
+}
+
+/// v0.6 #4: 音声エネルギーに応じて拡大率・Yバウンス・不透明度を自動連動する設定
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AudioReactiveConfig {
+    pub enabled: bool,
+    pub linked_audio_layer: usize,
+    pub band: AudioReactiveBand,
+    pub sensitivity: f32,
+    /// エネルギーに応じた拡大率加算量（例: 0.25 で最大 +25% 拡大）
+    pub scale_amount: f32,
+    /// エネルギーに応じた Y 座標バウンス（px、負値で上方向へ跳ねる）
+    pub y_bounce_px: f32,
+    /// エネルギーに応じた不透明度ブースト
+    pub opacity_amount: f32,
+}
+
+impl Default for AudioReactiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            linked_audio_layer: 3,
+            band: AudioReactiveBand::Low,
+            sensitivity: 2.0,
+            scale_amount: 0.18,
+            y_bounce_px: -24.0,
+            opacity_amount: 0.0,
+        }
+    }
+}
+
+/// v0.6 #4: 発話レイヤー（サイドチェイン）に応じて BGM レイヤーを自動減衰するダッキング設定
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AudioDuckingConfig {
+    pub enabled: bool,
+    /// 発話（声）が入っているサイドチェイン入力レイヤー
+    pub voice_layer_index: usize,
+    /// 自動減衰させる BGM レイヤー
+    pub bgm_layer_index: usize,
+    /// 発話検出の RMS しきい値（既定 0.03）
+    pub threshold_rms: f32,
+    /// 減衰量 dB（負値、既定 -12.0 dB）
+    pub reduction_db: f32,
+    /// アタック時間（秒、既定 0.03s）
+    pub attack_sec: f32,
+    /// リリース時間（秒、既定 0.25s）
+    pub release_sec: f32,
+}
+
+impl Default for AudioDuckingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            voice_layer_index: 3,
+            bgm_layer_index: 2,
+            threshold_rms: 0.03,
+            reduction_db: -12.0,
+            attack_sec: 0.03,
+            release_sec: 0.25,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -518,6 +600,9 @@ pub struct TimelineItem {
     /// クリップ単位の音声 DSP エフェクトチェーン
     #[serde(default)]
     pub audio_effects: Vec<AudioEffectNode>,
+    /// v0.6 #4: オーディオリアクティブ（音声エネルギー連動アニメーション）
+    #[serde(default)]
+    pub audio_reactive: AudioReactiveConfig,
     pub kind: ItemKind,
 }
 
@@ -542,6 +627,7 @@ impl TimelineItem {
             playback: PlaybackSettings::default(),
             text_style: TextStyle::default(),
             audio_effects: Vec::new(),
+            audio_reactive: AudioReactiveConfig::default(),
             kind,
         }
     }
@@ -716,6 +802,9 @@ pub struct Scene {
     /// 書き出し時の目標ラウドネス正規化（例: `Some(-14.0)` で YouTube 基準 -14 LUFS）
     #[serde(default)]
     pub target_lufs: Option<f32>,
+    /// v0.6 #4: 発話レイヤー連動 BGM 自動ダッキング設定
+    #[serde(default)]
+    pub audio_ducking: AudioDuckingConfig,
     /// タイムラインマーカー一覧（YouTube チャプター生成対応）
     #[serde(default)]
     pub markers: Vec<TimelineMarker>,
@@ -733,6 +822,7 @@ impl Scene {
             camera: Camera3D::default(),
             master_audio_effects: Vec::new(),
             target_lufs: None,
+            audio_ducking: AudioDuckingConfig::default(),
             markers: Vec::new(),
             layers: vec![
                 Layer::new("Layer 1"),

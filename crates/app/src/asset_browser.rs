@@ -419,6 +419,7 @@ impl AssetBrowserPanel {
                 let sr = buf.sample_rate.max(8_000);
                 let mut preview_graph = AudioGraph::new(sr);
                 preview_graph.add_clip(AudioClip {
+                    layer_index: 0,
                     timeline_start: RationalTime::ZERO,
                     duration: dur,
                     source_offset: RationalTime::ZERO,

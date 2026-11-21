@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{
-    AssetResolution, BlendMode, CharacterSpriteConfig, ColorPalette, EffectNode, FilterTargetScope,
-    ItemKind, LipSyncMode, MouthShape, PrecompCacheManager, Project, ProjectFolder, RationalTime,
-    RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D, TransitionKind,
-    content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png, rms_to_mouth,
+    AssetResolution, AudioReactiveBand, BlendMode, CharacterSpriteConfig, ColorPalette, EffectNode,
+    FilterTargetScope, ItemKind, LipSyncMode, MouthShape, PrecompCacheManager, Project,
+    ProjectFolder, RationalTime, RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D,
+    TransitionKind, content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png, rms_to_mouth,
 };
 use ve_media::{FfmpegCli, VideoStreamDecoder};
 use ve_plugin_api::PluginRegistry;
@@ -271,9 +271,11 @@ impl RenderGraph {
                         kf.value *= sy;
                     }
                 }
+                item.audio_reactive.y_bounce_px *= sy;
                 match &mut item.kind {
                     ItemKind::Shape { width, height, .. }
-                    | ItemKind::CharacterSprite { width, height, .. } => {
+                    | ItemKind::CharacterSprite { width, height, .. }
+                    | ItemKind::AudioSpectrum { width, height, .. } => {
                         *width = (*width * sx).max(1.0);
                         *height = (*height * sy).max(1.0);
                     }
@@ -325,7 +327,30 @@ impl RenderGraph {
                 if !item.contains(time) {
                     continue;
                 }
-                let tf = item.eval_transform(time);
+                let mut tf = item.eval_transform(time);
+                if item.audio_reactive.enabled {
+                    let (_, low, mid, high, rms) = self.evaluate_audio_reactive_bands(
+                        scene,
+                        item.audio_reactive.linked_audio_layer,
+                        time,
+                        16,
+                    );
+                    let raw_energy = match item.audio_reactive.band {
+                        AudioReactiveBand::Rms => rms,
+                        AudioReactiveBand::Low => low,
+                        AudioReactiveBand::Mid => mid,
+                        AudioReactiveBand::High => high,
+                    };
+                    let energy =
+                        (raw_energy * item.audio_reactive.sensitivity.max(0.0)).clamp(0.0, 1.5);
+                    tf.scale_x =
+                        (tf.scale_x + item.audio_reactive.scale_amount * energy).clamp(0.05, 8.0);
+                    tf.scale_y =
+                        (tf.scale_y + item.audio_reactive.scale_amount * energy).clamp(0.05, 8.0);
+                    tf.y += item.audio_reactive.y_bounce_px * energy;
+                    tf.opacity =
+                        (tf.opacity + item.audio_reactive.opacity_amount * energy).clamp(0.0, 1.0);
+                }
                 let tf3d = item.eval_transform_3d(time);
                 match &item.kind {
                     ItemKind::FilterObject {
@@ -794,11 +819,168 @@ impl RenderGraph {
                 self.insert_video_frame(key, decoded.clone());
                 Some(decoded)
             }
+            ItemKind::AudioSpectrum {
+                linked_audio_layer,
+                width,
+                height,
+                bar_count,
+                color,
+                peak_color,
+                sensitivity,
+            } => {
+                let sw = (*width * tf.scale_x).round().clamp(16.0, 4096.0) as u32;
+                let sh = (*height * tf.scale_y).round().clamp(16.0, 4096.0) as u32;
+                let bars = (*bar_count).clamp(4, 64);
+                let (band_vals, _, _, _, _) = self.evaluate_audio_reactive_bands(
+                    scene,
+                    *linked_audio_layer,
+                    global_time,
+                    bars,
+                );
+                let sens = (*sensitivity).clamp(0.1, 8.0);
+                let mut img = LinearImage::new(sw, sh, LinearPremul::TRANSPARENT);
+                let base_lin = LinearPremul::from_srgb_straight(*color);
+                let peak_lin = LinearPremul::from_srgb_straight(*peak_color);
+                let step = sw as f32 / bars as f32;
+                let gap = (step * 0.22).clamp(1.0, 8.0);
+                let bar_w = (step - gap).max(1.0);
+
+                for (i, &v) in band_vals.iter().enumerate() {
+                    let level = (v * sens).clamp(0.0, 1.0);
+                    let bar_h = ((sh as f32) * (0.04 + level * 0.94))
+                        .round()
+                        .clamp(2.0, sh as f32) as u32;
+                    let x0 = (i as f32 * step + gap * 0.5).floor().max(0.0) as u32;
+                    let x1 = ((x0 as f32 + bar_w).ceil() as u32).min(sw);
+                    let y_top = sh.saturating_sub(bar_h);
+                    let cap_h = (sh / 24).clamp(2, 6);
+
+                    for y in y_top..sh {
+                        let frac_up = 1.0 - (y - y_top) as f32 / bar_h.max(1) as f32;
+                        let is_cap = y < y_top + cap_h && level > 0.08;
+                        let px = if is_cap {
+                            peak_lin
+                        } else {
+                            let mix = (frac_up * level).clamp(0.0, 1.0);
+                            LinearPremul {
+                                r: base_lin.r + (peak_lin.r - base_lin.r) * mix,
+                                g: base_lin.g + (peak_lin.g - base_lin.g) * mix,
+                                b: base_lin.b + (peak_lin.b - base_lin.b) * mix,
+                                a: base_lin.a + (peak_lin.a - base_lin.a) * mix,
+                            }
+                        };
+                        let row = y * sw;
+                        for x in x0..x1 {
+                            img.pixels[(row + x) as usize] = px;
+                        }
+                    }
+                }
+                Some(img)
+            }
             ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }
             | ItemKind::Transition { .. }
             | ItemKind::GroupControl { .. } => None,
         }
+    }
+
+    /// v0.6 #4: 指定音声レイヤーの事前解析波形から、スペクトラムバー配列と Low / Mid / High / RMS を高速算出する
+    fn evaluate_audio_reactive_bands(
+        &self,
+        scene: &Scene,
+        linked_audio_layer: usize,
+        global_time: RationalTime,
+        bar_count: usize,
+    ) -> (Vec<f32>, f32, f32, f32, f32) {
+        let count = bar_count.clamp(1, 64);
+        let Some(layer) = scene.layers.get(linked_audio_layer) else {
+            return (vec![0.0; count], 0.0, 0.0, 0.0, 0.0);
+        };
+        if layer.muted || layer.volume <= 0.0 {
+            return (vec![0.0; count], 0.0, 0.0, 0.0, 0.0);
+        }
+
+        let mut bands = vec![0.0f32; count];
+        let mut total_rms = 0.0f32;
+        let mut total_low = 0.0f32;
+        let mut total_mid = 0.0f32;
+        let mut total_high = 0.0f32;
+
+        for audio_item in &layer.items {
+            if !audio_item.contains(global_time) {
+                continue;
+            }
+            if let ItemKind::Audio {
+                asset_id,
+                source_offset,
+                volume,
+            }
+            | ItemKind::Video {
+                asset_id,
+                source_offset,
+                volume,
+            } = &audio_item.kind
+                && let Some(peaks) = self.asset_waveforms.get(asset_id)
+                && !peaks.buckets.is_empty()
+                && peaks.sample_rate > 0
+            {
+                let gain = (*volume).max(0.0) * layer.volume.max(0.0);
+                let local_time = global_time - audio_item.start;
+                let src_sec = audio_item.evaluate_source_time_sec(local_time, *source_offset, None);
+                let sample_idx = RationalTime::from_seconds(src_sec)
+                    .to_audio_samples(peaks.sample_rate)
+                    .max(0) as usize;
+                let center_bucket =
+                    (sample_idx / peaks.samples_per_bucket.max(1)).min(peaks.buckets.len() - 1);
+
+                let cur = peaks.buckets[center_bucket];
+                let cur_rms = (cur.rms * gain).clamp(0.0, 1.5);
+                let cur_peak = (cur.max.abs().max(cur.min.abs()) * gain).clamp(0.0, 1.5);
+                // 低域＝近傍平均エンベロープ、中域＝瞬間RMS、高域＝トランジェント(ピーク−RMS)
+                let lo_start = center_bucket.saturating_sub(3);
+                let lo_end = (center_bucket + 4).min(peaks.buckets.len());
+                let lo_avg = peaks.buckets[lo_start..lo_end]
+                    .iter()
+                    .map(|b| b.rms * gain)
+                    .sum::<f32>()
+                    / (lo_end - lo_start).max(1) as f32;
+                let hi_trans = ((cur_peak - cur_rms * 0.75).max(0.0) * 1.45).min(1.5);
+
+                total_rms = total_rms.max(cur_rms);
+                total_low = total_low.max(lo_avg);
+                total_mid = total_mid.max(cur_rms);
+                total_high = total_high.max(hi_trans);
+
+                let half = count as isize / 2;
+                let phase = global_time.as_seconds() as f32;
+                for (b, slot) in bands.iter_mut().enumerate() {
+                    let frac = if count > 1 {
+                        b as f32 / (count - 1) as f32
+                    } else {
+                        0.5
+                    };
+                    let offset = b as isize - half;
+                    let idx = (center_bucket as isize + offset)
+                        .clamp(0, (peaks.buckets.len() - 1) as isize)
+                        as usize;
+                    let bk = peaks.buckets[idx];
+                    let bk_rms = bk.rms * gain;
+                    let bk_peak = bk.max.abs().max(bk.min.abs()) * gain;
+                    let band_base = if frac < 0.35 {
+                        lo_avg * 0.6 + bk_rms * 0.4
+                    } else if frac < 0.70 {
+                        bk_rms * 0.65 + cur_rms * 0.35
+                    } else {
+                        bk_peak * 0.55 + hi_trans * 0.45
+                    };
+                    // 帯域ごとの自然な揺らぎ（無音時は band_base == 0 なので完全ゼロ）
+                    let ripple = 0.80 + 0.20 * ((b as f32 * 1.37 + phase * 11.0).sin().abs());
+                    *slot = (*slot).max((band_base * ripple).clamp(0.0, 1.0));
+                }
+            }
+        }
+
+        (bands, total_low, total_mid, total_high, total_rms)
     }
 
     /// 立ち絵の口形状を連動音声レイヤー（音量RMS または 音素母音）から自動決定する
@@ -2338,6 +2520,169 @@ mod tests {
         assert!(
             px.r > 0.9,
             "expected red pixel at scaled (80,30), got {px:?}"
+        );
+    }
+
+    #[test]
+    fn renders_audio_spectrum_bars_and_audio_reactive_bounce() {
+        use ve_audio::WaveformBucket;
+        use ve_core::AudioReactiveConfig;
+
+        let mut proj = Project::new(
+            "AudioSpectrumTest",
+            ve_core::ProjectSettings {
+                width: 240,
+                height: 160,
+                ..Default::default()
+            },
+        );
+        let audio_id = Uuid::new_v4();
+        let sr = 48_000;
+        // 0.0..1.0s 無音、1.0..2.0s 強い音声
+        let mut buckets = Vec::new();
+        for i in 0..200 {
+            if i < 100 {
+                buckets.push(WaveformBucket {
+                    min: 0.0,
+                    max: 0.0,
+                    rms: 0.0,
+                });
+            } else {
+                buckets.push(WaveformBucket {
+                    min: -0.9,
+                    max: 0.9,
+                    rms: 0.7,
+                });
+            }
+        }
+        let peaks = WaveformPeaks {
+            sample_rate: sr,
+            samples_per_bucket: 480,
+            buckets,
+        };
+
+        // Layer 3: Audio
+        proj.active_scene_mut().unwrap().layers[3]
+            .items
+            .push(TimelineItem::new(
+                "Beat",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(2.0),
+                ItemKind::Audio {
+                    asset_id: audio_id,
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            ));
+
+        // Layer 0: AudioSpectrum
+        let mut spec = TimelineItem::new(
+            "Spectrum",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::AudioSpectrum {
+                linked_audio_layer: 3,
+                width: 160.0,
+                height: 80.0,
+                bar_count: 16,
+                color: RgbaColor {
+                    r: 0.1,
+                    g: 0.9,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                peak_color: RgbaColor {
+                    r: 1.0,
+                    g: 0.3,
+                    b: 0.6,
+                    a: 1.0,
+                },
+                sensitivity: 1.5,
+            },
+        );
+        spec.transform.x = 10.0;
+        spec.transform.y = 70.0;
+        proj.active_scene_mut().unwrap().layers[0].items.push(spec);
+
+        // Layer 1: Audio-reactive bouncing square at (185, 100), bounces up -45px on loud audio
+        let mut box_item = TimelineItem::new(
+            "Bounce",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 30.0,
+                height: 30.0,
+                color: RgbaColor {
+                    r: 1.0,
+                    g: 0.9,
+                    b: 0.1,
+                    a: 1.0,
+                },
+            },
+        );
+        box_item.transform.x = 185.0;
+        box_item.transform.y = 100.0;
+        box_item.audio_reactive = AudioReactiveConfig {
+            enabled: true,
+            linked_audio_layer: 3,
+            band: AudioReactiveBand::Rms,
+            sensitivity: 1.4,
+            scale_amount: 0.2,
+            y_bounce_px: -45.0,
+            opacity_amount: 0.0,
+        };
+        proj.active_scene_mut().unwrap().layers[1]
+            .items
+            .push(box_item);
+
+        let mut rg = RenderGraph::new();
+        rg.register_waveform(audio_id, peaks);
+
+        let quiet = rg
+            .render_project_scene(
+                &proj,
+                proj.active_scene_id,
+                RationalTime::from_seconds(0.3),
+                false,
+            )
+            .unwrap();
+        let loud = rg
+            .render_project_scene(
+                &proj,
+                proj.active_scene_id,
+                RationalTime::from_seconds(1.5),
+                false,
+            )
+            .unwrap();
+
+        // Count lit cyan/pink pixels in upper half of spectrum area (x=10..170, y=70..115)
+        let count_spec_upper = |img: &LinearImage| -> usize {
+            let mut n = 0;
+            for y in 70..115 {
+                for x in 10..170 {
+                    let p = img.pixels[(y * img.width + x) as usize];
+                    if p.g > 0.1 || p.b > 0.1 {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert_eq!(count_spec_upper(&quiet), 0);
+        assert!(
+            count_spec_upper(&loud) > 200,
+            "loud spectrum should draw tall bars: {}",
+            count_spec_upper(&loud)
+        );
+
+        // Bouncing yellow box shifts upward on loud frame (y ~ 56..92 instead of 100..130)
+        let quiet_upper_px = quiet.pixels[(72 * quiet.width + 200) as usize];
+        let loud_upper_px = loud.pixels[(72 * loud.width + 200) as usize];
+        assert!(quiet_upper_px.r < 0.05);
+        assert!(
+            loud_upper_px.r > 0.8 && loud_upper_px.g > 0.6,
+            "expected bounced yellow box at (200,72), got {loud_upper_px:?}"
         );
     }
 }

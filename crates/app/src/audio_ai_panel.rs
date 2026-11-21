@@ -11,7 +11,10 @@ use ve_audio::{WaveformBucket, WaveformPeaks};
 use ve_core::{
     AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, ItemId, ItemKind, LipSyncMode,
     MediaKind, MouthShape, PhonemeSegment, PsdCharacterConfig, RationalTime, RgbaColor,
-    TextAnimator, TimelineItem, Transform2D, wrap_subtitle_japanese,
+    ScriptBuildConfig, TextAnimator, TimelineItem, Transform2D, build_script_timeline_commands,
+    export_ass_subtitles, export_otio_json, export_srt_subtitles, parse_ass_subtitles,
+    parse_aviutl_exo, parse_script_auto, parse_srt_subtitles, subtitle_entries_to_commands,
+    wrap_subtitle_japanese,
 };
 use ve_mcp::EditorSession;
 use ve_media::decode_audio_file;
@@ -38,6 +41,14 @@ pub struct AudioAi3DPanel {
     tts_engine: TtsEngine,
     tts_speaker_id: u32,
     tts_text: String,
+    // v0.6 #5: 台本 (CSV / Markdown) -> タイムライン一括生成
+    script_text: String,
+    script_chars_per_sec: f64,
+    script_pause_gap_sec: f64,
+    script_show_speaker: bool,
+    script_use_tts: bool,
+    // v0.6 #6: SRT / ASS / AviUtl .exo / OTIO 互換
+    interop_export_stem: String,
     status_msg: String,
 }
 
@@ -57,6 +68,12 @@ impl Default for AudioAi3DPanel {
             tts_engine: TtsEngine::Voicevox,
             tts_speaker_id: 3,
             tts_text: "こんにちは！次世代ハイブリッド動画編集ソフトです。".to_string(),
+            script_text: "**霊夢** [smile]: 今日は v0.6 の新機能を解説するよ！\n**魔理沙** [surprise]: 台本から自動で字幕タイムラインが組めるのかぜ！？\n**霊夢**: 話者ごとに自動で色分けされて、Undoも1発だよ。".to_string(),
+            script_chars_per_sec: 6.5,
+            script_pause_gap_sec: 0.25,
+            script_show_speaker: false,
+            script_use_tts: false,
+            interop_export_stem: "project_export".to_string(),
             status_msg: "待機中".to_string(),
         }
     }
@@ -665,6 +682,101 @@ impl AudioAi3DPanel {
             }
 
             ui.separator();
+
+            // ===== 5. 台本（CSV / Markdown）→ タイムライン一括自動生成 (v0.6 #5) =====
+            ui.heading("5. 台本（CSV / Markdown）→ タイムライン一括生成");
+            ui.weak("形式例: `話者,セリフ,表情,背景画像` または `**霊夢** [smile]: セリフ`");
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("📂 .csv / .md 読込").clicked()
+                    && let Some(p) = crate::native_dialog::pick_file(
+                        "台本ファイル (.csv / .md / .txt)",
+                        &["csv", "md", "txt"],
+                    )
+                {
+                    match std::fs::read_to_string(&p) {
+                        Ok(txt) => {
+                            self.script_text = txt;
+                            self.status_msg = format!("台本読込完了: {}", p.display());
+                        }
+                        Err(e) => self.status_msg = format!("台本読込エラー: {e}"),
+                    }
+                }
+                if ui.small_button("📄 CSVサンプル").clicked() {
+                    self.script_text =
+                        "話者,セリフ,表情,背景画像\n霊夢,こんにちは！解説を始めるよ。,smile,\n魔理沙,台本CSVから自動でタイムラインを組むんだぜ！,surprise,\nずんだもん,話者カラーと座布団も自動で付くのだ！,happy,"
+                            .to_string();
+                }
+            });
+            ui.add(
+                egui::TextEdit::multiline(&mut self.script_text)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label("読上速度:");
+                ui.add(
+                    egui::DragValue::new(&mut self.script_chars_per_sec)
+                        .speed(0.2)
+                        .range(2.0..=20.0)
+                        .suffix("文字/秒"),
+                );
+                ui.label("間の秒数:");
+                ui.add(
+                    egui::DragValue::new(&mut self.script_pause_gap_sec)
+                        .speed(0.05)
+                        .range(0.0..=5.0)
+                        .suffix("s"),
+                );
+                ui.checkbox(&mut self.script_show_speaker, "話者名表示");
+                ui.checkbox(&mut self.script_use_tts, "ローカルTTS実尺連携");
+            });
+            if ui
+                .button("🎬 台本からタイムラインを一括生成 (1ステップUndo)")
+                .clicked()
+            {
+                self.build_timeline_from_script(session);
+            }
+
+            ui.separator();
+
+            // ===== 6. 字幕・他ソフト互換（SRT / ASS / AviUtl .exo / OTIO） (v0.6 #6) =====
+            ui.heading("6. 字幕・他ソフト互換 (SRT / ASS / AviUtl .exo / OTIO)");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("📥 SRT 読込").clicked()
+                    && let Some(p) = crate::native_dialog::pick_file("SRT字幕ファイル", &["srt"])
+                {
+                    self.import_interop_file(session, &p, "srt");
+                }
+                if ui.button("📥 ASS 読込").clicked()
+                    && let Some(p) = crate::native_dialog::pick_file("ASS字幕ファイル", &["ass"])
+                {
+                    self.import_interop_file(session, &p, "ass");
+                }
+                if ui.button("📥 AviUtl .exo 読込").clicked()
+                    && let Some(p) =
+                        crate::native_dialog::pick_file("AviUtl オブジェクトファイル", &["exo"])
+                {
+                    self.import_interop_file(session, &p, "exo");
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("書出名:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.interop_export_stem)
+                        .desired_width(120.0),
+                );
+                if ui.button("📤 SRT 書出").clicked() {
+                    self.export_interop_file(session, "srt");
+                }
+                if ui.button("📤 ASS 書出").clicked() {
+                    self.export_interop_file(session, "ass");
+                }
+                if ui.button("📤 OTIO (.otio) 書出").clicked() {
+                    self.export_interop_file(session, "otio");
+                }
+            });
+
+            ui.separator();
             ui.monospace(format!("ステータス: {}", self.status_msg));
         });
     }
@@ -1004,6 +1116,224 @@ impl AudioAi3DPanel {
             session.selected_items = vec![sprite_id];
             self.status_msg =
                 "デモ立ち絵＋音声を配置しました（再生すると口パクが連動します）".into();
+        }
+    }
+
+    fn build_timeline_from_script(&mut self, session: &mut EditorSession) {
+        let lines = parse_script_auto(&self.script_text);
+        if lines.is_empty() {
+            self.status_msg = "台本から有効なセリフ行を検出できませんでした".into();
+            return;
+        }
+        let Some((scene_w, scene_h, max_layer)) = session
+            .project
+            .active_scene()
+            .map(|s| (s.width, s.height, s.layers.len().saturating_sub(1)))
+        else {
+            return;
+        };
+
+        let mut tts_durations: Vec<f64> = Vec::new();
+        let mut tts_hits = 0usize;
+        if self.script_use_tts {
+            let client = LocalTtsClient::new(self.tts_engine, self.tts_speaker_id);
+            for line in &lines {
+                match client.synthesize(&line.text) {
+                    Ok(bundle) => {
+                        tts_durations.push(bundle.duration.as_seconds());
+                        tts_hits += 1;
+                    }
+                    Err(_) => tts_durations.push(0.0),
+                }
+            }
+        }
+        let durations_opt = (!tts_durations.is_empty()).then_some(tts_durations.as_slice());
+
+        let cfg = ScriptBuildConfig {
+            start_time: session.playhead,
+            chars_per_sec: self.script_chars_per_sec,
+            pause_gap_sec: self.script_pause_gap_sec,
+            subtitle_layer: 1usize.min(max_layer),
+            show_speaker_prefix: self.script_show_speaker,
+            ..Default::default()
+        };
+
+        let Some((count, end_time, mut cmd)) =
+            build_script_timeline_commands(&lines, durations_opt, &cfg, scene_w, scene_h)
+        else {
+            self.status_msg = "タイムライン生成に失敗しました".into();
+            return;
+        };
+
+        // 台本に背景画像パスが指定されていれば Layer 0 へ同時配置
+        if let EditCommand::Batch {
+            ref mut commands, ..
+        } = cmd
+        {
+            let mut bg_cmds = Vec::new();
+            for (idx, line) in lines.iter().enumerate() {
+                let Some(img_str) = line.image_path.as_deref() else {
+                    continue;
+                };
+                let p = PathBuf::from(img_str);
+                if !p.exists() {
+                    continue;
+                }
+                if let Some(EditCommand::AddObject { item: sub_item, .. }) = commands.get(idx) {
+                    let asset_id = Uuid::new_v4();
+                    let fname = p
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("bg.png")
+                        .to_string();
+                    session.project.assets.push(AssetRef {
+                        id: asset_id,
+                        name: fname.clone(),
+                        kind: MediaKind::Image,
+                        relative_path: None,
+                        fallback_absolute_path: Some(p),
+                        collected: false,
+                    });
+                    bg_cmds.push(EditCommand::AddObject {
+                        layer_index: 0,
+                        item: TimelineItem::new(
+                            format!("背景: {fname}"),
+                            sub_item.start,
+                            sub_item.duration,
+                            ItemKind::Image { asset_id },
+                        ),
+                    });
+                }
+            }
+            commands.extend(bg_cmds);
+        }
+
+        match session
+            .bus
+            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+        {
+            Ok(()) => {
+                self.status_msg = if self.script_use_tts {
+                    format!(
+                        "台本 {count} 行を配置完了（終了 {:.1}s / TTS連携 {tts_hits}件 / Ctrl+Zで一括Undo）",
+                        end_time.as_seconds()
+                    )
+                } else {
+                    format!(
+                        "台本 {count} 行を自動配置しました（終了 {:.1}s / Ctrl+Zで一括Undo）",
+                        end_time.as_seconds()
+                    )
+                };
+            }
+            Err(e) => self.status_msg = format!("台本配置エラー: {e}"),
+        }
+    }
+
+    fn import_interop_file(
+        &mut self,
+        session: &mut EditorSession,
+        path: &std::path::Path,
+        fmt: &str,
+    ) {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            self.status_msg = format!("ファイル読込失敗: {}", path.display());
+            return;
+        };
+        let Some((scene_w, scene_h, scene_fps, max_layer)) = session
+            .project
+            .active_scene()
+            .map(|s| (s.width, s.height, s.fps, s.layers.len().saturating_sub(1)))
+        else {
+            return;
+        };
+        let target_layer = 1usize.min(max_layer);
+        let result = match fmt {
+            "srt" => {
+                let entries = parse_srt_subtitles(&content);
+                let n = entries.len();
+                subtitle_entries_to_commands(&entries, target_layer, scene_w, scene_h)
+                    .map(|c| (n, c))
+            }
+            "ass" => {
+                let entries = parse_ass_subtitles(&content);
+                let n = entries.len();
+                subtitle_entries_to_commands(&entries, target_layer, scene_w, scene_h)
+                    .map(|c| (n, c))
+            }
+            "exo" => {
+                let parsed = parse_aviutl_exo(&content, scene_fps);
+                let n = parsed.len();
+                if n == 0 {
+                    None
+                } else {
+                    let commands = parsed
+                        .into_iter()
+                        .map(|(l_idx, item)| EditCommand::AddObject {
+                            layer_index: l_idx.min(max_layer),
+                            item,
+                        })
+                        .collect();
+                    Some((
+                        n,
+                        EditCommand::Batch {
+                            label: "import_aviutl_exo".into(),
+                            commands,
+                        },
+                    ))
+                }
+            }
+            _ => None,
+        };
+        let Some((count, cmd)) = result else {
+            self.status_msg = format!(".{fmt} から有効なオブジェクトを検出できませんでした");
+            return;
+        };
+        match session
+            .bus
+            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+        {
+            Ok(()) => {
+                self.status_msg = format!(
+                    "{} を取込完了（{count} 件 / Ctrl+Zで一括Undo）",
+                    path.display()
+                );
+            }
+            Err(e) => self.status_msg = format!("取込エラー: {e}"),
+        }
+    }
+
+    fn export_interop_file(&mut self, session: &EditorSession, fmt: &str) {
+        let out_dir = session
+            .folder
+            .as_ref()
+            .map(|f| f.exports_dir())
+            .unwrap_or_else(|| PathBuf::from("exports"));
+        if let Err(e) = std::fs::create_dir_all(&out_dir) {
+            self.status_msg = format!("出力フォルダ作成失敗: {e}");
+            return;
+        }
+        let stem = crate::render_queue::RenderQueueState::sanitize_stem(&self.interop_export_stem);
+        let payload = match fmt {
+            "srt" => session
+                .project
+                .active_scene()
+                .map(export_srt_subtitles)
+                .unwrap_or_default(),
+            "ass" => session
+                .project
+                .active_scene()
+                .map(export_ass_subtitles)
+                .unwrap_or_default(),
+            "otio" => export_otio_json(&session.project, session.project.active_scene_id)
+                .unwrap_or_default(),
+            _ => return,
+        };
+        let out_path = out_dir.join(format!("{stem}.{fmt}"));
+        match std::fs::write(&out_path, payload) {
+            Ok(()) => {
+                self.status_msg = format!("書出完了: {}", out_path.display());
+            }
+            Err(e) => self.status_msg = format!("書出エラー: {e}"),
         }
     }
 }
