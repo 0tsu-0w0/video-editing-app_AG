@@ -2,9 +2,10 @@ use crate::animation::Keyframe;
 use crate::camera::{Camera3D, Transform3D};
 use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
 use crate::lipsync::CharacterSpriteConfig;
+use crate::preset::ColorPalette;
 use crate::project::{
-    BlendMode, EffectId, EffectNode, ItemId, ItemKind, Layer, Project, Scene, SceneId,
-    TextAnimator, TimelineItem, TrackMatte, Transform2D,
+    AudioEffectNode, BlendMode, EffectId, EffectNode, ItemId, ItemKind, Layer, Project, RgbaColor,
+    Scene, SceneId, TextAnimator, TextStyle, TimelineItem, TrackMatte, Transform2D, TransitionKind,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -144,6 +145,82 @@ pub enum EditCommand {
         effect_id: EffectId,
         params: BTreeMap<String, f32>,
     },
+    RemoveEffect {
+        item_id: ItemId,
+        effect_id: EffectId,
+    },
+    ToggleEffect {
+        item_id: ItemId,
+        effect_id: EffectId,
+        enabled: bool,
+    },
+    ReorderEffect {
+        item_id: ItemId,
+        from_index: usize,
+        to_index: usize,
+    },
+    PasteEffects {
+        item_id: ItemId,
+        effects: Vec<EffectNode>,
+    },
+    SetColorPalette {
+        palette: ColorPalette,
+    },
+    SetItemColor {
+        item_id: ItemId,
+        color: RgbaColor,
+    },
+    SetTextStyle {
+        item_id: ItemId,
+        style: TextStyle,
+    },
+    SetTextFont {
+        item_id: ItemId,
+        font_family: String,
+        font_size: f32,
+    },
+    SetFavoriteFonts {
+        fonts: Vec<String>,
+    },
+    #[allow(clippy::too_many_arguments)]
+    SetLayerSettings {
+        layer_index: usize,
+        name: String,
+        visible: bool,
+        muted: bool,
+        offset_x: f32,
+        offset_y: f32,
+        volume: f32,
+        color_tag: Option<RgbaColor>,
+    },
+    SetPlaybackSpeed {
+        item_id: ItemId,
+        speed: f32,
+        loop_playback: bool,
+    },
+    SetTransition {
+        item_id: ItemId,
+        transition: TransitionKind,
+        softness: f32,
+    },
+    AddAudioEffect {
+        /// `None` の場合はアクティブシーンのマスター音声エフェクトチェーンへ追加
+        item_id: Option<ItemId>,
+        effect: AudioEffectNode,
+    },
+    RemoveAudioEffect {
+        item_id: Option<ItemId>,
+        effect_id: EffectId,
+    },
+    UpdateAudioEffect {
+        item_id: Option<ItemId>,
+        effect_id: EffectId,
+        enabled: bool,
+        params: BTreeMap<String, f32>,
+    },
+    SetTargetLufs {
+        target_lufs: Option<f32>,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -174,6 +251,22 @@ impl EditCommand {
             Self::ImportSubtitles { .. } => "import_subtitles",
             Self::AddEffect { .. } => "add_effect",
             Self::UpdateEffectParams { .. } => "update_effect_params",
+            Self::RemoveEffect { .. } => "remove_effect",
+            Self::ToggleEffect { .. } => "toggle_effect",
+            Self::ReorderEffect { .. } => "reorder_effect",
+            Self::PasteEffects { .. } => "paste_effects",
+            Self::SetColorPalette { .. } => "set_color_palette",
+            Self::SetItemColor { .. } => "set_item_color",
+            Self::SetTextStyle { .. } => "set_text_style",
+            Self::SetTextFont { .. } => "set_text_font",
+            Self::SetFavoriteFonts { .. } => "set_favorite_fonts",
+            Self::SetLayerSettings { .. } => "set_layer_settings",
+            Self::SetPlaybackSpeed { .. } => "set_playback_speed",
+            Self::SetTransition { .. } => "set_transition",
+            Self::AddAudioEffect { .. } => "add_audio_effect",
+            Self::RemoveAudioEffect { .. } => "remove_audio_effect",
+            Self::UpdateAudioEffect { .. } => "update_audio_effect",
+            Self::SetTargetLufs { .. } => "set_target_lufs",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -628,6 +721,8 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 height,
                 fps,
                 camera: Camera3D::default(),
+                master_audio_effects: Vec::new(),
+                target_lufs: None,
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -710,6 +805,204 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             for (k, v) in params {
                 eff.params.insert(k.clone(), *v);
             }
+            Ok(())
+        }
+        EditCommand::RemoveEffect { item_id, effect_id } => {
+            let item = find_item_mut(project, *item_id)?;
+            let prev = item.effect_chain.len();
+            item.effect_chain.retain(|e| e.id != *effect_id);
+            if item.effect_chain.len() == prev {
+                return Err(CommandError::EffectNotFound(*effect_id));
+            }
+            Ok(())
+        }
+        EditCommand::ToggleEffect {
+            item_id,
+            effect_id,
+            enabled,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let eff = item
+                .effect_chain
+                .iter_mut()
+                .find(|e| e.id == *effect_id)
+                .ok_or(CommandError::EffectNotFound(*effect_id))?;
+            eff.enabled = *enabled;
+            Ok(())
+        }
+        EditCommand::ReorderEffect {
+            item_id,
+            from_index,
+            to_index,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let len = item.effect_chain.len();
+            if *from_index < len && *to_index < len && from_index != to_index {
+                let eff = item.effect_chain.remove(*from_index);
+                item.effect_chain.insert(*to_index, eff);
+            }
+            Ok(())
+        }
+        EditCommand::PasteEffects { item_id, effects } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.effect_chain.extend(effects.iter().cloned());
+            Ok(())
+        }
+        EditCommand::SetColorPalette { palette } => {
+            project.color_palette = palette.clone();
+            Ok(())
+        }
+        EditCommand::SetItemColor { item_id, color } => {
+            let item = find_item_mut(project, *item_id)?;
+            match &mut item.kind {
+                ItemKind::Text {
+                    color: existing, ..
+                }
+                | ItemKind::Shape {
+                    color: existing, ..
+                } => {
+                    *existing = *color;
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        EditCommand::SetTextStyle { item_id, style } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.text_style = *style;
+            Ok(())
+        }
+        EditCommand::SetTextFont {
+            item_id,
+            font_family,
+            font_size,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::Text {
+                font_family: ff,
+                font_size: fs,
+                ..
+            } = &mut item.kind
+            {
+                *ff = font_family.clone();
+                *fs = font_size.clamp(6.0, 400.0);
+            }
+            Ok(())
+        }
+        EditCommand::SetFavoriteFonts { fonts } => {
+            project.favorite_fonts = fonts.clone();
+            Ok(())
+        }
+        EditCommand::SetLayerSettings {
+            layer_index,
+            name,
+            visible,
+            muted,
+            offset_x,
+            offset_y,
+            volume,
+            color_tag,
+        } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let layer = scene
+                .layers
+                .get_mut(*layer_index)
+                .ok_or(CommandError::InvalidLayer(*layer_index))?;
+            layer.name = name.clone();
+            layer.visible = *visible;
+            layer.muted = *muted;
+            layer.offset_x = *offset_x;
+            layer.offset_y = *offset_y;
+            layer.volume = volume.clamp(0.0, 4.0);
+            layer.color_tag = *color_tag;
+            Ok(())
+        }
+        EditCommand::SetPlaybackSpeed {
+            item_id,
+            speed,
+            loop_playback,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.playback.speed = speed.clamp(-8.0, 8.0);
+            item.playback.loop_playback = *loop_playback;
+            Ok(())
+        }
+        EditCommand::SetTransition {
+            item_id,
+            transition,
+            softness,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::Transition {
+                transition: t,
+                softness: s,
+                ..
+            } = &mut item.kind
+            {
+                *t = *transition;
+                *s = softness.clamp(0.0, 0.5);
+            }
+            Ok(())
+        }
+        EditCommand::AddAudioEffect { item_id, effect } => {
+            if let Some(id) = item_id {
+                let item = find_item_mut(project, *id)?;
+                item.audio_effects.push(effect.clone());
+            } else {
+                let scene = project
+                    .active_scene_mut()
+                    .ok_or(CommandError::NoActiveScene)?;
+                scene.master_audio_effects.push(effect.clone());
+            }
+            Ok(())
+        }
+        EditCommand::RemoveAudioEffect { item_id, effect_id } => {
+            let chain = if let Some(id) = item_id {
+                &mut find_item_mut(project, *id)?.audio_effects
+            } else {
+                &mut project
+                    .active_scene_mut()
+                    .ok_or(CommandError::NoActiveScene)?
+                    .master_audio_effects
+            };
+            let prev = chain.len();
+            chain.retain(|e| e.id != *effect_id);
+            if chain.len() == prev {
+                return Err(CommandError::EffectNotFound(*effect_id));
+            }
+            Ok(())
+        }
+        EditCommand::UpdateAudioEffect {
+            item_id,
+            effect_id,
+            enabled,
+            params,
+        } => {
+            let chain = if let Some(id) = item_id {
+                &mut find_item_mut(project, *id)?.audio_effects
+            } else {
+                &mut project
+                    .active_scene_mut()
+                    .ok_or(CommandError::NoActiveScene)?
+                    .master_audio_effects
+            };
+            let eff = chain
+                .iter_mut()
+                .find(|e| e.id == *effect_id)
+                .ok_or(CommandError::EffectNotFound(*effect_id))?;
+            eff.enabled = *enabled;
+            for (k, v) in params {
+                eff.params.insert(k.clone(), *v);
+            }
+            Ok(())
+        }
+        EditCommand::SetTargetLufs { target_lufs } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            scene.target_lufs = target_lufs.map(|v| v.clamp(-36.0, -3.0));
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {
@@ -963,5 +1256,100 @@ mod tests {
         assert_eq!(bus.revision(), 6);
         assert!(bus.redo(&mut project));
         assert_eq!(bus.revision(), 7);
+    }
+
+    #[test]
+    fn effect_chain_reorder_paste_and_audio_dsp_commands_are_undoable() {
+        let mut project = Project::new("FxTest", ProjectSettings::default());
+        let mut bus = CommandBus::new();
+        let item = sample_item("Clip");
+        let item_id = item.id;
+        bus.execute(
+            &mut project,
+            EditCommand::AddObject {
+                layer_index: 0,
+                item,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        let eff_a = EffectNode {
+            id: uuid::Uuid::new_v4(),
+            effect_type: "blur".into(),
+            enabled: true,
+            params: BTreeMap::new(),
+        };
+        let eff_b = EffectNode {
+            id: uuid::Uuid::new_v4(),
+            effect_type: "mosaic".into(),
+            enabled: true,
+            params: BTreeMap::new(),
+        };
+        let eff_a_id = eff_a.id;
+        bus.execute(
+            &mut project,
+            EditCommand::PasteEffects {
+                item_id,
+                effects: vec![eff_a, eff_b],
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        bus.execute(
+            &mut project,
+            EditCommand::ReorderEffect {
+                item_id,
+                from_index: 0,
+                to_index: 1,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+        let chain = &project.active_scene().unwrap().layers[0].items[0].effect_chain;
+        assert_eq!(chain[0].effect_type, "mosaic");
+        assert_eq!(chain[1].effect_type, "blur");
+
+        bus.execute(
+            &mut project,
+            EditCommand::ToggleEffect {
+                item_id,
+                effect_id: eff_a_id,
+                enabled: false,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+        assert!(!project.active_scene().unwrap().layers[0].items[0].effect_chain[1].enabled);
+
+        bus.execute(
+            &mut project,
+            EditCommand::RemoveEffect {
+                item_id,
+                effect_id: eff_a_id,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            project.active_scene().unwrap().layers[0].items[0]
+                .effect_chain
+                .len(),
+            1
+        );
+
+        assert!(bus.undo(&mut project));
+        assert_eq!(
+            project.active_scene().unwrap().layers[0].items[0]
+                .effect_chain
+                .len(),
+            2
+        );
     }
 }

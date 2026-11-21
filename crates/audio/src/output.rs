@@ -1,4 +1,5 @@
 use crate::clock::AudioMasterClock;
+use crate::dsp::AtomicAudioMeter;
 use crate::mixer::AudioGraph;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
@@ -14,6 +15,7 @@ pub enum AudioOutputError {
 pub struct AudioEngineState {
     pub graph: RwLock<AudioGraph>,
     pub clock: RwLock<AudioMasterClock>,
+    pub meter: AtomicAudioMeter,
 }
 
 impl AudioEngineState {
@@ -21,6 +23,7 @@ impl AudioEngineState {
         Arc::new(Self {
             graph: RwLock::new(AudioGraph::new(sample_rate)),
             clock: RwLock::new(AudioMasterClock::new(sample_rate)),
+            meter: AtomicAudioMeter::new(),
         })
     }
 }
@@ -28,6 +31,7 @@ impl AudioEngineState {
 #[cfg(any(windows, feature = "cpal-output"))]
 pub mod live {
     use super::*;
+    use crate::dsp::{AudioMeterSnapshot, measure_block_meter};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     pub struct LiveAudioStream {
@@ -63,6 +67,7 @@ pub mod live {
                     };
                     if !playing {
                         data.fill(0.0);
+                        state.meter.store(AudioMeterSnapshot::default());
                         return;
                     }
                     let needed = frames * 2;
@@ -75,6 +80,7 @@ pub mod live {
                     } else {
                         stereo.fill(0.0);
                     }
+                    state.meter.store(measure_block_meter(stereo));
                     for i in 0..frames {
                         for ch in 0..ch_count {
                             data[i * ch_count + ch] = stereo[i * 2 + ch.min(1)];

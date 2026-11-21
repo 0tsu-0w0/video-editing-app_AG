@@ -1,3 +1,4 @@
+use crate::preset::ItemAlias;
 use crate::project::{AssetRef, Project};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -68,6 +69,10 @@ impl ProjectFolder {
         self.root.join("assets")
     }
 
+    pub fn aliases_dir(&self) -> PathBuf {
+        self.root.join("aliases")
+    }
+
     pub fn cache_precomp_dir(&self) -> PathBuf {
         self.root.join("cache").join("precomp")
     }
@@ -87,6 +92,7 @@ impl ProjectFolder {
     pub fn ensure_layout(&self) -> Result<(), FolderError> {
         fs::create_dir_all(&self.root)?;
         fs::create_dir_all(self.assets_dir())?;
+        fs::create_dir_all(self.aliases_dir())?;
         fs::create_dir_all(self.cache_precomp_dir())?;
         fs::create_dir_all(self.cache_waveforms_dir())?;
         fs::create_dir_all(self.cache_proxy_dir())?;
@@ -192,6 +198,65 @@ impl ProjectFolder {
         asset.relative_path = Some(dest_rel);
         asset.collected = true;
         Ok(dest_abs)
+    }
+
+    /// AviUtl2 エイリアスを `aliases/<safe_name>.json` へ保存する（パストラバーサル防止付き）
+    pub fn save_alias(&self, alias: &ItemAlias) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.aliases_dir())?;
+        let file_name = format!("{}.json", sanitize_alias_filename(&alias.name));
+        let path = self.aliases_dir().join(file_name);
+        let json = serde_json::to_string_pretty(alias)?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// `aliases/` 内の保存済みエイリアスを名前順で全件読み込む
+    pub fn load_aliases(&self) -> Vec<ItemAlias> {
+        let dir = self.aliases_dir();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(alias) = serde_json::from_str::<ItemAlias>(&text)
+            {
+                out.push(alias);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    pub fn delete_alias(&self, name: &str) -> Result<(), FolderError> {
+        let file_name = format!("{}.json", sanitize_alias_filename(name));
+        let path = self.aliases_dir().join(file_name);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+}
+
+fn sanitize_alias_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' || !c.is_ascii() {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    let trimmed = cleaned.trim_matches(['_', '.']);
+    if trimmed.is_empty() {
+        "alias".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -325,5 +390,38 @@ mod tests {
         assert_ne!(path_a, path_b);
         assert_eq!(fs::read(&path_a).unwrap(), b"CONTENT_A");
         assert_eq!(fs::read(&path_b).unwrap(), b"CONTENT_B");
+    }
+
+    #[test]
+    fn saves_loads_and_sanitizes_aliases_safely() {
+        use crate::project::{ItemKind, RgbaColor, TextAnimator, TimelineItem};
+        use crate::time::RationalTime;
+
+        let tmp = tempdir().unwrap();
+        let project = Project::new("AliasTest", ProjectSettings::default());
+        let folder = ProjectFolder::init(tmp.path().join("proj"), &project).unwrap();
+
+        let item = TimelineItem::new(
+            "Sample",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Text {
+                content: "テスト".into(),
+                font_family: "sans-serif".into(),
+                font_size: 40.0,
+                color: RgbaColor::WHITE,
+                animator: TextAnimator::default(),
+            },
+        );
+        let alias = ItemAlias::from_item("../evil/重要テロップ", "字幕", &item);
+        let saved_path = folder.save_alias(&alias).unwrap();
+        assert!(saved_path.starts_with(folder.aliases_dir()));
+
+        let loaded = folder.load_aliases();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "../evil/重要テロップ");
+
+        folder.delete_alias(&alias.name).unwrap();
+        assert!(folder.load_aliases().is_empty());
     }
 }

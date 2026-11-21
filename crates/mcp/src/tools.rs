@@ -5,9 +5,12 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use ve_ai::{ApiProvider, CloudUploadGuard, import_tts_file_pair};
 use ve_core::{
-    AssetRef, Camera3D, CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode,
-    FrameRate, Interpolation, ItemKind, Keyframe, LipSyncMode, MediaKind, RationalTime, RgbaColor,
-    ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode, base64_encode,
+    AlignMode, AssetRef, AudioEffectNode, Camera3D, CharacterSpriteConfig, CommandSource,
+    CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind, Keyframe,
+    LipSyncMode, MediaKind, MotionPreset, RationalTime, RgbaColor, ShapeKind, TextAnimator,
+    TimelineItem, TrackMatte, TrackMatteMode, base64_encode, build_align_commands,
+    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_motion_preset_commands,
+    build_replace_text_commands, search_text_items,
 };
 use ve_plugin_api::PluginRegistry;
 use ve_render::{RenderGraph, validate_wgsl};
@@ -301,6 +304,92 @@ pub fn tool_definitions() -> Value {
                 "properties": {
                     "label": { "type": "string" },
                     "commands": { "type": "array" }
+                }
+            }
+        },
+        {
+            "name": "align_items",
+            "description": "選択/指定アイテムの隙間詰め・等間隔整列・左揃え・右揃え・再生ヘッド吸着・参照レイヤーへの長さフィットを1 Undo単位で実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["mode", "ids"],
+                "properties": {
+                    "mode": { "type": "string", "enum": ["close_gaps", "align_left", "align_right", "snap_playhead", "fit_to_layer"] },
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                    "gap_sec": { "type": "number", "default": 0.0 },
+                    "reference_layer_index": { "type": "integer", "default": 3 }
+                }
+            }
+        },
+        {
+            "name": "search_replace_text",
+            "description": "シーン内の全テキストオブジェクトから文字列を検索、または replacement 指定時は一括置換（1 Undo単位）を実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": { "type": "string" },
+                    "replacement": { "type": "string" },
+                    "case_sensitive": { "type": "boolean", "default": false }
+                }
+            }
+        },
+        {
+            "name": "set_layer_settings",
+            "description": "AviUtl2準拠のレイヤー一括設定（座標オフセット・音量・可視・ミュート・色タグ）を更新する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["layer_index"],
+                "properties": {
+                    "layer_index": { "type": "integer" },
+                    "name": { "type": "string" },
+                    "visible": { "type": "boolean" },
+                    "muted": { "type": "boolean" },
+                    "offset_x": { "type": "number" },
+                    "offset_y": { "type": "number" },
+                    "volume": { "type": "number" },
+                    "color_hex": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "manage_effect",
+            "description": "オブジェクトのエフェクトチェーンの並び替え・有効切替・削除を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "action"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "action": { "type": "string", "enum": ["reorder", "remove", "toggle"] },
+                    "effect_id": { "type": "string" },
+                    "from_index": { "type": "integer" },
+                    "to_index": { "type": "integer" },
+                    "enabled": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "add_audio_effect",
+            "description": "クリップまたはシーンマスターへ音声DSPエフェクトを追加、または目標ラウドネス(LUFS)を設定する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "effect_type": { "type": "string" },
+                    "params": { "type": "object" },
+                    "target_lufs": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "apply_motion_preset",
+            "description": "指定オブジェクトへ登場・退場イージングや衝撃シェイクのワンクリックプリセットを適用する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "preset"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "preset": { "type": "string", "enum": ["slide_in_left", "slide_in_bottom", "fade_in_out", "pop_bounce", "zoom_in", "impact_shake"] }
                 }
             }
         }
@@ -1099,6 +1188,280 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 json!({ "content": [{ "type": "text", "text": json!({"executed": count}).to_string() }] }),
             )
         }
+        "align_items" => {
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .ok_or("missing 'mode'")?;
+            let raw_ids = args
+                .get("ids")
+                .and_then(Value::as_array)
+                .ok_or("missing 'ids' array")?;
+            let mut ids = Vec::with_capacity(raw_ids.len());
+            for v in raw_ids {
+                let s = v.as_str().ok_or("non-string id in 'ids'")?;
+                ids.push(Uuid::parse_str(s).map_err(|e| format!("invalid uuid: {e}"))?);
+            }
+            let scene = guard
+                .project
+                .active_scene()
+                .ok_or("no active scene")?
+                .clone();
+            let playhead = guard.playhead;
+            let cmd = match mode {
+                "close_gaps" => {
+                    let gap_sec = finite_clamped(args.get("gap_sec"), 0.0, 0.0, 60.0);
+                    build_close_gaps_commands(&scene, &ids, gap_sec)
+                }
+                "align_left" => build_align_commands(&scene, &ids, AlignMode::Left, playhead),
+                "align_right" => build_align_commands(&scene, &ids, AlignMode::Right, playhead),
+                "snap_playhead" => {
+                    build_align_commands(&scene, &ids, AlignMode::Playhead, playhead)
+                }
+                "fit_to_layer" => {
+                    let ref_layer = args
+                        .get("reference_layer_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(3) as usize;
+                    build_fit_duration_to_layer_commands(&scene, &ids, ref_layer)
+                }
+                other => return Err(format!("unknown align mode: {other}")),
+            };
+            let changed = if let Some(cmd) = cmd {
+                let sess = &mut *guard;
+                sess.bus
+                    .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                    .map_err(|e| e.to_string())?;
+                true
+            } else {
+                false
+            };
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"mode": mode, "changed": changed}).to_string() }] }),
+            )
+        }
+        "search_replace_text" => {
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or("missing 'query'")?;
+            let case_sensitive = args
+                .get("case_sensitive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let scene = guard
+                .project
+                .active_scene()
+                .ok_or("no active scene")?
+                .clone();
+            if let Some(replacement) = args.get("replacement").and_then(Value::as_str) {
+                if let Some((count, cmd)) =
+                    build_replace_text_commands(&scene, query, replacement, case_sensitive)
+                {
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({"replaced": count}).to_string() }] }),
+                    )
+                } else {
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({"replaced": 0}).to_string() }] }),
+                    )
+                }
+            } else {
+                let matches: Vec<Value> = search_text_items(&scene, query, case_sensitive)
+                    .into_iter()
+                    .map(|m| {
+                        json!({
+                            "id": m.item_id,
+                            "layer_index": m.layer_index,
+                            "name": m.item_name,
+                            "start_sec": m.start.as_seconds(),
+                            "content": m.content,
+                        })
+                    })
+                    .collect();
+                let text = serde_json::to_string_pretty(&matches).unwrap_or_default();
+                Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+            }
+        }
+        "set_layer_settings" => {
+            let layer_index = args
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .ok_or("missing 'layer_index'")? as usize;
+            let cur = guard
+                .project
+                .active_scene()
+                .and_then(|s| s.layers.get(layer_index))
+                .ok_or("invalid layer_index")?
+                .clone();
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .unwrap_or(cur.name);
+            let visible = args
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(cur.visible);
+            let muted = args
+                .get("muted")
+                .and_then(Value::as_bool)
+                .unwrap_or(cur.muted);
+            let offset_x = finite_clamped(
+                args.get("offset_x"),
+                f64::from(cur.offset_x),
+                -4096.0,
+                4096.0,
+            ) as f32;
+            let offset_y = finite_clamped(
+                args.get("offset_y"),
+                f64::from(cur.offset_y),
+                -4096.0,
+                4096.0,
+            ) as f32;
+            let volume = finite_clamped(args.get("volume"), f64::from(cur.volume), 0.0, 4.0) as f32;
+            let color_tag = match args.get("color_hex").and_then(Value::as_str) {
+                Some("") => None,
+                Some(hex) => RgbaColor::from_hex(hex).or(cur.color_tag),
+                None => cur.color_tag,
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SetLayerSettings {
+                        layer_index,
+                        name,
+                        visible,
+                        muted,
+                        offset_x,
+                        offset_y,
+                        volume,
+                        color_tag,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"layer_index": layer_index, "updated": true}).to_string() }] }),
+            )
+        }
+        "manage_effect" => {
+            let item_id = parse_uuid(args, "id")?;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            let cmd = match action {
+                "reorder" => EditCommand::ReorderEffect {
+                    item_id,
+                    from_index: args
+                        .get("from_index")
+                        .and_then(Value::as_u64)
+                        .ok_or("missing 'from_index'")? as usize,
+                    to_index: args
+                        .get("to_index")
+                        .and_then(Value::as_u64)
+                        .ok_or("missing 'to_index'")? as usize,
+                },
+                "remove" => EditCommand::RemoveEffect {
+                    item_id,
+                    effect_id: parse_uuid(args, "effect_id")?,
+                },
+                "toggle" => EditCommand::ToggleEffect {
+                    item_id,
+                    effect_id: parse_uuid(args, "effect_id")?,
+                    enabled: args.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                },
+                other => return Err(format!("unknown action: {other}")),
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"ok": true, "action": action}).to_string() }] }),
+            )
+        }
+        "add_audio_effect" => {
+            let item_id = match args.get("id").and_then(Value::as_str) {
+                Some(s) if !s.is_empty() => {
+                    Some(Uuid::parse_str(s).map_err(|e| format!("invalid uuid: {e}"))?)
+                }
+                _ => None,
+            };
+            let mut cmds = Vec::new();
+            if let Some(eff_type) = args.get("effect_type").and_then(Value::as_str) {
+                let mut effect = AudioEffectNode::with_defaults(eff_type);
+                for (k, v) in parse_params_map(args.get("params")) {
+                    effect.params.insert(k, v);
+                }
+                cmds.push(EditCommand::AddAudioEffect { item_id, effect });
+            }
+            if let Some(lufs) = args.get("target_lufs").and_then(Value::as_f64)
+                && lufs.is_finite()
+            {
+                cmds.push(EditCommand::SetTargetLufs {
+                    target_lufs: Some(lufs.clamp(-36.0, -3.0) as f32),
+                });
+            }
+            if cmds.is_empty() {
+                return Err("provide 'effect_type' or 'target_lufs'".into());
+            }
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::Batch {
+                        label: "mcp_audio_effect".into(),
+                        commands: cmds,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": json!({"ok": true}).to_string() }] }))
+        }
+        "apply_motion_preset" => {
+            let item_id = parse_uuid(args, "id")?;
+            let preset_name = args
+                .get("preset")
+                .and_then(Value::as_str)
+                .ok_or("missing 'preset'")?;
+            let preset = match preset_name {
+                "slide_in_left" => MotionPreset::SlideInLeft,
+                "slide_in_bottom" => MotionPreset::SlideInBottom,
+                "fade_in_out" => MotionPreset::FadeInOut,
+                "pop_bounce" => MotionPreset::PopBounce,
+                "zoom_in" => MotionPreset::ZoomIn,
+                "impact_shake" => MotionPreset::ImpactShake,
+                other => return Err(format!("unknown preset: {other}")),
+            };
+            let item = guard
+                .project
+                .active_scene()
+                .and_then(|s| {
+                    s.layers
+                        .iter()
+                        .flat_map(|l| l.items.iter())
+                        .find(|i| i.id == item_id)
+                        .cloned()
+                })
+                .ok_or("item not found")?;
+            let cmd = build_motion_preset_commands(&item, preset);
+            let sess = &mut *guard;
+            sess.bus
+                .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"applied": preset_name}).to_string() }] }),
+            )
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -1113,4 +1476,101 @@ fn encode_rgba8_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, 
         writer.write_image_data(rgba).map_err(|e| e.to_string())?;
     }
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::EditorSession;
+    use std::sync::{Arc, Mutex};
+    use ve_core::{Project, ProjectSettings};
+
+    #[test]
+    fn v03_mcp_tools_align_search_replace_layer_audio_and_preset() {
+        let mut proj = Project::new("McpV03", ProjectSettings::default());
+        let t1 = TimelineItem::new(
+            "Sub1",
+            RationalTime::from_seconds(0.0),
+            RationalTime::from_seconds(1.5),
+            ItemKind::Text {
+                content: "誤字テスト1".into(),
+                font_family: "sans-serif".into(),
+                font_size: 40.0,
+                color: RgbaColor::WHITE,
+                animator: TextAnimator::default(),
+            },
+        );
+        let t2 = TimelineItem::new(
+            "Sub2",
+            RationalTime::from_seconds(5.0),
+            RationalTime::from_seconds(1.5),
+            ItemKind::Text {
+                content: "誤字テスト2".into(),
+                font_family: "sans-serif".into(),
+                font_size: 40.0,
+                color: RgbaColor::WHITE,
+                animator: TextAnimator::default(),
+            },
+        );
+        let (id1, id2) = (t1.id, t2.id);
+        proj.active_scene_mut().unwrap().layers[1]
+            .items
+            .extend([t1, t2]);
+        let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+        call_tool(
+            &session,
+            "align_items",
+            &json!({"mode": "close_gaps", "ids": [id1.to_string(), id2.to_string()], "gap_sec": 0.5}),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            assert!(
+                (g.project.active_scene().unwrap().layers[1].items[1]
+                    .start
+                    .as_seconds()
+                    - 2.0)
+                    .abs()
+                    < 1e-6
+            );
+        }
+
+        call_tool(
+            &session,
+            "search_replace_text",
+            &json!({"query": "誤字", "replacement": "修正済み"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "set_layer_settings",
+            &json!({"layer_index": 1, "offset_x": 20.0, "volume": 0.8, "color_hex": "#33aa55"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "add_audio_effect",
+            &json!({"effect_type": "limiter", "target_lufs": -14.0}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "apply_motion_preset",
+            &json!({"id": id1.to_string(), "preset": "slide_in_left"}),
+        )
+        .unwrap();
+
+        let g = session.lock().unwrap();
+        let scene = g.project.active_scene().unwrap();
+        assert_eq!(scene.target_lufs, Some(-14.0));
+        assert_eq!(scene.master_audio_effects.len(), 1);
+        assert!((scene.layers[1].offset_x - 20.0).abs() < 1e-4);
+        assert!(scene.layers[1].items[0].keyframes.contains_key("x"));
+        if let ItemKind::Text { content, .. } = &scene.layers[1].items[0].kind {
+            assert_eq!(content, "修正済みテスト1");
+        } else {
+            panic!("expected text");
+        }
+    }
 }

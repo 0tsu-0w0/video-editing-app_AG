@@ -1,7 +1,7 @@
 # 今後の機能追加ロードマップ（Future Features Backlog）
 
-> 作成日: 2026-11-20  
-> Phase 1〜4 完了および最適化・セキュリティ強化（PR #5）、ならびに最優先機能 #1（実動画・画像描画／プロキシ／D&D／プロジェクト開閉・復旧）および #2（バックグラウンド非同期書き出し／Audio Graph ミックス／HWエンコード）実装後に着手予定の機能候補を整理したドキュメントです。
+> 更新日: 2026-11-20  
+> Phase 1〜4・最適化/セキュリティ強化（PR #5）・実メディア描画＆非同期書き出し（PR #6）に続き、**v0.3（AviUtl2 本体実用機能 A-1〜A-6 ＋ 人気プラグイン相当機能 B-1〜B-7 ＋ #4 字幕リッチ装飾）**を実装完了。以下に未着手の将来候補を保持しています。
 
 ---
 
@@ -21,21 +21,9 @@
 
 ---
 
-## 4. 字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景）＆ プリセット管理
+## 4. ~~字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景）＆ プリセット管理~~ ✅ 実装済み（v0.3）
 
-### 目的
-YouTube 解説動画・ショート動画で標準的に使われる視認性の高いテロップ表現を標準搭載し、スタイルやエフェクトチェーンの再利用を容易にする。
-
-### 設計メモ・既存フック
-- **既存資産**:
-  - `ve-core`: `ItemKind::Text` / `TextAnimator`（`crates/core/src/project.rs`）
-  - `ve-render`: `TextRenderer::rasterize_into`（`crates/render/src/text.rs`）
-- **実装イメージ**:
-  - `TextStyle` 構造体を `ItemKind::Text` に `#[serde(default)]` で追加（既存 `project.json` 後方互換維持）：
-    - `outline_width: f32`, `outline_color: RgbaColor`（Linear Premultiplied 空間で膨張カーネル描画し黒フリンジを回避）
-    - `shadow_offset: [f32; 2]`, `shadow_blur: f32`, `shadow_color: RgbaColor`
-    - `background_padding: [f32; 2]`, `background_radius: f32`, `background_color: RgbaColor`（座布団背景）
-  - プリセット保存: `presets/*.json` として字幕スタイルおよび `Vec<EffectNode>`（エフェクトチェーン）をエクスポート／インポート可能にし、インスペクタからワンクリック適用。
+- `TextStyle`（縁取り・ドロップシャドウ・角丸座布団背景）、AviUtl2 インライン制御文字（`<#RRGGBB>`, `<@パレット名>`, `<s64>`, `<fFont>`, `<b1>`, `</>`）、名前付きカラーパレット、および `aliases/*.json` エイリアス棚として実装完了。
 
 ---
 
