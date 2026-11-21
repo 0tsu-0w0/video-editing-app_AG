@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use ve_core::RationalTime;
-use ve_media::AudioBuffer;
+use ve_core::{AssetId, AssetResolution, ItemKind, Project, ProjectFolder, RationalTime, SceneId};
+use ve_media::{AudioBuffer, FfmpegCli, decode_audio_file};
 
 #[derive(Debug, Clone)]
 pub struct AudioClip {
@@ -33,6 +35,104 @@ impl AudioGraph {
 
     pub fn add_clip(&mut self, clip: AudioClip) {
         self.clips.push(clip);
+    }
+
+    /// プロジェクトの指定シーンから Audio / Video / Precomp クリップを収集し、
+    /// プレビュー再生と動画書き出しで完全に一致する `AudioGraph` を構築する。
+    pub fn from_project_scene(
+        project: &Project,
+        scene_id: SceneId,
+        folder: Option<&ProjectFolder>,
+        sample_rate: u32,
+    ) -> Self {
+        let mut graph = Self::new(sample_rate.max(8_000));
+        let mut decoded_cache: HashMap<AssetId, Option<Arc<AudioBuffer>>> = HashMap::new();
+        let ffmpeg = FfmpegCli::default();
+        graph.collect_scene_clips(
+            project,
+            scene_id,
+            folder,
+            RationalTime::ZERO,
+            1.0,
+            0,
+            &ffmpeg,
+            &mut decoded_cache,
+        );
+        graph
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collect_scene_clips(
+        &mut self,
+        project: &Project,
+        scene_id: SceneId,
+        folder: Option<&ProjectFolder>,
+        time_offset: RationalTime,
+        gain_mul: f32,
+        depth: u8,
+        ffmpeg: &FfmpegCli,
+        decoded_cache: &mut HashMap<AssetId, Option<Arc<AudioBuffer>>>,
+    ) {
+        if depth >= 4 {
+            return;
+        }
+        let Some(scene) = project.scene(scene_id) else {
+            return;
+        };
+        for layer in &scene.layers {
+            if layer.muted {
+                continue;
+            }
+            for item in &layer.items {
+                match &item.kind {
+                    ItemKind::Audio {
+                        asset_id,
+                        source_offset,
+                        volume,
+                    }
+                    | ItemKind::Video {
+                        asset_id,
+                        source_offset,
+                        volume,
+                    } => {
+                        let gain = (*volume).max(0.0) * gain_mul;
+                        if gain <= 0.0 {
+                            continue;
+                        }
+                        let buf_opt = decoded_cache.entry(*asset_id).or_insert_with(|| {
+                            let path = resolve_project_asset_path(project, *asset_id, folder)?;
+                            decode_media_audio_with_fallback(&path, self.sample_rate, ffmpeg)
+                                .map(Arc::new)
+                        });
+                        if let Some(buffer) = buf_opt.as_ref() {
+                            self.clips.push(AudioClip {
+                                timeline_start: time_offset + item.start,
+                                duration: item.duration,
+                                source_offset: *source_offset,
+                                gain,
+                                muted: false,
+                                buffer: Arc::clone(buffer),
+                            });
+                        }
+                    }
+                    ItemKind::Precomp {
+                        scene_id: nested_id,
+                    } => {
+                        self.collect_scene_clips(
+                            project,
+                            *nested_id,
+                            folder,
+                            time_offset + item.start,
+                            gain_mul,
+                            depth + 1,
+                            ffmpeg,
+                            decoded_cache,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// 指定サンプル位置 `start_sample` から `frame_count` フレーム分のステレオPCMをレンダリングする
@@ -142,9 +242,59 @@ impl AudioGraph {
     }
 }
 
+fn resolve_project_asset_path(
+    project: &Project,
+    asset_id: AssetId,
+    folder: Option<&ProjectFolder>,
+) -> Option<PathBuf> {
+    let asset = project.asset(asset_id)?;
+    if let Some(f) = folder {
+        match f.resolve_asset(asset) {
+            AssetResolution::Found(p) => Some(p),
+            AssetResolution::Offline => None,
+        }
+    } else {
+        asset
+            .fallback_absolute_path
+            .as_ref()
+            .filter(|p| p.exists())
+            .cloned()
+    }
+}
+
+fn decode_media_audio_with_fallback(
+    path: &std::path::Path,
+    target_sample_rate: u32,
+    ffmpeg: &FfmpegCli,
+) -> Option<AudioBuffer> {
+    if let Ok(buf) = decode_audio_file(path)
+        && !buf.samples.is_empty()
+    {
+        return Some(buf);
+    }
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let seq = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_wav =
+        std::env::temp_dir().join(format!("ve_audio_extract_{}_{seq}.wav", std::process::id()));
+    let decoded = if ffmpeg
+        .extract_audio_wav(path, &tmp_wav, target_sample_rate)
+        .is_ok()
+    {
+        decode_audio_file(&tmp_wav).ok()
+    } else {
+        None
+    };
+    let _ = std::fs::remove_file(&tmp_wav);
+    decoded.filter(|b| !b.samples.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+    use ve_core::{AssetRef, MediaKind, ProjectSettings, TimelineItem};
+    use ve_media::write_wav_pcm16;
 
     #[test]
     fn resamples_44100_into_48000_and_mixes_tracks() {
@@ -184,5 +334,40 @@ mod tests {
         for &s in &rendered[10..100] {
             assert!((s - 0.55).abs() < 1e-4, "expected ~0.55, got {s}");
         }
+    }
+
+    #[test]
+    fn builds_audio_graph_from_project_scene_clips() {
+        let tmp = tempdir().unwrap();
+        let wav_path = tmp.path().join("bgm.wav");
+        write_wav_pcm16(&wav_path, &vec![0.4f32; 48_000], 48_000, 1).unwrap();
+
+        let mut project = Project::new("AudioScene", ProjectSettings::default());
+        let asset_id = Uuid::new_v4();
+        project.assets.push(AssetRef {
+            id: asset_id,
+            name: "bgm.wav".into(),
+            kind: MediaKind::Audio,
+            relative_path: None,
+            fallback_absolute_path: Some(wav_path),
+            collected: false,
+        });
+        project.active_scene_mut().unwrap().layers[3]
+            .items
+            .push(TimelineItem::new(
+                "BGM",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(0.5),
+                ItemKind::Audio {
+                    asset_id,
+                    source_offset: RationalTime::ZERO,
+                    volume: 0.5,
+                },
+            ));
+
+        let graph = AudioGraph::from_project_scene(&project, project.active_scene_id, None, 48_000);
+        assert_eq!(graph.clips.len(), 1);
+        let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(0.1));
+        assert!((pcm[20] - 0.2).abs() < 0.01, "got {}", pcm[20]);
     }
 }

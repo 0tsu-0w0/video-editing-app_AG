@@ -8,11 +8,12 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{
-    BlendMode, CharacterSpriteConfig, EffectNode, FilterTargetScope, ItemKind, LipSyncMode,
-    MouthShape, PrecompCacheManager, Project, RationalTime, RgbaColor, Scene, SceneId, ShapeKind,
-    TimelineItem, Transform2D, content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png,
-    rms_to_mouth,
+    AssetResolution, BlendMode, CharacterSpriteConfig, EffectNode, FilterTargetScope, ItemKind,
+    LipSyncMode, MouthShape, PrecompCacheManager, Project, ProjectFolder, RationalTime, RgbaColor,
+    Scene, SceneId, ShapeKind, TimelineItem, Transform2D, content_hash_hex, evaluate_vowel_mouth,
+    resolve_mouth_png, rms_to_mouth,
 };
+use ve_media::FfmpegCli;
 use ve_plugin_api::PluginRegistry;
 
 /// 組み込み WGSL エフェクトチェーンシェーダーソース
@@ -22,9 +23,12 @@ pub const EFFECTS_WGSL_SOURCE: &str = include_str!("shaders/effects.wgsl");
 pub const MAX_MEM_PRECOMP_FRAMES: usize = 32;
 const MAX_PNG_CACHE_ENTRIES: usize = 64;
 const MAX_PSD_CACHE_ENTRIES: usize = 16;
+const MAX_VIDEO_FRAME_CACHE: usize = 48;
+
+type VideoFrameCacheKey = (Uuid, i64, u32, u32, bool);
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
-/// 1. 各オブジェクトのキーフレーム評価・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
+/// 1. 各オブジェクトのキーフレーム評価・実動画/画像デコード・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
 /// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）適用
 /// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）
 pub struct RenderGraph {
@@ -32,6 +36,13 @@ pub struct RenderGraph {
     mem_precomp_cache: HashMap<String, (u64, LinearImage)>,
     mem_cache_tick: u64,
     disk_precomp_cache: Option<PrecompCacheManager>,
+    project_folder: Option<ProjectFolder>,
+    ffmpeg: FfmpegCli,
+    /// true のときプレビュー用に軽量プロキシ (`cache/proxy/`) を優先使用（書き出し時は false で原本参照）
+    pub use_proxies: bool,
+    proxy_paths: HashMap<Uuid, PathBuf>,
+    video_frame_cache: HashMap<VideoFrameCacheKey, (u64, LinearImage)>,
+    video_frame_tick: u64,
     png_cache: HashMap<PathBuf, LinearImage>,
     psd_cache: HashMap<PathBuf, PsdCharacterAsset>,
     /// 音声アセットIDごとの事前解析波形（立ち絵の音量連動口パク参照用）
@@ -57,6 +68,12 @@ impl RenderGraph {
             mem_precomp_cache: HashMap::new(),
             mem_cache_tick: 0,
             disk_precomp_cache: None,
+            project_folder: None,
+            ffmpeg: FfmpegCli::default(),
+            use_proxies: true,
+            proxy_paths: HashMap::new(),
+            video_frame_cache: HashMap::new(),
+            video_frame_tick: 0,
             png_cache: HashMap::new(),
             psd_cache: HashMap::new(),
             asset_waveforms: HashMap::new(),
@@ -67,8 +84,35 @@ impl RenderGraph {
         }
     }
 
+    pub fn set_project_folder(&mut self, folder: Option<ProjectFolder>) {
+        self.project_folder = folder;
+    }
+
+    pub fn register_proxy(&mut self, asset_id: Uuid, proxy_path: PathBuf) {
+        self.proxy_paths.insert(asset_id, proxy_path);
+        // プロキシ切替時に古いデコード済みフレームを破棄
+        self.video_frame_cache
+            .retain(|(aid, _, _, _, _), _| *aid != asset_id);
+    }
+
+    pub fn proxy_count(&self) -> usize {
+        self.proxy_paths.len()
+    }
+
+    pub fn clear_media_caches(&mut self) {
+        self.mem_precomp_cache.clear();
+        self.video_frame_cache.clear();
+        self.png_cache.clear();
+        self.psd_cache.clear();
+        self.proxy_paths.clear();
+    }
+
     pub fn mem_precomp_cache_len(&self) -> usize {
         self.mem_precomp_cache.len()
+    }
+
+    pub fn video_frame_cache_len(&self) -> usize {
+        self.video_frame_cache.len()
     }
 
     fn insert_mem_precomp(&mut self, key: String, img: LinearImage) {
@@ -85,6 +129,51 @@ impl RenderGraph {
         self.mem_cache_tick = self.mem_cache_tick.wrapping_add(1);
         self.mem_precomp_cache
             .insert(key, (self.mem_cache_tick, img));
+    }
+
+    fn insert_video_frame(&mut self, key: VideoFrameCacheKey, img: LinearImage) {
+        if !self.video_frame_cache.contains_key(&key)
+            && self.video_frame_cache.len() >= MAX_VIDEO_FRAME_CACHE
+            && let Some(oldest_key) = self
+                .video_frame_cache
+                .iter()
+                .min_by_key(|(_, (tick, _))| *tick)
+                .map(|(k, _)| *k)
+        {
+            self.video_frame_cache.remove(&oldest_key);
+        }
+        self.video_frame_tick = self.video_frame_tick.wrapping_add(1);
+        self.video_frame_cache
+            .insert(key, (self.video_frame_tick, img));
+    }
+
+    fn resolve_asset_path(
+        &self,
+        project: &Project,
+        asset_id: Uuid,
+        allow_proxy: bool,
+    ) -> Option<(PathBuf, bool)> {
+        if allow_proxy
+            && self.use_proxies
+            && let Some(proxy) = self.proxy_paths.get(&asset_id)
+            && proxy.exists()
+        {
+            return Some((proxy.clone(), true));
+        }
+        let asset = project.asset(asset_id)?;
+        let resolved = if let Some(folder) = &self.project_folder {
+            match folder.resolve_asset(asset) {
+                AssetResolution::Found(p) => Some(p),
+                AssetResolution::Offline => None,
+            }
+        } else {
+            asset
+                .fallback_absolute_path
+                .as_ref()
+                .filter(|p| p.exists())
+                .cloned()
+        };
+        resolved.map(|p| (p, false))
     }
 
     pub fn with_disk_cache(mut self, manager: PrecompCacheManager) -> Self {
@@ -476,9 +565,68 @@ impl RenderGraph {
                 self.insert_mem_precomp(cache_key, rendered.clone());
                 Some(rendered)
             }
-            ItemKind::Video { .. }
-            | ItemKind::Audio { .. }
-            | ItemKind::Image { .. }
+            ItemKind::Image { asset_id } => {
+                let proj = project?;
+                let (path, _) = self.resolve_asset_path(proj, *asset_id, false)?;
+                if !self.png_cache.contains_key(&path) {
+                    let loaded = load_png_linear(&path).or_else(|| {
+                        let (w, h, rgba) = self
+                            .ffmpeg
+                            .decode_image_rgba8(&path, canvas_w.max(1920), canvas_h.max(1080))
+                            .ok()?;
+                        Some(LinearImage::from_rgba8_srgb(w, h, &rgba))
+                    });
+                    if let Some(img) = loaded {
+                        if self.png_cache.len() >= MAX_PNG_CACHE_ENTRIES {
+                            self.png_cache.clear();
+                        }
+                        self.png_cache.insert(path.clone(), img);
+                    }
+                }
+                let cached = self.png_cache.get(&path)?;
+                let fit = (canvas_w as f32 / cached.width.max(1) as f32)
+                    .min(canvas_h as f32 / cached.height.max(1) as f32)
+                    .min(1.0);
+                let sw = ((cached.width as f32) * fit * tf.scale_x.max(0.01))
+                    .round()
+                    .clamp(1.0, (canvas_w * 4) as f32) as u32;
+                let sh = ((cached.height as f32) * fit * tf.scale_y.max(0.01))
+                    .round()
+                    .clamp(1.0, (canvas_h * 4) as f32) as u32;
+                Some(scale_linear_image(cached, sw, sh))
+            }
+            ItemKind::Video {
+                asset_id,
+                source_offset,
+                ..
+            } => {
+                let proj = project?;
+                let (path, is_proxy) = self.resolve_asset_path(proj, *asset_id, true)?;
+                let src_time = (local_time + *source_offset).max(RationalTime::ZERO);
+                let frame_idx = src_time.to_frame_floor(scene.fps).max(0);
+                let tw = ((canvas_w as f32) * tf.scale_x.max(0.01))
+                    .round()
+                    .clamp(1.0, 4096.0) as u32;
+                let th = ((canvas_h as f32) * tf.scale_y.max(0.01))
+                    .round()
+                    .clamp(1.0, 4096.0) as u32;
+                let key = (*asset_id, frame_idx, tw, th, is_proxy);
+
+                if let Some((tick, cached)) = self.video_frame_cache.get_mut(&key) {
+                    self.video_frame_tick = self.video_frame_tick.wrapping_add(1);
+                    *tick = self.video_frame_tick;
+                    return Some(cached.clone());
+                }
+
+                let rgba = self
+                    .ffmpeg
+                    .decode_frame_rgba8(&path, src_time.as_seconds(), tw, th)
+                    .ok()?;
+                let decoded = LinearImage::from_rgba8_srgb(tw, th, &rgba);
+                self.insert_video_frame(key, decoded.clone());
+                Some(decoded)
+            }
+            ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }
             | ItemKind::GroupControl { .. } => None,
         }
@@ -1271,5 +1419,111 @@ mod tests {
             );
         }
         assert_eq!(graph.mem_precomp_cache_len(), MAX_MEM_PRECOMP_FRAMES);
+    }
+
+    #[test]
+    fn renders_image_and_video_assets_with_proxy_and_frame_cache() {
+        use ve_core::{AssetRef, MediaKind};
+        use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
+
+        let tmp = tempdir().unwrap();
+        let png_path = tmp.path().join("overlay_red.png");
+        write_solid_png(&png_path, [255, 0, 0, 255]);
+
+        let cli = FfmpegCli::default();
+        let write_solid_mp4 = |path: &std::path::Path, rgba: [u8; 4]| {
+            let cfg = ExportConfig {
+                width: 32,
+                height: 32,
+                fps: FrameRate::FPS_30,
+                format: ExportFormat::Mp4H264,
+                crf: 18,
+                encoder: VideoEncoder::Software,
+            };
+            let mut session = cli.start_export(path, &cfg, None).unwrap();
+            let frame: Vec<u8> = rgba.into_iter().cycle().take(32 * 32 * 4).collect();
+            for _ in 0..10 {
+                session.write_rgba8_frame(&frame).unwrap();
+            }
+            session.finish().unwrap();
+        };
+
+        let orig_mp4 = tmp.path().join("orig_blue.mp4");
+        let proxy_mp4 = tmp.path().join("proxy_green.mp4");
+        write_solid_mp4(&orig_mp4, [0, 0, 255, 255]);
+        write_solid_mp4(&proxy_mp4, [0, 255, 0, 255]);
+
+        let settings = ProjectSettings {
+            width: 32,
+            height: 32,
+            fps: FrameRate::FPS_30,
+            ..Default::default()
+        };
+        let mut project = Project::new("MediaRender", settings);
+        let vid_id = Uuid::new_v4();
+        let img_id = Uuid::new_v4();
+        project.assets.push(AssetRef {
+            id: vid_id,
+            name: "orig_blue.mp4".into(),
+            kind: MediaKind::Video,
+            relative_path: None,
+            fallback_absolute_path: Some(orig_mp4),
+            collected: false,
+        });
+        project.assets.push(AssetRef {
+            id: img_id,
+            name: "overlay_red.png".into(),
+            kind: MediaKind::Image,
+            relative_path: None,
+            fallback_absolute_path: Some(png_path),
+            collected: false,
+        });
+
+        // Layer 0: フルサイズ動画、Layer 1: 左上 8x8 の赤い画像
+        project.active_scene_mut().unwrap().layers[0]
+            .items
+            .push(TimelineItem::new(
+                "VideoClip",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(1.0),
+                ItemKind::Video {
+                    asset_id: vid_id,
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            ));
+        project.active_scene_mut().unwrap().layers[1]
+            .items
+            .push(TimelineItem::new(
+                "ImageClip",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(1.0),
+                ItemKind::Image { asset_id: img_id },
+            ));
+
+        let main_id = project.active_scene_id;
+        let mut graph = RenderGraph::new();
+
+        // 1) 原本レンダリング: 左上(2,2)は赤いPNG、右下(24,24)は青い動画
+        let f1 = graph
+            .render_project_scene(&project, main_id, RationalTime::from_seconds(0.1), false)
+            .unwrap();
+        assert!(f1.pixels[2 * 32 + 2].r > 0.8);
+        assert!(f1.pixels[24 * 32 + 24].b > 0.6);
+        assert_eq!(graph.video_frame_cache_len(), 1);
+
+        // 2) プロキシ登録＋プレビューモード (use_proxies = true) -> 緑のプロキシから描画
+        graph.register_proxy(vid_id, proxy_mp4);
+        let f_proxy = graph
+            .render_project_scene(&project, main_id, RationalTime::from_seconds(0.1), false)
+            .unwrap();
+        assert!(f_proxy.pixels[24 * 32 + 24].g > 0.6);
+
+        // 3) 書き出しモード (use_proxies = false) -> 青い原本へ自動切替
+        graph.use_proxies = false;
+        let f_export = graph
+            .render_project_scene(&project, main_id, RationalTime::from_seconds(0.1), false)
+            .unwrap();
+        assert!(f_export.pixels[24 * 32 + 24].b > 0.6);
     }
 }

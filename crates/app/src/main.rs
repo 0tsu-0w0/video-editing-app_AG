@@ -1,27 +1,30 @@
 mod audio_ai_panel;
+mod exporter;
 mod graph_editor;
 mod ime_poc;
+mod project_io;
 mod timeline;
 
 use audio_ai_panel::AudioAi3DPanel;
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
+use exporter::{ExportJobHandle, ExportJobRequest, ExportProgressSnapshot};
 use graph_editor::GraphEditorState;
 use ime_poc::ImePocPanel;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use timeline::TimelineState;
 use uuid::Uuid;
-use ve_audio::{AudioEngineState, WaveformPeaks};
+use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
-    AssetResolution, BlendMode, CommandSource, CubicBezier, EditCommand, EffectNode,
-    FilterTargetScope, FrameRate, Interpolation, ItemKind, Keyframe, Project, ProjectSettings,
-    RationalTime, RgbaColor, ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode,
-    Transform2D,
+    AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand, EffectNode,
+    FilterTargetScope, FrameRate, HistoryEntry, Interpolation, ItemKind, Keyframe, Project,
+    ProjectSettings, RationalTime, RgbaColor, ShapeKind, TextAnimator, TimelineItem, TrackMatte,
+    TrackMatteMode, Transform2D,
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
-use ve_media::{ExportConfig, ExportFormat, FfmpegCli};
+use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
 use ve_render::{RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, register_shader_dir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +87,15 @@ struct EditorApp {
     relink_inputs: BTreeMap<Uuid, String>,
     custom_wgsl_path_input: String,
     custom_wgsl_msg: String,
+    project_dir_input: String,
+    project_status: String,
+    pending_recovery: Vec<HistoryEntry>,
+    proxy_tx: mpsc::Sender<(Uuid, PathBuf)>,
+    proxy_rx: mpsc::Receiver<(Uuid, PathBuf)>,
     export_format: ExportFormat,
+    export_encoder: VideoEncoder,
+    export_job: Option<ExportJobHandle>,
+    last_export_snapshot: Option<ExportProgressSnapshot>,
     export_status: String,
     preview_scale: u32,
     last_rendered_key: Option<(u64, i64, u32, usize, Uuid)>,
@@ -210,6 +221,8 @@ impl EditorApp {
             std::path::Path::new("shaders"),
         );
 
+        let (proxy_tx, proxy_rx) = mpsc::channel();
+
         Self {
             workspace_mode,
             session,
@@ -229,7 +242,15 @@ impl EditorApp {
             relink_inputs: BTreeMap::new(),
             custom_wgsl_path_input: "shaders/custom_chromatic_aberration.wgsl".to_string(),
             custom_wgsl_msg: format!("監視中 WGSL: {loaded_shaders} 件"),
+            project_dir_input: "./MyVideoProject".to_string(),
+            project_status: "未保存プロジェクト（D&Dで素材読込可）".to_string(),
+            pending_recovery: Vec::new(),
+            proxy_tx,
+            proxy_rx,
             export_format: ExportFormat::Mp4H264,
+            export_encoder: VideoEncoder::Auto,
+            export_job: None,
+            last_export_snapshot: None,
             export_status: "待機中".to_string(),
             preview_scale: 2,
             last_rendered_key: None,
@@ -245,54 +266,138 @@ impl EditorApp {
         }
     }
 
-    fn export_current_scene(&mut self) {
-        let mut proj_clone = {
+    /// 再生開始前にタイムライン上の Audio / Video クリップから AudioGraph を最新同期する
+    fn sync_live_audio_graph(&self) {
+        let (project, scene_id, folder) = {
+            let sess = self.session.lock().unwrap();
+            (
+                sess.project.clone(),
+                sess.project.active_scene_id,
+                sess.folder.clone(),
+            )
+        };
+        let sr = project.settings.audio_sample_rate.max(8_000);
+        let built = AudioGraph::from_project_scene(&project, scene_id, folder.as_ref(), sr);
+        if let Ok(mut graph) = self.audio_state.graph.write() {
+            *graph = built;
+        }
+    }
+
+    fn handle_new_project_folder(&mut self) {
+        let dir = PathBuf::from(self.project_dir_input.trim());
+        if dir.as_os_str().is_empty() {
+            self.project_status = "プロジェクトフォルダパスを入力してください".into();
+            return;
+        }
+        let mut sess = self.session.lock().unwrap();
+        match project_io::create_new_project_folder(&dir, &sess.project) {
+            Ok(folder) => {
+                sess.bus = CommandBus::with_folder(folder.clone());
+                sess.folder = Some(folder.clone());
+                self.render_graph.set_project_folder(Some(folder.clone()));
+                self.pending_recovery.clear();
+                self.preview_dirty = true;
+                self.project_status = format!("新規プロジェクト作成: {}", folder.root().display());
+            }
+            Err(e) => self.project_status = format!("作成失敗: {e}"),
+        }
+    }
+
+    fn handle_open_project_folder(&mut self) {
+        let dir = PathBuf::from(self.project_dir_input.trim());
+        match project_io::open_project_folder(&dir) {
+            Ok(opened) => {
+                let mut sess = self.session.lock().unwrap();
+                sess.project = opened.project;
+                sess.bus = CommandBus::with_folder(opened.folder.clone());
+                sess.folder = Some(opened.folder.clone());
+                sess.selected_items.clear();
+                sess.playhead = RationalTime::ZERO;
+                self.render_graph.clear_media_caches();
+                self.render_graph.set_project_folder(Some(opened.folder));
+                self.pending_recovery = opened.pending_recovery;
+                self.preview_dirty = true;
+                self.project_status = if self.pending_recovery.is_empty() {
+                    format!("読込完了: {}", dir.display())
+                } else {
+                    format!(
+                        "読込完了（未反映履歴 {} 件あり — 上部バナーから復旧可能）",
+                        self.pending_recovery.len()
+                    )
+                };
+            }
+            Err(e) => self.project_status = format!("読込失敗: {e}"),
+        }
+    }
+
+    fn handle_save_project(&mut self) {
+        let sess = self.session.lock().unwrap();
+        match project_io::save_project_snapshot(&sess) {
+            Ok(path) => {
+                self.pending_recovery.clear();
+                self.project_status = format!("保存完了: {}", path.display());
+            }
+            Err(e) => self.project_status = format!("保存失敗: {e}"),
+        }
+    }
+
+    fn handle_collect_assets(&mut self) {
+        let mut sess = self.session.lock().unwrap();
+        match project_io::collect_project_assets(&mut sess) {
+            Ok((ok, offline)) => {
+                self.preview_dirty = true;
+                self.project_status =
+                    format!("プロジェクト収集完了: 成功 {ok} 件 / オフライン {offline} 件");
+            }
+            Err(e) => self.project_status = format!("収集失敗: {e}"),
+        }
+    }
+
+    fn start_background_export(&mut self) {
+        if self.export_job.as_ref().is_some_and(|j| !j.is_finished()) {
+            return;
+        }
+        let (proj_clone, folder) = {
             let guard = self.session.lock().unwrap();
-            guard.project.clone()
+            (guard.project.clone(), guard.folder.clone())
         };
         let active_id = proj_clone.active_scene_id;
-        let (out_path, transparent_bg) = match self.export_format {
-            ExportFormat::Mp4H264 => (PathBuf::from("phase3_export_h264.mp4"), false),
-            ExportFormat::Mp4H265 => (PathBuf::from("phase3_export_h265.mp4"), false),
-            ExportFormat::WebmVp9Alpha => (PathBuf::from("phase3_export_alpha.webm"), true),
-            ExportFormat::PngSequence => (PathBuf::from("phase3_frame_%04d.png"), true),
+        let out_dir = folder
+            .as_ref()
+            .map(|f| f.exports_dir())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let (file_name, transparent_bg) = match self.export_format {
+            ExportFormat::Mp4H264 => ("export_h264.mp4", false),
+            ExportFormat::Mp4H265 => ("export_h265.mp4", false),
+            ExportFormat::WebmVp9Alpha => ("export_alpha.webm", true),
+            ExportFormat::PngSequence => ("export_frame_%04d.png", true),
+            ExportFormat::WavAudioOnly => ("export_audio.wav", false),
         };
+        let output_path = out_dir.join(file_name);
+
+        let (width, height, fps) = proj_clone
+            .scene(active_id)
+            .map(|s| (s.width.max(16), s.height.max(16), s.fps))
+            .unwrap_or((1280, 720, FrameRate::FPS_60));
 
         let config = ExportConfig {
-            width: 640,
-            height: 360,
-            fps: FrameRate::FPS_30,
+            width,
+            height,
+            fps,
             format: self.export_format,
-            crf: 20,
+            crf: 18,
+            encoder: self.export_encoder,
         };
-        if let Some(s) = proj_clone.active_scene_mut() {
-            s.width = config.width;
-            s.height = config.height;
-        }
 
-        let cli = FfmpegCli::default();
-        match cli.start_export(&out_path, &config, None) {
-            Ok(mut session) => {
-                for frame_idx in 0..60 {
-                    let t = RationalTime::from_frame(frame_idx, config.fps);
-                    if let Some(linear) = self.render_graph.render_project_scene(
-                        &proj_clone,
-                        active_id,
-                        t,
-                        transparent_bg,
-                    ) && let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb())
-                    {
-                        self.export_status = format!("書き出しエラー: {e}");
-                        return;
-                    }
-                }
-                match session.finish() {
-                    Ok(()) => self.export_status = format!("書き出し完了: {}", out_path.display()),
-                    Err(e) => self.export_status = format!("FFmpeg終了エラー: {e}"),
-                }
-            }
-            Err(e) => self.export_status = format!("FFmpeg起動失敗: {e}"),
-        }
+        self.export_job = Some(ExportJobHandle::start(ExportJobRequest {
+            project: proj_clone,
+            scene_id: active_id,
+            folder,
+            output_path,
+            config,
+            transparent_bg,
+        }));
+        self.export_status = "バックグラウンド書き出し開始...".to_string();
     }
 }
 
@@ -337,6 +442,14 @@ impl TabViewer for EditorTabViewer<'_> {
             }
             Pane::Timeline => {
                 let mut export_clicked = false;
+                let mut cancel_export_clicked = false;
+                let mut play_started = false;
+                let export_snap = self.app.last_export_snapshot.clone();
+                let is_exporting = self
+                    .app
+                    .export_job
+                    .as_ref()
+                    .is_some_and(|j| !j.is_finished());
                 {
                     let mut sess = self.app.session.lock().unwrap();
                     let fps = sess.project.settings.fps;
@@ -359,6 +472,7 @@ impl TabViewer for EditorTabViewer<'_> {
                             } else {
                                 clock.seek(sess.playhead);
                                 clock.play();
+                                play_started = true;
                             }
                         }
                         if ui.button("⏮ 先頭").clicked() {
@@ -381,6 +495,7 @@ impl TabViewer for EditorTabViewer<'_> {
                             ExportFormat::Mp4H265 => "MP4 (H.265)",
                             ExportFormat::WebmVp9Alpha => "WebM (VP9+透過)",
                             ExportFormat::PngSequence => "PNG連番 (透過)",
+                            ExportFormat::WavAudioOnly => "WAV (音声のみ)",
                         };
                         egui::ComboBox::from_id_salt("export_format_combo")
                             .selected_text(fmt_label)
@@ -405,8 +520,53 @@ impl TabViewer for EditorTabViewer<'_> {
                                     ExportFormat::PngSequence,
                                     "PNG連番 (透過)",
                                 );
+                                ui.selectable_value(
+                                    &mut self.app.export_format,
+                                    ExportFormat::WavAudioOnly,
+                                    "WAV (音声のみ)",
+                                );
                             });
-                        if ui.button("書き出し").clicked() {
+
+                        egui::ComboBox::from_id_salt("export_encoder_combo")
+                            .selected_text(self.app.export_encoder.display_name())
+                            .show_ui(ui, |ui| {
+                                for enc in [
+                                    VideoEncoder::Auto,
+                                    VideoEncoder::Software,
+                                    VideoEncoder::Nvenc,
+                                    VideoEncoder::Qsv,
+                                    VideoEncoder::Amf,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.app.export_encoder,
+                                        enc,
+                                        enc.display_name(),
+                                    );
+                                }
+                            });
+
+                        if is_exporting {
+                            if let Some(ref snap) = export_snap {
+                                let eta_text = snap
+                                    .eta_sec
+                                    .map(|e| format!(" / 残り {e:.1}s"))
+                                    .unwrap_or_default();
+                                ui.add(
+                                    egui::ProgressBar::new(snap.fraction())
+                                        .desired_width(180.0)
+                                        .text(format!(
+                                            "{:.0}% ({}/{}){}",
+                                            snap.fraction() * 100.0,
+                                            snap.current_frame,
+                                            snap.total_frames,
+                                            eta_text
+                                        )),
+                                );
+                            }
+                            if ui.button("✖ キャンセル").clicked() {
+                                cancel_export_clicked = true;
+                            }
+                        } else if ui.button("🚀 書き出し").clicked() {
                             export_clicked = true;
                         }
                         ui.label(&self.app.export_status);
@@ -426,8 +586,14 @@ impl TabViewer for EditorTabViewer<'_> {
                             .seek(sess.playhead);
                     }
                 }
+                if play_started {
+                    self.app.sync_live_audio_graph();
+                }
                 if export_clicked {
-                    self.app.export_current_scene();
+                    self.app.start_background_export();
+                }
+                if cancel_export_clicked && let Some(job) = self.app.export_job.as_ref() {
+                    job.cancel();
                 }
             }
             Pane::GraphEditor => {
@@ -790,6 +956,53 @@ impl eframe::App for EditorApp {
         let ctx = ui.ctx().clone();
         self.ime_panel.capture_events(&ctx);
 
+        // バックグラウンド生成された軽量プロキシを RenderGraph へ登録
+        while let Ok((aid, proxy_path)) = self.proxy_rx.try_recv() {
+            self.render_graph.register_proxy(aid, proxy_path);
+            self.preview_dirty = true;
+            self.project_status = format!(
+                "軽量プロキシ生成完了 (登録済み: {} 件)",
+                self.render_graph.proxy_count()
+            );
+        }
+
+        // バックグラウンド書き出しジョブの進捗ポーリング
+        if let Some(job) = self.export_job.as_ref() {
+            let snap = job.snapshot();
+            self.export_status = snap.stage.clone();
+            let finished = snap.finished;
+            self.last_export_snapshot = Some(snap);
+            if finished {
+                self.export_job = None;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
+        }
+
+        // グローバル ドラッグ＆ドロップ素材自動取込（動画 / 音声 / 画像 / PSD / TTSペア）
+        let dropped_paths: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped_paths.is_empty() {
+            let mut sess = self.session.lock().unwrap();
+            let summary = project_io::import_dropped_files(
+                &dropped_paths,
+                &mut sess,
+                &mut self.waveforms,
+                Some(&self.proxy_tx),
+            );
+            if summary.imported_count > 0 {
+                self.preview_dirty = true;
+            }
+            if !summary.messages.is_empty() {
+                self.project_status = summary.messages.join(" / ");
+            }
+        }
+
         // カスタム WGSL シェーダーの自動ホットリロードポーリング（500ms 間隔にスロットルして毎フレームI/Oを回避）
         if self.last_shader_poll.elapsed() >= std::time::Duration::from_millis(500) {
             self.last_shader_poll = std::time::Instant::now();
@@ -800,9 +1013,9 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // 上部バー: Dual-Workspace UX 切替 + シーンパンくずリスト + Precomp キャッシュ統計
+        // 上部バー: Dual-Workspace UX 切替 + プロジェクト開閉・保存・収集 + シーン切替
         egui::Panel::top("workspace_switcher_bar").show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong("空間切替:");
                 if ui
                     .selectable_label(
@@ -850,12 +1063,78 @@ impl eframe::App for EditorApp {
                 }
 
                 ui.separator();
+                if ui
+                    .checkbox(&mut self.render_graph.use_proxies, "軽量プロキシ優先")
+                    .changed()
+                {
+                    self.preview_dirty = true;
+                }
                 ui.weak(format!(
-                    "Precomp Cache: hit={} / miss={}",
-                    self.render_graph.cache_hits, self.render_graph.cache_misses
+                    "Cache: hit={} / miss={} | Proxy={}",
+                    self.render_graph.cache_hits,
+                    self.render_graph.cache_misses,
+                    self.render_graph.proxy_count()
                 ));
             });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label("📁 プロジェクト:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.project_dir_input).desired_width(220.0),
+                );
+                if ui.button("新規").clicked() {
+                    self.handle_new_project_folder();
+                }
+                if ui.button("開く").clicked() {
+                    self.handle_open_project_folder();
+                }
+                if ui.button("💾 保存").clicked() {
+                    self.handle_save_project();
+                }
+                if ui.button("📦 素材収集").clicked() {
+                    self.handle_collect_assets();
+                }
+                ui.separator();
+                ui.weak(&self.project_status);
+            });
         });
+
+        // クラッシュ復旧バナー: `history.jsonl` に未保存の操作履歴が残っている場合に表示
+        if !self.pending_recovery.is_empty() {
+            egui::Panel::top("crash_recovery_banner").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!(
+                            "⚠ 前回の未保存操作ジャーナル (history.jsonl: {} 件) を検出しました",
+                            self.pending_recovery.len()
+                        ),
+                    );
+                    if ui.button("🔄 復旧リプレイ").clicked() {
+                        let entries = std::mem::take(&mut self.pending_recovery);
+                        let mut sess = self.session.lock().unwrap();
+                        match CommandBus::replay_history(&mut sess.project, &entries) {
+                            Ok(n) => {
+                                self.preview_dirty = true;
+                                self.project_status =
+                                    format!("クラッシュ復旧完了: {n} 件の操作を再適用しました");
+                            }
+                            Err(e) => {
+                                self.project_status = format!("復旧リプレイ失敗: {e}");
+                            }
+                        }
+                    }
+                    if ui.button("破棄").clicked() {
+                        self.pending_recovery.clear();
+                        let sess = self.session.lock().unwrap();
+                        if let Some(folder) = &sess.folder {
+                            let _ = folder.clear_history();
+                        }
+                        self.project_status = "未反映履歴を破棄しました".into();
+                    }
+                });
+            });
+        }
 
         // 再生中の場合は音声マスタークロックから playhead を更新
         let current_time = {
@@ -925,6 +1204,22 @@ impl eframe::App for EditorApp {
             .style(Style::from_egui(ctx.global_style().as_ref()))
             .show_inside(ui, &mut viewer);
         self.dock_state = dock_state;
+
+        // ドラッグホバー中の視覚ガイドオーバーレイ
+        let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if hovering_files {
+            egui::Area::new(egui::Id::NULL.with("drop_files_overlay"))
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .order(egui::Order::Foreground)
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(egui::Color32::from_rgba_unmultiplied(20, 32, 48, 235))
+                        .show(ui, |ui| {
+                            ui.heading("📥 ファイルをドロップしてタイムラインへ追加");
+                            ui.label("対応: 動画 (MP4/MOV/MKV/WebM) ・ 音声 (WAV/MP3/FLAC/TTSペア) ・ 画像 (PNG/JPEG/WebP) ・ PSD立ち絵");
+                        });
+                });
+        }
     }
 }
 

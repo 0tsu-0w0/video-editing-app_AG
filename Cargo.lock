@@ -4633,6 +4633,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui_dock",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -4651,7 +4652,9 @@ name = "ve-audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "tempfile",
  "thiserror 2.0.21",
+ "uuid",
  "ve-core",
  "ve-media",
 ]
@@ -4717,6 +4720,7 @@ dependencies = [
  "uuid",
  "ve-audio",
  "ve-core",
+ "ve-media",
  "ve-plugin-api",
  "wgpu",
 ]
