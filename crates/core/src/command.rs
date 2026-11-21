@@ -5,7 +5,8 @@ use crate::lipsync::CharacterSpriteConfig;
 use crate::preset::ColorPalette;
 use crate::project::{
     AudioEffectNode, BlendMode, EffectId, EffectNode, ItemId, ItemKind, Layer, Project, RgbaColor,
-    Scene, SceneId, TextAnimator, TextStyle, TimelineItem, TrackMatte, Transform2D, TransitionKind,
+    Scene, SceneId, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, Transform2D,
+    TransitionKind,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -221,6 +222,12 @@ pub enum EditCommand {
     SetTargetLufs {
         target_lufs: Option<f32>,
     },
+    AddMarker {
+        marker: TimelineMarker,
+    },
+    RemoveMarker {
+        marker_id: uuid::Uuid,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -267,6 +274,8 @@ impl EditCommand {
             Self::RemoveAudioEffect { .. } => "remove_audio_effect",
             Self::UpdateAudioEffect { .. } => "update_audio_effect",
             Self::SetTargetLufs { .. } => "set_target_lufs",
+            Self::AddMarker { .. } => "add_marker",
+            Self::RemoveMarker { .. } => "remove_marker",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -723,6 +732,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 camera: Camera3D::default(),
                 master_audio_effects: Vec::new(),
                 target_lufs: None,
+                markers: Vec::new(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -1003,6 +1013,21 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 .active_scene_mut()
                 .ok_or(CommandError::NoActiveScene)?;
             scene.target_lufs = target_lufs.map(|v| v.clamp(-36.0, -3.0));
+            Ok(())
+        }
+        EditCommand::AddMarker { marker } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            scene.markers.push(marker.clone());
+            scene.markers.sort_by_key(|m| m.time);
+            Ok(())
+        }
+        EditCommand::RemoveMarker { marker_id } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            scene.markers.retain(|m| m.id != *marker_id);
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

@@ -3,18 +3,26 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 use ve_ai::{
-    ApiProvider, CloudUploadGuard, CredentialStore, GeminiTranscriber, LocalTtsClient,
-    LocalWhisperTranscriber, OsCredentialStore, SubtitleSegment, TtsEngine, import_tts_file_pair,
-    segments_to_subtitle_items,
+    ApiProvider, ClaudeRefiner, CloudUploadGuard, CredentialStore, GeminiTranscriber,
+    LocalTtsClient, LocalWhisperTranscriber, OsCredentialStore, SubtitleSegment, TtsEngine,
+    import_tts_file_pair, segments_to_subtitle_items,
 };
 use ve_audio::{WaveformBucket, WaveformPeaks};
 use ve_core::{
-    AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, ItemKind, LipSyncMode, MediaKind,
-    MouthShape, PhonemeSegment, PsdCharacterConfig, RationalTime, RgbaColor, TextAnimator,
-    TimelineItem, Transform2D,
+    AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, ItemId, ItemKind, LipSyncMode,
+    MediaKind, MouthShape, PhonemeSegment, PsdCharacterConfig, RationalTime, RgbaColor,
+    TextAnimator, TimelineItem, Transform2D, wrap_subtitle_japanese,
 };
 use ve_mcp::EditorSession;
 use ve_media::decode_audio_file;
+
+struct SubtitleDiffRow {
+    item_id: ItemId,
+    start_sec: f64,
+    before: String,
+    after: String,
+    accepted: bool,
+}
 
 pub struct AudioAi3DPanel {
     cred_store: OsCredentialStore,
@@ -24,6 +32,8 @@ pub struct AudioAi3DPanel {
     whisper_model_path: String,
     transcribe_wav_path: String,
     cloud_confirm_checked: bool,
+    refine_wrap_chars: usize,
+    refine_diffs: Vec<SubtitleDiffRow>,
     tts_pair_wav_path: String,
     tts_engine: TtsEngine,
     tts_speaker_id: u32,
@@ -41,6 +51,8 @@ impl Default for AudioAi3DPanel {
             whisper_model_path: String::new(),
             transcribe_wav_path: String::new(),
             cloud_confirm_checked: false,
+            refine_wrap_chars: 18,
+            refine_diffs: Vec::new(),
             tts_pair_wav_path: String::new(),
             tts_engine: TtsEngine::Voicevox,
             tts_speaker_id: 3,
@@ -553,8 +565,229 @@ impl AudioAi3DPanel {
             });
 
             ui.separator();
+            // ===== 4B. Claude 字幕文脈補正＆改行最適化（差分確認・1ステップUndo適用） =====
+            ui.strong("✨ Claude 字幕文脈補正＆改行プレビュー（差分確認）");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("1行目安:");
+                ui.add(
+                    egui::DragValue::new(&mut self.refine_wrap_chars)
+                        .range(8..=40)
+                        .suffix("文字"),
+                );
+                if ui.button("✨ Claude で字幕を文脈補正").clicked() {
+                    self.preview_claude_refinement(session);
+                }
+                if ui.button("📝 自動改行プレビュー (オフライン)").clicked() {
+                    self.preview_offline_wrap(session);
+                }
+            });
+
+            if !self.refine_diffs.is_empty() {
+                let changed_count = self
+                    .refine_diffs
+                    .iter()
+                    .filter(|r| r.before != r.after)
+                    .count();
+                ui.weak(format!(
+                    "差分プレビュー: 全 {} 件中 {} 件に変更あり（チェック済みを一括適用）",
+                    self.refine_diffs.len(),
+                    changed_count
+                ));
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    for row in &mut self.refine_diffs {
+                        let is_changed = row.before != row.after;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut row.accepted, format!("{:.2}s", row.start_sec));
+                            ui.vertical(|ui| {
+                                ui.colored_label(
+                                    if is_changed {
+                                        egui::Color32::from_rgb(235, 130, 130)
+                                    } else {
+                                        egui::Color32::from_gray(150)
+                                    },
+                                    format!("Before: {}", row.before.replace('\n', " ⏎ ")),
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(130, 230, 155),
+                                        "After:",
+                                    );
+                                    ui.text_edit_singleline(&mut row.after);
+                                });
+                            });
+                        });
+                        ui.separator();
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("✅ 選択差分を一括適用 (Undo可)").clicked() {
+                            self.apply_accepted_diffs(session);
+                        }
+                        if ui.small_button("変更行のみ選択").clicked() {
+                            for r in &mut self.refine_diffs {
+                                r.accepted = r.before != r.after;
+                            }
+                        }
+                        if ui.small_button("閉じる").clicked() {
+                            self.refine_diffs.clear();
+                        }
+                    });
+                });
+            }
+
+            ui.separator();
             ui.monospace(format!("ステータス: {}", self.status_msg));
         });
+    }
+
+    fn collect_scene_text_items(
+        session: &EditorSession,
+    ) -> Vec<(ItemId, RationalTime, RationalTime, String)> {
+        let mut rows = Vec::new();
+        if let Some(scene) = session.project.active_scene() {
+            for layer in &scene.layers {
+                for item in &layer.items {
+                    if let ItemKind::Text { content, .. } = &item.kind {
+                        rows.push((item.id, item.start, item.end(), content.clone()));
+                    }
+                }
+            }
+        }
+        rows.sort_by_key(|(_, start, _, _)| *start);
+        rows
+    }
+
+    fn preview_offline_wrap(&mut self, session: &EditorSession) {
+        let items = Self::collect_scene_text_items(session);
+        if items.is_empty() {
+            self.status_msg = "シーン内に字幕テキストがありません".into();
+            return;
+        }
+        let max_chars = self.refine_wrap_chars.max(6);
+        self.refine_diffs = items
+            .into_iter()
+            .map(|(item_id, start, _, before)| {
+                let after = wrap_subtitle_japanese(&before, max_chars);
+                let changed = before != after;
+                SubtitleDiffRow {
+                    item_id,
+                    start_sec: start.as_seconds(),
+                    before,
+                    after,
+                    accepted: changed,
+                }
+            })
+            .collect();
+        let changed = self
+            .refine_diffs
+            .iter()
+            .filter(|r| r.before != r.after)
+            .count();
+        self.status_msg = format!(
+            "オフライン自動改行プレビュー生成完了（{} 件中 {} 件に変更案）",
+            self.refine_diffs.len(),
+            changed
+        );
+    }
+
+    fn preview_claude_refinement(&mut self, session: &EditorSession) {
+        let items = Self::collect_scene_text_items(session);
+        if items.is_empty() {
+            self.status_msg = "シーン内に字幕テキストがありません".into();
+            return;
+        }
+        let segments: Vec<SubtitleSegment> = items
+            .iter()
+            .map(|(_, start, end, text)| SubtitleSegment {
+                start: *start,
+                end: *end,
+                text: text.clone(),
+                phonemes: Vec::new(),
+            })
+            .collect();
+        let duration_sec = items
+            .iter()
+            .map(|(_, _, end, _)| end.as_seconds())
+            .fold(1.0_f64, f64::max);
+
+        let refiner = ClaudeRefiner {
+            guard: self.guard.clone(),
+            ..Default::default()
+        };
+        match refiner.refine_subtitles(
+            &self.cred_store,
+            &segments,
+            duration_sec,
+            self.cloud_confirm_checked,
+        ) {
+            Ok(refined) => {
+                self.refine_diffs = items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (item_id, start, _, before))| {
+                        let after = refined
+                            .get(idx)
+                            .map(|s| s.text.clone())
+                            .unwrap_or_else(|| before.clone());
+                        let changed = before != after;
+                        SubtitleDiffRow {
+                            item_id,
+                            start_sec: start.as_seconds(),
+                            before,
+                            after,
+                            accepted: changed,
+                        }
+                    })
+                    .collect();
+                let changed = self
+                    .refine_diffs
+                    .iter()
+                    .filter(|r| r.before != r.after)
+                    .count();
+                self.status_msg = format!(
+                    "Claude 文脈補正プレビュー完了（{} 件中 {} 件に補正案 — 確認後に適用してください）",
+                    self.refine_diffs.len(),
+                    changed
+                );
+            }
+            Err(e) => {
+                self.status_msg = format!("Claude 文脈補正エラー: {e}");
+            }
+        }
+    }
+
+    fn apply_accepted_diffs(&mut self, session: &mut EditorSession) {
+        let commands: Vec<EditCommand> = self
+            .refine_diffs
+            .iter()
+            .filter(|r| r.accepted && r.before != r.after)
+            .map(|r| EditCommand::SetTextContent {
+                item_id: r.item_id,
+                content: r.after.clone(),
+            })
+            .collect();
+        let count = commands.len();
+        if count == 0 {
+            self.status_msg = "適用対象の変更行がありません".into();
+            return;
+        }
+        match session.bus.execute(
+            &mut session.project,
+            EditCommand::Batch {
+                label: "apply_subtitle_refinement".into(),
+                commands,
+            },
+            CommandSource::Gui,
+            None,
+        ) {
+            Ok(_) => {
+                self.refine_diffs.clear();
+                self.status_msg =
+                    format!("字幕 {count} 件の補正差分を一括適用しました（Ctrl+Z で元に戻せます）");
+            }
+            Err(e) => {
+                self.status_msg = format!("差分適用エラー: {e}");
+            }
+        }
     }
 
     fn import_pair(

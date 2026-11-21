@@ -3,14 +3,23 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
-use ve_ai::{ApiProvider, CloudUploadGuard, import_tts_file_pair};
+use ve_ai::{
+    ApiProvider, ClaudeRefiner, CloudUploadGuard, OsCredentialStore, SubtitleSegment,
+    import_tts_file_pair,
+};
+use ve_audio::AudioGraph;
 use ve_core::{
     AlignMode, AssetRef, AudioEffectNode, Camera3D, CharacterSpriteConfig, CommandSource,
-    CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind, Keyframe,
-    LipSyncMode, MediaKind, MotionPreset, RationalTime, RgbaColor, ShapeKind, TextAnimator,
-    TimelineItem, TrackMatte, TrackMatteMode, base64_encode, build_align_commands,
-    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_motion_preset_commands,
-    build_replace_text_commands, search_text_items,
+    CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind, JumpCutConfig,
+    Keyframe, LipSyncMode, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
+    ShapeKind, TextAnimator, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
+    base64_encode, build_align_commands, build_close_gaps_commands,
+    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_motion_preset_commands,
+    build_replace_text_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
+    search_text_items, wrap_subtitle_japanese,
+};
+use ve_media::{
+    ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, decode_audio_file, write_wav_pcm16,
 };
 use ve_plugin_api::PluginRegistry;
 use ve_render::{RenderGraph, validate_wgsl};
@@ -390,6 +399,73 @@ pub fn tool_definitions() -> Value {
                 "properties": {
                     "id": { "type": "string" },
                     "preset": { "type": "string", "enum": ["slide_in_left", "slide_in_bottom", "fade_in_out", "pop_bounce", "zoom_in", "impact_shake"] }
+                }
+            }
+        },
+        {
+            "name": "auto_jump_cut",
+            "description": "音声レイヤーの無音区間を自動検出し、連動レイヤーごと一括ジェットカット（1 Undo単位）を実行する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "audio_layer_index": { "type": "integer", "default": 3 },
+                    "rms_threshold": { "type": "number", "default": 0.025 },
+                    "min_silence_sec": { "type": "number", "default": 0.45 },
+                    "pad_before_sec": { "type": "number", "default": 0.08 },
+                    "pad_after_sec": { "type": "number", "default": 0.12 },
+                    "ripple_linked_layers": { "type": "array", "items": { "type": "integer" } }
+                }
+            }
+        },
+        {
+            "name": "refine_subtitles",
+            "description": "タイムライン上の字幕を整形する（mode='local_wrap' で18文字自動改行、mode='claude' で Claude API 文脈補正・要 user_confirmed=true）",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mode": { "type": "string", "enum": ["local_wrap", "claude"], "default": "local_wrap" },
+                    "max_chars_per_line": { "type": "integer", "default": 18 },
+                    "user_confirmed": { "type": "boolean", "default": false }
+                }
+            }
+        },
+        {
+            "name": "import_media",
+            "description": "ローカルの動画・音声・画像・PSD素材を安全にタイムラインへ取り込む（拡張子検証・Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "layer_index": { "type": "integer" },
+                    "start_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "manage_markers",
+            "description": "タイムラインマーカーの追加・削除・一覧・YouTubeチャプターテキスト出力を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "add", "remove", "youtube_chapters"] },
+                    "time_sec": { "type": "number" },
+                    "label": { "type": "string" },
+                    "marker_id": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "start_export",
+            "description": "確認ガード付き（user_confirmed=true 必須）でアクティブシーンをプロジェクト exports/ フォルダへ書き出す",
+            "inputSchema": {
+                "type": "object",
+                "required": ["user_confirmed"],
+                "properties": {
+                    "user_confirmed": { "type": "boolean" },
+                    "format": { "type": "string", "enum": ["mp4_h264", "mp4_h265", "webm_vp9_alpha", "wav_audio_only"], "default": "wav_audio_only" },
+                    "file_name": { "type": "string", "default": "mcp_export" }
                 }
             }
         }
@@ -1462,6 +1538,484 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 json!({ "content": [{ "type": "text", "text": json!({"applied": preset_name}).to_string() }] }),
             )
         }
+        "auto_jump_cut" => {
+            let audio_layer_index = args
+                .get("audio_layer_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(3) as usize;
+            let cfg = JumpCutConfig {
+                rms_threshold: finite_clamped(args.get("rms_threshold"), 0.025, 0.001, 0.9) as f32,
+                min_silence_sec: finite_clamped(args.get("min_silence_sec"), 0.45, 0.05, 10.0),
+                pad_before_sec: finite_clamped(args.get("pad_before_sec"), 0.08, 0.0, 1.0),
+                pad_after_sec: finite_clamped(args.get("pad_after_sec"), 0.12, 0.0, 1.0),
+                ripple_linked_layers: args
+                    .get("ripple_linked_layers")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(|n| n as usize))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![0, 1, 2]),
+            };
+            let scene = guard
+                .project
+                .active_scene()
+                .ok_or("no active scene")?
+                .clone();
+            let total_dur = scene.total_duration();
+            if total_dur <= RationalTime::ZERO {
+                return Err("active scene has no media duration".into());
+            }
+            let sr = guard.project.settings.audio_sample_rate.max(8_000);
+            let graph = AudioGraph::from_project_scene(
+                &guard.project,
+                guard.project.active_scene_id,
+                guard.folder.as_ref(),
+                sr,
+            );
+            let pcm = graph.render_range(RationalTime::ZERO, total_dur);
+            let bucket_sec = 0.05;
+            let bucket_frames = ((sr as f64) * bucket_sec).round().max(1.0) as usize;
+            let rms_series: Vec<f32> = pcm
+                .chunks(bucket_frames * 2)
+                .map(|chunk| {
+                    let mut sum = 0.0f64;
+                    let mut n = 0usize;
+                    for &[l, r] in chunk.as_chunks::<2>().0 {
+                        let m = f64::from((l + r) * 0.5);
+                        sum += m * m;
+                        n += 1;
+                    }
+                    if n == 0 {
+                        0.0
+                    } else {
+                        (sum / n as f64).sqrt() as f32
+                    }
+                })
+                .collect();
+            let intervals = detect_speech_intervals_from_rms(
+                &rms_series,
+                bucket_sec,
+                total_dur.as_seconds(),
+                &cfg,
+            );
+            let Some((kept_segments, removed_sec, cmd)) = build_jump_cut_commands(
+                &scene,
+                audio_layer_index,
+                &intervals,
+                &cfg.ripple_linked_layers,
+            ) else {
+                return Ok(json!({
+                    "content": [{ "type": "text", "text": json!({"kept_segments": 0, "removed_sec": 0.0}).to_string() }]
+                }));
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({"kept_segments": kept_segments, "removed_sec": removed_sec}).to_string()
+                }]
+            }))
+        }
+        "refine_subtitles" => {
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("local_wrap");
+            let max_chars = args
+                .get("max_chars_per_line")
+                .and_then(Value::as_u64)
+                .unwrap_or(18)
+                .clamp(8, 40) as usize;
+            let user_confirmed = args
+                .get("user_confirmed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            let scene = guard
+                .project
+                .active_scene()
+                .ok_or("no active scene")?
+                .clone();
+            let mut text_items: Vec<(Uuid, RationalTime, RationalTime, String)> = Vec::new();
+            for layer in &scene.layers {
+                for item in &layer.items {
+                    if let ItemKind::Text { content, .. } = &item.kind {
+                        text_items.push((item.id, item.start, item.end(), content.clone()));
+                    }
+                }
+            }
+            text_items.sort_by_key(|(_, st, _, _)| *st);
+            if text_items.is_empty() {
+                return Ok(
+                    json!({ "content": [{ "type": "text", "text": json!({"updated": 0}).to_string() }] }),
+                );
+            }
+
+            let cmds: Vec<EditCommand> = match mode {
+                "local_wrap" => text_items
+                    .iter()
+                    .filter_map(|(id, _, _, content)| {
+                        let wrapped = wrap_subtitle_japanese(content, max_chars);
+                        if wrapped != *content {
+                            Some(EditCommand::SetTextContent {
+                                item_id: *id,
+                                content: wrapped,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                "claude" => {
+                    let segments: Vec<SubtitleSegment> = text_items
+                        .iter()
+                        .map(|(_, st, en, txt)| SubtitleSegment {
+                            start: *st,
+                            end: *en,
+                            text: txt.clone(),
+                            phonemes: Vec::new(),
+                        })
+                        .collect();
+                    let dur_sec = scene.total_duration().as_seconds().max(1.0);
+                    let store = OsCredentialStore::new();
+                    let refined = ClaudeRefiner::default()
+                        .refine_subtitles(&store, &segments, dur_sec, user_confirmed)
+                        .map_err(|e| e.to_string())?;
+                    text_items
+                        .iter()
+                        .zip(refined.iter())
+                        .filter_map(|((id, _, _, before), after)| {
+                            if &after.text != before {
+                                Some(EditCommand::SetTextContent {
+                                    item_id: *id,
+                                    content: after.text.clone(),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                }
+                other => return Err(format!("unknown refine mode: {other}")),
+            };
+            let updated = cmds.len();
+            if updated > 0 {
+                let sess = &mut *guard;
+                sess.bus
+                    .execute(
+                        &mut sess.project,
+                        EditCommand::Batch {
+                            label: format!("mcp_refine_{mode}"),
+                            commands: cmds,
+                        },
+                        CommandSource::Mcp,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(json!({
+                "content": [{ "type": "text", "text": json!({"mode": mode, "updated": updated}).to_string() }]
+            }))
+        }
+        "import_media" => {
+            let raw_path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or("missing 'path'")?;
+            let path = PathBuf::from(raw_path);
+            if !path.is_file() {
+                return Err(format!("media file not found: {raw_path}"));
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Media".into());
+            let start = parse_time_arg(args, "start_frame", "start_sec", fps, guard.playhead);
+            let default_layer = match ext.as_str() {
+                "mp4" | "mov" | "mkv" | "webm" | "avi" => 0,
+                "wav" | "mp3" | "flac" | "ogg" | "m4a" | "aac" => 3,
+                "psd" => 2,
+                _ => 1,
+            };
+            let layer_index = args
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+                .unwrap_or(default_layer);
+            let asset_id = Uuid::new_v4();
+            let cli = FfmpegCli::default();
+
+            let (media_kind, item) = match ext.as_str() {
+                "mp4" | "mov" | "mkv" | "webm" | "avi" => {
+                    let dur_sec = cli
+                        .probe(&path)
+                        .ok()
+                        .map(|p| p.duration_sec)
+                        .filter(|d| d.is_finite() && *d > 0.05)
+                        .unwrap_or(5.0);
+                    let dur = RationalTime::from_seconds(dur_sec);
+                    let mut it = TimelineItem::new(
+                        file_name.clone(),
+                        start,
+                        dur,
+                        ItemKind::Video {
+                            asset_id,
+                            source_offset: RationalTime::ZERO,
+                            volume: 1.0,
+                        },
+                    );
+                    it.playback.source_duration = Some(dur);
+                    (MediaKind::Video, it)
+                }
+                "wav" | "mp3" | "flac" | "ogg" | "m4a" | "aac" => {
+                    let dur_sec = decode_audio_file(&path)
+                        .ok()
+                        .map(|b| b.duration_sec())
+                        .or_else(|| cli.probe(&path).ok().map(|p| p.duration_sec))
+                        .filter(|d| d.is_finite() && *d > 0.05)
+                        .unwrap_or(3.0);
+                    let dur = RationalTime::from_seconds(dur_sec);
+                    let mut it = TimelineItem::new(
+                        file_name.clone(),
+                        start,
+                        dur,
+                        ItemKind::Audio {
+                            asset_id,
+                            source_offset: RationalTime::ZERO,
+                            volume: 1.0,
+                        },
+                    );
+                    it.playback.source_duration = Some(dur);
+                    (MediaKind::Audio, it)
+                }
+                "png" | "jpg" | "jpeg" | "webp" | "bmp" => (
+                    MediaKind::Image,
+                    TimelineItem::new(
+                        file_name.clone(),
+                        start,
+                        RationalTime::from_seconds(5.0),
+                        ItemKind::Image { asset_id },
+                    ),
+                ),
+                "psd" => (
+                    MediaKind::Image,
+                    TimelineItem::new(
+                        file_name.clone(),
+                        start,
+                        RationalTime::from_seconds(5.0),
+                        ItemKind::CharacterSprite {
+                            config: CharacterSpriteConfig {
+                                linked_audio_layer: Some(3),
+                                mode: LipSyncMode::default(),
+                                png_paths: BTreeMap::new(),
+                                psd_config: Some(PsdCharacterConfig {
+                                    psd_path: path.clone(),
+                                    ..Default::default()
+                                }),
+                                phoneme_override: Vec::new(),
+                            },
+                            width: 300.0,
+                            height: 400.0,
+                        },
+                    ),
+                ),
+                _ => return Err(format!("unsupported media extension: .{ext}")),
+            };
+
+            let item_id = item.id;
+            let sess = &mut *guard;
+            sess.project.assets.push(AssetRef {
+                id: asset_id,
+                name: file_name.clone(),
+                kind: media_kind,
+                relative_path: None,
+                fallback_absolute_path: Some(path),
+                collected: false,
+            });
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::AddObject { layer_index, item },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{ "type": "text", "text": json!({"id": item_id, "asset_id": asset_id, "name": file_name}).to_string() }]
+            }))
+        }
+        "manage_markers" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            match action {
+                "list" => {
+                    let markers = guard
+                        .project
+                        .active_scene()
+                        .map(|s| s.markers.clone())
+                        .unwrap_or_default();
+                    let text = serde_json::to_string_pretty(&markers).unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "youtube_chapters" => {
+                    let chapters = guard
+                        .project
+                        .active_scene()
+                        .map(|s| format_youtube_chapters(&s.markers))
+                        .unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": chapters }] }))
+                }
+                "add" => {
+                    let time = parse_time_arg(args, "time_frame", "time_sec", fps, guard.playhead);
+                    let label = args
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or("マーカー");
+                    let marker = TimelineMarker::new(time, label);
+                    let mid = marker.id;
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::AddMarker { marker },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({"marker_id": mid, "time_sec": time.as_seconds()}).to_string() }]
+                    }))
+                }
+                "remove" => {
+                    let marker_id = parse_uuid(args, "marker_id")?;
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::RemoveMarker { marker_id },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({"removed": marker_id}).to_string() }]
+                    }))
+                }
+                other => Err(format!("unknown marker action: {other}")),
+            }
+        }
+        "start_export" => {
+            let confirmed = args
+                .get("user_confirmed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(
+                    "書き出し実行には user_confirmed: true の明示的確認が必要です".to_string(),
+                );
+            }
+            let fmt_str = args
+                .get("format")
+                .and_then(Value::as_str)
+                .unwrap_or("wav_audio_only");
+            let (format, ext, transparent_bg) = match fmt_str {
+                "mp4_h264" => (ExportFormat::Mp4H264, "mp4", false),
+                "mp4_h265" => (ExportFormat::Mp4H265, "mp4", false),
+                "webm_vp9_alpha" => (ExportFormat::WebmVp9Alpha, "webm", true),
+                "wav_audio_only" => (ExportFormat::WavAudioOnly, "wav", false),
+                other => return Err(format!("unsupported export format: {other}")),
+            };
+            let raw_name = args
+                .get("file_name")
+                .and_then(Value::as_str)
+                .unwrap_or("mcp_export");
+            let safe_stem: String = raw_name
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .take(48)
+                .collect();
+            let stem = if safe_stem.is_empty() {
+                "mcp_export".to_string()
+            } else {
+                safe_stem
+            };
+            let out_dir = guard
+                .folder
+                .as_ref()
+                .map(|f| f.exports_dir())
+                .unwrap_or_else(|| std::env::temp_dir().join("ve_mcp_exports"));
+            std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+            let output_path = out_dir.join(format!("{stem}.{ext}"));
+
+            let proj = guard.project.clone();
+            let scene_id = proj.active_scene_id;
+            let folder = guard.folder.clone();
+            let scene = proj.scene(scene_id).ok_or("no active scene")?;
+            let dur = scene
+                .total_duration()
+                .max(RationalTime::from_seconds(1.0))
+                .min(RationalTime::from_seconds(600.0));
+            let sr = proj.settings.audio_sample_rate.max(8_000);
+            let audio_graph = AudioGraph::from_project_scene(&proj, scene_id, folder.as_ref(), sr);
+            let pcm = audio_graph.render_range(RationalTime::ZERO, dur);
+
+            if format == ExportFormat::WavAudioOnly {
+                write_wav_pcm16(&output_path, &pcm, sr, 2).map_err(|e| e.to_string())?;
+            } else {
+                let mut rg = RenderGraph::new();
+                rg.use_proxies = false;
+                rg.set_project_folder(folder);
+                let total_frames = ((dur.as_seconds() * scene.fps.as_f64()).ceil() as i64).max(1);
+                let cfg = ExportConfig {
+                    width: scene.width.max(16),
+                    height: scene.height.max(16),
+                    fps: scene.fps,
+                    format,
+                    crf: 18,
+                    encoder: VideoEncoder::Auto,
+                };
+                let wav_tmp = out_dir.join(format!("{stem}_tmp_audio.wav"));
+                let has_audio = !audio_graph.clips.is_empty();
+                if has_audio {
+                    write_wav_pcm16(&wav_tmp, &pcm, sr, 2).map_err(|e| e.to_string())?;
+                }
+                let mut pipe = FfmpegCli::default()
+                    .start_export(&output_path, &cfg, has_audio.then_some(wav_tmp.as_path()))
+                    .map_err(|e| e.to_string())?;
+                for f in 0..total_frames {
+                    let t = RationalTime::from_frame(f, cfg.fps);
+                    let img = rg
+                        .render_project_scene(&proj, scene_id, t, transparent_bg)
+                        .ok_or("render frame failed")?;
+                    pipe.write_rgba8_frame(&img.to_rgba8_srgb())
+                        .map_err(|e| e.to_string())?;
+                }
+                let res = pipe.finish().map_err(|e| e.to_string());
+                if has_audio {
+                    let _ = std::fs::remove_file(&wav_tmp);
+                }
+                res?;
+            }
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({"exported": output_path.display().to_string(), "format": fmt_str}).to_string()
+                }]
+            }))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -1572,5 +2126,67 @@ mod tests {
         } else {
             panic!("expected text");
         }
+    }
+
+    #[test]
+    fn v04_mcp_tools_markers_refine_wrap_and_guarded_export() {
+        let mut proj = Project::new("McpV04", ProjectSettings::default());
+        proj.active_scene_mut().unwrap().layers[1]
+            .items
+            .push(TimelineItem::new(
+                "LongSub",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(2.0),
+                ItemKind::Text {
+                    content: "これは非常に長い字幕テキストなので自動で読みやすく改行されます。"
+                        .into(),
+                    font_family: "sans-serif".into(),
+                    font_size: 40.0,
+                    color: RgbaColor::WHITE,
+                    animator: TextAnimator::default(),
+                },
+            ));
+        let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+        call_tool(
+            &session,
+            "manage_markers",
+            &json!({"action": "add", "time_sec": 12.0, "label": "本編開始"}),
+        )
+        .unwrap();
+        let ch = call_tool(
+            &session,
+            "manage_markers",
+            &json!({"action": "youtube_chapters"}),
+        )
+        .unwrap();
+        let ch_text = ch["content"][0]["text"].as_str().unwrap();
+        assert!(ch_text.contains("00:12 本編開始"));
+
+        call_tool(
+            &session,
+            "refine_subtitles",
+            &json!({"mode": "local_wrap", "max_chars_per_line": 16}),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            if let ItemKind::Text { content, .. } =
+                &g.project.active_scene().unwrap().layers[1].items[0].kind
+            {
+                assert!(content.contains('\n'));
+            }
+        }
+
+        assert!(call_tool(&session, "start_export", &json!({"user_confirmed": false})).is_err());
+        let exp = call_tool(
+            &session,
+            "start_export",
+            &json!({"user_confirmed": true, "format": "wav_audio_only", "file_name": "../escape_test"}),
+        )
+        .unwrap();
+        let out_str = exp["content"][0]["text"].as_str().unwrap();
+        assert!(out_str.contains("escape_test.wav"));
+        assert!(!out_str.contains(".."));
     }
 }
