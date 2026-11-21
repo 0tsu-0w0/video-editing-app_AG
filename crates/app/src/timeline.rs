@@ -6,12 +6,12 @@ use ve_audio::{
 };
 use ve_core::{
     AlignMode, CommandSource, EditCommand, FilterTargetScope, ItemId, ItemKind, JumpCutConfig,
-    RationalTime, RgbaColor, SceneId, SelectDirection, TextAnimator, TimelineItem, TimelineMarker,
-    Transform2D, TransitionKind, build_align_commands, build_beat_cut_commands,
-    build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
-    build_jump_cut_commands, build_replace_text_commands, build_ripple_delete_commands,
-    build_snap_to_beats_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
-    search_text_items, select_items_from_time, select_layer_items,
+    ParticleConfig, RationalTime, RgbaColor, SceneId, SelectDirection, TextAnimator, TimelineItem,
+    TimelineMarker, Transform2D, TransitionKind, VectorShapeConfig, build_align_commands,
+    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
+    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_replace_text_commands,
+    build_ripple_delete_commands, build_snap_to_beats_commands, detect_speech_intervals_from_rms,
+    format_youtube_chapters, search_text_items, select_items_from_time, select_layer_items,
 };
 use ve_mcp::EditorSession;
 
@@ -531,6 +531,92 @@ impl TimelineState {
                         &mut session.project,
                         EditCommand::AddObject {
                             layer_index: 1,
+                            item,
+                        },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    session.selected_items = vec![new_id];
+                }
+            }
+            if ui
+                .button("＋ パーティクル")
+                .on_hover_text(
+                    "決定論的 2D/3D パーティクルエミッター（紙吹雪・雪・火花・集中線等）を配置",
+                )
+                .clicked()
+            {
+                let item = TimelineItem::new(
+                    "✨ パーティクル (紙吹雪)",
+                    session.playhead,
+                    RationalTime::from_seconds(5.0),
+                    ItemKind::ParticleEmitter {
+                        config: ParticleConfig::default(),
+                    },
+                );
+                let new_id = item.id;
+                let target_layer = session
+                    .project
+                    .active_scene()
+                    .map(|s| 1.min(s.layers.len().saturating_sub(1)))
+                    .unwrap_or(0);
+                if session
+                    .bus
+                    .execute(
+                        &mut session.project,
+                        EditCommand::AddObject {
+                            layer_index: target_layer,
+                            item,
+                        },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    session.selected_items = vec![new_id];
+                }
+            }
+            if ui
+                .button("＋ ベクター")
+                .on_hover_text(
+                    "自由ベジェベクターシェイプ（グラデーション塗り・破線・トリムパス対応）を配置",
+                )
+                .clicked()
+            {
+                let (cx, cy) = session
+                    .project
+                    .active_scene()
+                    .map(|s| {
+                        (
+                            (s.width as f32 - 360.0) * 0.5,
+                            (s.height as f32 - 360.0) * 0.5,
+                        )
+                    })
+                    .unwrap_or((460.0, 180.0));
+                let mut item = TimelineItem::new(
+                    "✒ ベクターシェイプ",
+                    session.playhead,
+                    RationalTime::from_seconds(4.0),
+                    ItemKind::VectorShape {
+                        config: VectorShapeConfig::star(),
+                    },
+                );
+                item.transform.x = cx.max(0.0);
+                item.transform.y = cy.max(0.0);
+                let new_id = item.id;
+                let target_layer = session
+                    .project
+                    .active_scene()
+                    .map(|s| 1.min(s.layers.len().saturating_sub(1)))
+                    .unwrap_or(0);
+                if session
+                    .bus
+                    .execute(
+                        &mut session.project,
+                        EditCommand::AddObject {
+                            layer_index: target_layer,
                             item,
                         },
                         CommandSource::Gui,
@@ -2564,6 +2650,8 @@ fn clip_color_for_kind(kind: &ItemKind) -> Color32 {
         ItemKind::GroupControl { .. } => Color32::from_rgb(196, 140, 56),
         ItemKind::CharacterSprite { .. } => Color32::from_rgb(208, 102, 140),
         ItemKind::AudioSpectrum { .. } => Color32::from_rgb(46, 178, 212),
+        ItemKind::ParticleEmitter { .. } => Color32::from_rgb(218, 152, 42),
+        ItemKind::VectorShape { .. } => Color32::from_rgb(172, 86, 214),
         ItemKind::Precomp { .. } => Color32::from_rgb(42, 152, 148),
         ItemKind::Audio { .. } => Color32::from_rgb(64, 152, 108),
         _ => Color32::from_rgb(88, 104, 138),

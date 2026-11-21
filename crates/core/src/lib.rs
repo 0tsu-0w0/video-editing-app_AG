@@ -3,6 +3,7 @@ pub mod cache;
 pub mod camera;
 pub mod command;
 pub mod encoding;
+pub mod expression;
 pub mod folder;
 pub mod highlights;
 pub mod interop;
@@ -10,15 +11,21 @@ pub mod lipsync;
 pub mod preset;
 pub mod project;
 pub mod script_import;
+pub mod template;
 pub mod text_edit;
 pub mod time;
 pub mod timeline_ops;
 
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
 pub use cache::{CacheError, PrecompCacheManager, content_hash_hex};
-pub use camera::{Camera3D, Projected3D, Transform3D};
+pub use camera::{Camera3D, Light3D, Light3DType, Projected3D, Transform3D};
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
 pub use encoding::base64_encode;
+pub use expression::{
+    CompiledExpression, EXPRESSION_PROPERTIES, ExpressionContext, ExpressionError,
+    build_bake_expression_command, compile_expression, evaluate_expression, evaluate_item_property,
+    evaluate_item_transform, expression_presets, item_base_property, item_expressions_use_audio,
+};
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
 pub use highlights::{
     HighlightCandidate, HighlightConfig, build_motion_track_keyframes_command,
@@ -37,14 +44,21 @@ pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor, TextStylePre
 pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
     BezierMask, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer,
-    LayerId, MaskMode, MaskVertex, MediaKind, MotionTrackConfig, PlaybackSettings, Project,
-    ProjectSettings, RgbaColor, Scene, SceneColorGrade, SceneId, ScenePreset, ShapeKind,
-    TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
-    TrackPointSample, Transform2D, TransitionKind,
+    LayerId, MaskMode, MaskVertex, MediaKind, MotionBlurConfig, MotionTrackConfig, ParticleConfig,
+    ParticlePreset, PlaybackSettings, Project, ProjectSettings, RgbaColor, Scene, SceneColorGrade,
+    SceneId, ScenePreset, ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker,
+    TrackMatte, TrackMatteMode, TrackPointSample, Transform2D, TransitionKind, VectorFillMode,
+    VectorShapeConfig,
 };
 pub use script_import::{
     ScriptBuildConfig, ScriptLine, build_script_timeline_commands, parse_script_auto,
     parse_script_csv, parse_script_markdown,
+};
+pub use template::{
+    ExposedParam, ExposedParamKind, MotionTemplate, ProjectTemplate, ResponsiveTimeRegion,
+    TemplateBinding, TemplateParamValue, apply_responsive_time_stretch,
+    apply_template_values_to_scene, build_instantiate_template_command, builtin_motion_templates,
+    builtin_project_templates, extract_motion_template_from_scene, map_responsive_time,
 };
 pub use text_edit::{
     DEFAULT_FILLERS, TextEditCutResult, TranscriptEntry, analyze_fillers,

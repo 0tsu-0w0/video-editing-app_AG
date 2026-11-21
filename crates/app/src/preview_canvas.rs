@@ -658,6 +658,7 @@ fn estimate_item_base_size(item: &TimelineItem, scene: &Scene) -> Option<(f32, f
         ItemKind::Shape { width, height, .. }
         | ItemKind::CharacterSprite { width, height, .. }
         | ItemKind::AudioSpectrum { width, height, .. } => Some((*width, *height)),
+        ItemKind::VectorShape { config } => Some((config.width, config.height)),
         ItemKind::Text {
             content, font_size, ..
         } => {
@@ -675,9 +676,10 @@ fn estimate_item_base_size(item: &TimelineItem, scene: &Scene) -> Option<(f32, f
             let h = (line_count * font_size * 1.35 + pad_y + 16.0).clamp(32.0, scene.height as f32);
             Some((w, h))
         }
-        ItemKind::Image { .. } | ItemKind::Video { .. } | ItemKind::Precomp { .. } => {
-            Some((scene.width as f32, scene.height as f32))
-        }
+        ItemKind::Image { .. }
+        | ItemKind::Video { .. }
+        | ItemKind::Precomp { .. }
+        | ItemKind::ParticleEmitter { .. } => Some((scene.width as f32, scene.height as f32)),
         ItemKind::Audio { .. }
         | ItemKind::FilterObject { .. }
         | ItemKind::Transition { .. }

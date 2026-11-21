@@ -7,6 +7,7 @@ pub mod pipeline;
 pub mod psd_sprite;
 pub mod sprite;
 pub mod text;
+pub mod v09_fx;
 
 pub use color::{LinearImage, LinearPremul, linear_to_srgb, srgb_to_linear};
 pub use color_grading::{
@@ -25,3 +26,6 @@ pub use pipeline::{
 pub use psd_sprite::PsdCharacterAsset;
 pub use sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
 pub use text::{StyledSpan, TextRenderer, parse_inline_text_spans, strip_inline_tags};
+pub use v09_fx::{
+    apply_3d_lighting_tint, build_drop_shadow_image, render_particle_emitter, render_vector_shape,
+};

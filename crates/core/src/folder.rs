@@ -1,5 +1,6 @@
 use crate::preset::{EffectPreset, ItemAlias, TextStylePreset};
 use crate::project::{AssetRef, Project};
+use crate::template::{MotionTemplate, ProjectTemplate};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -89,6 +90,16 @@ impl ProjectFolder {
         self.root.join("luts")
     }
 
+    /// v0.9 #15: モーショングラフィックス テンプレート格納ディレクトリ (`templates/`)
+    pub fn templates_dir(&self) -> PathBuf {
+        self.root.join("templates")
+    }
+
+    /// v0.9 #15: プロジェクトテンプレート格納ディレクトリ (`templates/projects/`)
+    pub fn project_templates_dir(&self) -> PathBuf {
+        self.templates_dir().join("projects")
+    }
+
     /// プロジェクト内 `luts/` 配下の `.cube` 3D LUT ファイル一覧を名前順で返す
     pub fn list_luts(&self) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(self.luts_dir()) else {
@@ -134,6 +145,8 @@ impl ProjectFolder {
         fs::create_dir_all(self.effect_presets_dir())?;
         fs::create_dir_all(self.text_style_presets_dir())?;
         fs::create_dir_all(self.luts_dir())?;
+        fs::create_dir_all(self.templates_dir())?;
+        fs::create_dir_all(self.project_templates_dir())?;
         fs::create_dir_all(self.cache_precomp_dir())?;
         fs::create_dir_all(self.cache_waveforms_dir())?;
         fs::create_dir_all(self.cache_proxy_dir())?;
@@ -357,6 +370,78 @@ impl ProjectFolder {
             fs::remove_file(path)?;
         }
         Ok(())
+    }
+
+    /// v0.9 #15: モーショングラフィックス テンプレートを `templates/<safe_name>.json` へ保存する
+    pub fn save_motion_template(&self, template: &MotionTemplate) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.templates_dir())?;
+        let file_name = format!("{}.json", sanitize_alias_filename(&template.name));
+        let path = self.templates_dir().join(file_name);
+        let json = serde_json::to_string_pretty(template)?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// `templates/` 内の保存済みモーショングラフィックス テンプレートを名前順で読み込む
+    pub fn load_motion_templates(&self) -> Vec<MotionTemplate> {
+        let Ok(entries) = fs::read_dir(self.templates_dir()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(tpl) = serde_json::from_str::<MotionTemplate>(&text)
+            {
+                out.push(tpl);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    pub fn delete_motion_template(&self, name: &str) -> Result<(), FolderError> {
+        let file_name = format!("{}.json", sanitize_alias_filename(name));
+        let path = self.templates_dir().join(file_name);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// v0.9 #15: プロジェクトテンプレートを `templates/projects/<safe_name>.json` へ保存する
+    pub fn save_project_template(
+        &self,
+        template: &ProjectTemplate,
+    ) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.project_templates_dir())?;
+        let file_name = format!("{}.json", sanitize_alias_filename(&template.name));
+        let path = self.project_templates_dir().join(file_name);
+        let json = serde_json::to_string_pretty(template)?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// `templates/projects/` 内の保存済みプロジェクトテンプレートを名前順で読み込む
+    pub fn load_project_templates(&self) -> Vec<ProjectTemplate> {
+        let Ok(entries) = fs::read_dir(self.project_templates_dir()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(tpl) = serde_json::from_str::<ProjectTemplate>(&text)
+            {
+                out.push(tpl);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// 定期自動保存スナップショットを `backups/autosave_<ms>_<seq>.json` へ原子的に書き出し、

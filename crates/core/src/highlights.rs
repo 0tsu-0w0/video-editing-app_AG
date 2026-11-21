@@ -349,6 +349,7 @@ pub fn build_shorts_clip_scene_command(
             ..src.audio_ducking
         },
         color_grade: src.color_grade.clone(),
+        motion_blur: src.motion_blur,
         markers: Vec::new(),
         layers: new_layers,
     };

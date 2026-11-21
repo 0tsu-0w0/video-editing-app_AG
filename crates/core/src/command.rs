@@ -1,13 +1,17 @@
 use crate::animation::Keyframe;
 use crate::camera::{Camera3D, Transform3D};
+use crate::expression::compile_expression;
 use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
 use crate::lipsync::CharacterSpriteConfig;
 use crate::preset::ColorPalette;
 use crate::project::{
     AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BezierMask, BlendMode, EffectId,
-    EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, Project, RgbaColor, Scene,
-    SceneColorGrade, SceneId, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte,
-    Transform2D, TransitionKind,
+    EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, MotionBlurConfig, ParticleConfig,
+    Project, RgbaColor, Scene, SceneColorGrade, SceneId, TextAnimator, TextStyle, TimelineItem,
+    TimelineMarker, TrackMatte, Transform2D, TransitionKind, VectorShapeConfig,
+};
+use crate::template::{
+    TemplateParamValue, apply_responsive_time_stretch, apply_template_values_to_scene,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -31,6 +35,8 @@ pub enum CommandError {
     InvalidSplitPosition(RationalTime),
     #[error("No items selected for precompose")]
     EmptyPrecomposeSelection,
+    #[error("Invalid expression: {0}")]
+    InvalidExpression(String),
     #[error("GUI drag operation in progress; retry after release")]
     GuiDragLocked,
     #[error("Journal I/O error: {0}")]
@@ -287,6 +293,32 @@ pub enum EditCommand {
     SetSceneColorGrade {
         grade: SceneColorGrade,
     },
+    /// v0.9 #14: アイテムのプロパティにエクスプレッションを設定（`None` または空文字で解除）
+    SetExpression {
+        item_id: ItemId,
+        property: String,
+        expression: Option<String>,
+    },
+    /// v0.9 #15: モーショングラフィックス テンプレートインスタンスの公開パラメータ＆レスポンシブ尺を更新
+    UpdateTemplateInstance {
+        item_id: ItemId,
+        values: BTreeMap<String, TemplateParamValue>,
+        duration_sec: Option<f64>,
+    },
+    /// v0.9 #16: パーティクルエミッター設定を更新する
+    SetParticleConfig {
+        item_id: ItemId,
+        config: ParticleConfig,
+    },
+    /// v0.9 #16: 自由ベジェベクターシェイプ設定を更新する
+    SetVectorShape {
+        item_id: ItemId,
+        config: VectorShapeConfig,
+    },
+    /// v0.9 #16: シーンのシャッター角度ベースモーションブラー設定を更新する
+    SetMotionBlur {
+        motion_blur: MotionBlurConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -345,6 +377,11 @@ impl EditCommand {
             Self::SetAudioSpectrum { .. } => "set_audio_spectrum",
             Self::UpdateMarker { .. } => "update_marker",
             Self::SetSceneColorGrade { .. } => "set_scene_color_grade",
+            Self::SetExpression { .. } => "set_expression",
+            Self::UpdateTemplateInstance { .. } => "update_template_instance",
+            Self::SetParticleConfig { .. } => "set_particle_config",
+            Self::SetVectorShape { .. } => "set_vector_shape",
+            Self::SetMotionBlur { .. } => "set_motion_blur",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -803,6 +840,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 target_lufs: None,
                 audio_ducking: AudioDuckingConfig::default(),
                 color_grade: SceneColorGrade::default(),
+                motion_blur: MotionBlurConfig::default(),
                 markers: Vec::new(),
                 layers: new_layers,
             };
@@ -1285,6 +1323,110 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 *ch = ch.clamp(0.2, 2.5);
             }
             scene.color_grade = g;
+            Ok(())
+        }
+        EditCommand::SetExpression {
+            item_id,
+            property,
+            expression,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            match expression.as_deref().map(str::trim) {
+                None | Some("") => {
+                    item.expressions.remove(property);
+                }
+                Some(src) => {
+                    compile_expression(src)
+                        .map_err(|e| CommandError::InvalidExpression(e.to_string()))?;
+                    item.expressions.insert(property.clone(), src.to_string());
+                }
+            }
+            Ok(())
+        }
+        EditCommand::UpdateTemplateInstance {
+            item_id,
+            values,
+            duration_sec,
+        } => {
+            let (precomp_scene_id, binding_snap, old_dur, new_dur) = {
+                let item = find_item_mut(project, *item_id)?;
+                let ItemKind::Precomp { scene_id } = item.kind else {
+                    return Ok(());
+                };
+                let Some(binding) = item.template_binding.as_mut() else {
+                    return Ok(());
+                };
+                for (k, v) in values {
+                    binding.values.insert(k.clone(), v.clone());
+                }
+                let prev_dur = binding.current_duration_sec.max(0.1);
+                let target_dur = duration_sec
+                    .map(|d| d.clamp(0.3, 600.0))
+                    .unwrap_or(prev_dur);
+                if (target_dur - prev_dur).abs() > 1e-4 {
+                    binding.current_duration_sec = target_dur;
+                    item.duration = RationalTime::from_seconds(target_dur);
+                }
+                (scene_id, binding.clone(), prev_dur, target_dur)
+            };
+
+            if let Some(nested) = project.scenes.iter_mut().find(|s| s.id == precomp_scene_id) {
+                apply_template_values_to_scene(
+                    nested,
+                    &binding_snap.exposed_params,
+                    &binding_snap.values,
+                );
+                if (new_dur - old_dur).abs() > 1e-4 {
+                    apply_responsive_time_stretch(
+                        nested,
+                        old_dur,
+                        new_dur,
+                        binding_snap.responsive_time.intro_sec,
+                        binding_snap.responsive_time.outro_sec,
+                    );
+                }
+            }
+            Ok(())
+        }
+        EditCommand::SetParticleConfig { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::ParticleEmitter { config: dst } = &mut item.kind {
+                let mut c = *config;
+                c.count = c.count.clamp(1, 600);
+                c.speed = c.speed.clamp(0.0, 4000.0);
+                c.size_px = c.size_px.clamp(1.0, 200.0);
+                c.spread_deg = c.spread_deg.clamp(0.0, 360.0);
+                c.lifetime_sec = c.lifetime_sec.clamp(0.1, 30.0);
+                c.depth_3d = c.depth_3d.clamp(0.0, 1.0);
+                *dst = c;
+            }
+            Ok(())
+        }
+        EditCommand::SetVectorShape { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::VectorShape { config: dst } = &mut item.kind {
+                let mut c = config.clone();
+                c.width = c.width.clamp(8.0, 8192.0);
+                c.height = c.height.clamp(8.0, 8192.0);
+                c.stroke_width = c.stroke_width.clamp(0.0, 128.0);
+                c.dash_length = c.dash_length.clamp(0.0, 500.0);
+                c.dash_gap = c.dash_gap.clamp(0.0, 500.0);
+                c.trim_start = c.trim_start.clamp(0.0, 1.0);
+                c.trim_end = c.trim_end.clamp(0.0, 1.0);
+                *dst = c;
+            }
+            Ok(())
+        }
+        EditCommand::SetMotionBlur { motion_blur } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut mb = *motion_blur;
+            mb.shutter_angle_deg = mb.shutter_angle_deg.clamp(0.0, 360.0);
+            mb.shutter_phase_deg = mb.shutter_phase_deg.clamp(-180.0, 180.0);
+            mb.preview_samples = mb.preview_samples.clamp(1, 8);
+            mb.export_samples = mb.export_samples.clamp(1, 16);
+            scene.motion_blur = mb;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

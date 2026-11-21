@@ -1,7 +1,8 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use ve_core::{
-    CommandSource, CubicBezier, EditCommand, Interpolation, Keyframe, RationalTime, evaluate_track,
-    evaluate_velocity,
+    CommandSource, CubicBezier, EXPRESSION_PROPERTIES, EditCommand, Interpolation, Keyframe,
+    RationalTime, build_bake_expression_command, evaluate_item_property, evaluate_track,
+    evaluate_velocity, item_base_property,
 };
 use ve_mcp::EditorSession;
 
@@ -40,20 +41,23 @@ impl GraphEditorState {
             return;
         };
 
-        let item_opt = session.project.active_scene().and_then(|s| {
-            s.layers
-                .iter()
-                .flat_map(|l| l.items.iter())
-                .find(|i| i.id == item_id)
-                .cloned()
+        let scene_and_item = session.project.active_scene().and_then(|s| {
+            s.layers.iter().enumerate().find_map(|(l_idx, l)| {
+                l.items
+                    .iter()
+                    .find(|i| i.id == item_id)
+                    .map(|it| (s.clone(), l_idx, it.clone()))
+            })
         });
-        let Some(item) = item_opt else {
+        let Some((scene_snap, layer_idx, item)) = scene_and_item else {
             ui.weak("選択中のオブジェクトがアクティブシーンにありません。");
             return;
         };
 
+        let active_expr = item.expressions.get(&self.property).cloned();
+
         // ヘッダーコントロール
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("グラフ:");
             ui.selectable_value(&mut self.mode, GraphMode::Value, "値グラフ");
             ui.selectable_value(&mut self.mode, GraphMode::Speed, "速度グラフ");
@@ -62,8 +66,13 @@ impl GraphEditorState {
             egui::ComboBox::from_id_salt("graph_prop_combo")
                 .selected_text(&self.property)
                 .show_ui(ui, |ui| {
-                    for p in ["x", "y", "scale_x", "scale_y", "rotation_deg", "opacity"] {
-                        ui.selectable_value(&mut self.property, p.to_string(), p);
+                    for &p in EXPRESSION_PROPERTIES {
+                        let label = if item.expressions.contains_key(p) {
+                            format!("fx {p}")
+                        } else {
+                            p.to_string()
+                        };
+                        ui.selectable_value(&mut self.property, p.to_string(), label);
                     }
                 });
 
@@ -71,7 +80,7 @@ impl GraphEditorState {
                 .max(RationalTime::ZERO)
                 .min(item.duration);
             if ui.button("◆ 現在位置にキー追加").clicked() {
-                let base = base_property_value(&item.transform, &self.property);
+                let base = item_base_property(&item, &self.property);
                 let cur_val = item
                     .keyframes
                     .get(&self.property)
@@ -93,9 +102,12 @@ impl GraphEditorState {
                 );
             }
             if ui.button("サンプルEase設定").clicked() {
-                let base = base_property_value(&item.transform, &self.property);
-                let target = if self.property == "opacity" {
-                    0.0
+                let base = item_base_property(&item, &self.property);
+                let target = if matches!(
+                    self.property.as_str(),
+                    "opacity" | "trim_start" | "trim_end" | "trim_offset"
+                ) {
+                    if base > 0.5 { 0.0 } else { 1.0 }
                 } else {
                     base + 180.0
                 };
@@ -128,6 +140,31 @@ impl GraphEditorState {
                     None,
                 );
             }
+
+            if let Some(ref expr_str) = active_expr {
+                ui.colored_label(
+                    Color32::from_rgb(218, 125, 255),
+                    format!("✨ fx: {expr_str}"),
+                );
+                if ui
+                    .small_button("🔥 Bake")
+                    .on_hover_text("式カーブをキーフレームへ焼き込み")
+                    .clicked()
+                    && let Ok(cmd) = build_bake_expression_command(
+                        &scene_snap,
+                        layer_idx,
+                        &item,
+                        &self.property,
+                        3,
+                        |_| [0.0; 4],
+                    )
+                {
+                    let _ =
+                        session
+                            .bus
+                            .execute(&mut session.project, cmd, CommandSource::Gui, None);
+                }
+            }
         });
 
         let kfs = item
@@ -135,7 +172,7 @@ impl GraphEditorState {
             .get(&self.property)
             .cloned()
             .unwrap_or_default();
-        let base_val = base_property_value(&item.transform, &self.property);
+        let base_val = item_base_property(&item, &self.property);
         let dur_sec = item.duration.as_seconds().max(0.1) as f32;
 
         // キャンバス描画領域
@@ -154,9 +191,10 @@ impl GraphEditorState {
         );
         painter.rect_filled(plot, 2.0, Color32::from_rgb(27, 31, 40));
 
-        // サンプル点からY軸レンジ決定
+        // サンプル点からY軸レンジ決定（キーフレーム＋エクスプレッション両方を包含）
         let samples = 80usize;
         let mut pts_raw: Vec<(f32, f32)> = Vec::with_capacity(samples + 1);
+        let mut expr_raw: Vec<(f32, f32)> = Vec::new();
         for i in 0..=samples {
             let t_sec = (i as f32 / samples as f32) * dur_sec;
             let rt = RationalTime::from_seconds(f64::from(t_sec));
@@ -165,14 +203,51 @@ impl GraphEditorState {
                 GraphMode::Speed => evaluate_velocity(&kfs, rt),
             };
             pts_raw.push((t_sec, y));
+
+            if active_expr.is_some() {
+                let global_rt = item.start + rt;
+                let ey = match self.mode {
+                    GraphMode::Value => evaluate_item_property(
+                        &scene_snap,
+                        layer_idx,
+                        &item,
+                        &self.property,
+                        global_rt,
+                        [0.0; 4],
+                    ),
+                    GraphMode::Speed => {
+                        let dt = 1.0 / scene_snap.fps.as_f64().max(1.0);
+                        let v0 = evaluate_item_property(
+                            &scene_snap,
+                            layer_idx,
+                            &item,
+                            &self.property,
+                            global_rt,
+                            [0.0; 4],
+                        );
+                        let v1 = evaluate_item_property(
+                            &scene_snap,
+                            layer_idx,
+                            &item,
+                            &self.property,
+                            global_rt + RationalTime::from_seconds(dt),
+                            [0.0; 4],
+                        );
+                        (v1 - v0) / dt as f32
+                    }
+                };
+                expr_raw.push((t_sec, ey));
+            }
         }
 
         let mut min_y = pts_raw
             .iter()
+            .chain(expr_raw.iter())
             .map(|(_, y)| *y)
             .fold(f32::INFINITY, f32::min);
         let mut max_y = pts_raw
             .iter()
+            .chain(expr_raw.iter())
             .map(|(_, y)| *y)
             .fold(f32::NEG_INFINITY, f32::max);
         if (max_y - min_y).abs() < 1e-3 {
@@ -202,7 +277,7 @@ impl GraphEditorState {
             );
         }
 
-        // カーブ描画
+        // キーフレームカーブ描画
         let curve_color = match self.mode {
             GraphMode::Value => Color32::from_rgb(92, 198, 255),
             GraphMode::Speed => Color32::from_rgb(255, 168, 72),
@@ -210,6 +285,17 @@ impl GraphEditorState {
         let screen_pts: Vec<Pos2> = pts_raw.iter().map(|&(t, y)| to_screen(t, y)).collect();
         for win in screen_pts.windows(2) {
             painter.line_segment([win[0], win[1]], Stroke::new(2.0, curve_color));
+        }
+
+        // v0.9 #14: エクスプレッション評価カーブ可視化（紫マゼンタ）
+        if !expr_raw.is_empty() {
+            let expr_pts: Vec<Pos2> = expr_raw.iter().map(|&(t, y)| to_screen(t, y)).collect();
+            for win in expr_pts.windows(2) {
+                painter.line_segment(
+                    [win[0], win[1]],
+                    Stroke::new(2.2, Color32::from_rgb(218, 125, 255)),
+                );
+            }
         }
 
         // 再生ヘッド位置
@@ -329,17 +415,5 @@ impl GraphEditorState {
             egui::FontId::monospace(10.0),
             Color32::from_gray(170),
         );
-    }
-}
-
-fn base_property_value(tf: &ve_core::Transform2D, property: &str) -> f32 {
-    match property {
-        "x" => tf.x,
-        "y" => tf.y,
-        "scale_x" => tf.scale_x,
-        "scale_y" => tf.scale_y,
-        "rotation_deg" => tf.rotation_deg,
-        "opacity" => tf.opacity,
-        _ => 0.0,
     }
 }
