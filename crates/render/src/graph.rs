@@ -1,4 +1,6 @@
 use crate::color::{LinearImage, LinearPremul};
+use crate::hot_shader::ShaderHotReloader;
+use crate::psd_sprite::PsdCharacterAsset;
 use crate::sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
 use crate::text::TextRenderer;
 use std::collections::{BTreeMap, HashMap};
@@ -11,12 +13,13 @@ use ve_core::{
     TimelineItem, Transform2D, content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png,
     rms_to_mouth,
 };
+use ve_plugin_api::PluginRegistry;
 
 /// 組み込み WGSL エフェクトチェーンシェーダーソース
 pub const EFFECTS_WGSL_SOURCE: &str = include_str!("shaders/effects.wgsl");
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
-/// 1. 各オブジェクトのキーフレーム評価・立ち絵口パク・3Dカメラ透視投影/DoF・個別エフェクトチェーン適用
+/// 1. 各オブジェクトのキーフレーム評価・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
 /// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）適用
 /// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）
 pub struct RenderGraph {
@@ -24,8 +27,13 @@ pub struct RenderGraph {
     mem_precomp_cache: HashMap<String, LinearImage>,
     disk_precomp_cache: Option<PrecompCacheManager>,
     png_cache: HashMap<PathBuf, LinearImage>,
+    psd_cache: HashMap<PathBuf, PsdCharacterAsset>,
     /// 音声アセットIDごとの事前解析波形（立ち絵の音量連動口パク参照用）
     pub asset_waveforms: HashMap<Uuid, WaveformPeaks>,
+    /// Phase 4: OSS プラグインレジストリ（ビネット・セピア・外部プラグイン）
+    pub plugins: PluginRegistry,
+    /// Phase 4: カスタム WGSL シェーダーのホットリロード管理
+    pub hot_shaders: ShaderHotReloader,
     pub cache_hits: u64,
     pub cache_misses: u64,
 }
@@ -43,7 +51,10 @@ impl RenderGraph {
             mem_precomp_cache: HashMap::new(),
             disk_precomp_cache: None,
             png_cache: HashMap::new(),
+            psd_cache: HashMap::new(),
             asset_waveforms: HashMap::new(),
+            plugins: PluginRegistry::with_builtins(),
+            hot_shaders: ShaderHotReloader::new(),
             cache_hits: 0,
             cache_misses: 0,
         }
@@ -130,7 +141,12 @@ impl RenderGraph {
                         if let Some(mut item_img) =
                             self.render_item(project, scene, item, &tf, time, w, h, depth)
                         {
-                            apply_effect_chain(&mut item_img, &item.effect_chain);
+                            apply_effect_chain(
+                                &mut item_img,
+                                &item.effect_chain,
+                                time.as_seconds(),
+                                &self.plugins,
+                            );
 
                             let (mut draw_x, mut draw_y) = (tf.x, tf.y);
                             if scene.camera.enabled && tf3d.enable_3d {
@@ -236,7 +252,7 @@ impl RenderGraph {
 
             for target_idx in target_indices {
                 if let Some((img, _, _)) = layer_outputs[target_idx].as_mut() {
-                    apply_named_effect(img, effect_type, params);
+                    apply_named_effect(img, effect_type, params, time.as_seconds(), &self.plugins);
                 }
             }
         }
@@ -344,6 +360,24 @@ impl RenderGraph {
                 let mouth = self.evaluate_character_mouth(scene, config, global_time);
                 let sw = (*width * tf.scale_x).round().max(16.0) as u32;
                 let sh = (*height * tf.scale_y).round().max(16.0) as u32;
+
+                // Phase 4: PSD ネイティブ立ち絵（目パチ・口パク差分レイヤー直接合成）
+                if let Some(psd_cfg) = &config.psd_config
+                    && !psd_cfg.psd_path.as_os_str().is_empty()
+                {
+                    if !self.psd_cache.contains_key(&psd_cfg.psd_path)
+                        && let Ok(loaded) = PsdCharacterAsset::from_file(&psd_cfg.psd_path)
+                    {
+                        self.psd_cache.insert(psd_cfg.psd_path.clone(), loaded);
+                    }
+                    if let Some(psd_asset) = self.psd_cache.get(&psd_cfg.psd_path) {
+                        let eye_closed = psd_cfg.is_eye_closed_at(global_time.as_seconds());
+                        let composited = psd_asset.composite(psd_cfg, mouth, eye_closed);
+                        return Some(scale_linear_image(&composited, sw, sh));
+                    }
+                }
+
+                // Phase 3: PNG 差分方式
                 if let Some(png_path) = resolve_mouth_png(&config.png_paths, mouth) {
                     if !self.png_cache.contains_key(png_path)
                         && let Some(loaded) = load_png_linear(png_path)
@@ -510,15 +544,26 @@ fn apply_group_transform(src: &LinearImage, tf: Transform2D) -> LinearImage {
     dst
 }
 
-fn apply_effect_chain(image: &mut LinearImage, chain: &[EffectNode]) {
+fn apply_effect_chain(
+    image: &mut LinearImage,
+    chain: &[EffectNode],
+    time_sec: f64,
+    plugins: &PluginRegistry,
+) {
     for node in chain {
         if node.enabled {
-            apply_named_effect(image, &node.effect_type, &node.params);
+            apply_named_effect(image, &node.effect_type, &node.params, time_sec, plugins);
         }
     }
 }
 
-fn apply_named_effect(image: &mut LinearImage, effect_type: &str, params: &BTreeMap<String, f32>) {
+fn apply_named_effect(
+    image: &mut LinearImage,
+    effect_type: &str,
+    params: &BTreeMap<String, f32>,
+    time_sec: f64,
+    plugins: &PluginRegistry,
+) {
     match effect_type {
         "brightness" => {
             let gain = params.get("gain").copied().unwrap_or(1.0).max(0.0);
@@ -606,7 +651,24 @@ fn apply_named_effect(image: &mut LinearImage, effect_type: &str, params: &BTree
                 }
             }
         }
-        _ => {}
+        other => {
+            // Phase 4: プラグイン API 経由のエフェクトディスパッチ
+            if plugins.get_effect(other).is_some() {
+                let mut raw: Vec<[f32; 4]> =
+                    image.pixels.iter().map(|p| [p.r, p.g, p.b, p.a]).collect();
+                if plugins
+                    .apply_effect(other, &mut raw, image.width, image.height, time_sec, params)
+                    .is_ok()
+                {
+                    for (dst, src) in image.pixels.iter_mut().zip(raw) {
+                        dst.r = src[0];
+                        dst.g = src[1];
+                        dst.b = src[2];
+                        dst.a = src[3];
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -925,6 +987,7 @@ mod tests {
                         open_threshold: 0.2,
                     },
                     png_paths: png_paths.clone(),
+                    psd_config: None,
                     phoneme_override: vec![],
                 },
                 width: 32.0,
@@ -1014,5 +1077,34 @@ mod tests {
         let center = frame.pixels[16 * 32 + 16];
         // Zソートにより手前の赤が奥の青より前に描画される
         assert!(center.r > 0.9 && center.b < 0.1, "got {center:?}");
+    }
+
+    #[test]
+    fn plugin_effect_executes_via_render_graph() {
+        let mut scene = Scene::new("PluginTest", 16, 16, FrameRate::FPS_60);
+        let mut item = TimelineItem::new(
+            "White",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(1.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 16.0,
+                height: 16.0,
+                color: RgbaColor::WHITE,
+            },
+        );
+        let mut params = BTreeMap::new();
+        params.insert("strength".to_string(), 1.0);
+        item.effect_chain.push(EffectNode {
+            id: Uuid::new_v4(),
+            effect_type: "plugin.vignette".to_string(),
+            enabled: true,
+            params,
+        });
+        scene.layers[0].items.push(item);
+
+        let mut graph = RenderGraph::new();
+        let frame = graph.render_scene(&scene, RationalTime::ZERO);
+        assert!(frame.pixels[8 * 16 + 8].r > frame.pixels[0].r);
     }
 }

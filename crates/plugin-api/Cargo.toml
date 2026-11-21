@@ -1,0 +1,12 @@
+[package]
+name = "ve-plugin-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Public plugin API for Next-Gen Hybrid Video Editor (effects, custom WGSL metadata, timeline generators)"
+
+[dependencies]
+ve-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true

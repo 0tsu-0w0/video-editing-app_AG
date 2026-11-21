@@ -571,7 +571,13 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
 
             let max_layer_idx = extracted.iter().map(|(l, _)| *l).max().unwrap_or(0);
             let mut new_layers: Vec<Layer> = (0..=max_layer_idx.max(2))
-                .map(|i| Layer::new(format!("Layer {}", i + 1)))
+                .map(|i| {
+                    let mut l = Layer::new(format!("Layer {}", i + 1));
+                    // クラッシュ復旧リプレイ時の完全一致＆Precompハッシュキャッシュ整合性のため決定論的IDを割当
+                    l.id =
+                        uuid::Uuid::from_u128(new_scene_id.as_u128().wrapping_add((i + 1) as u128));
+                    l
+                })
                 .collect();
             for (layer_idx, mut item) in extracted {
                 item.start = item.start - min_start;

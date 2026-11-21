@@ -22,7 +22,7 @@ use ve_core::{
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, FfmpegCli};
-use ve_render::{RenderGraph, WgpuPreviewPipeline};
+use ve_render::{RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, register_shader_dir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceMode {
@@ -82,6 +82,8 @@ struct EditorApp {
     dock_state: DockState<Pane>,
     ime_panel: ImePocPanel,
     relink_inputs: BTreeMap<Uuid, String>,
+    custom_wgsl_path_input: String,
+    custom_wgsl_msg: String,
     export_format: ExportFormat,
     export_status: String,
     preview_scale: u32,
@@ -199,6 +201,11 @@ impl EditorApp {
 
         let workspace_mode = WorkspaceMode::MainEdit;
         let dock_state = build_dock_state(workspace_mode);
+        let mut render_graph = RenderGraph::new();
+        let loaded_shaders = register_shader_dir(
+            &mut render_graph.hot_shaders,
+            std::path::Path::new("shaders"),
+        );
 
         Self {
             workspace_mode,
@@ -208,7 +215,7 @@ impl EditorApp {
             graph_editor: GraphEditorState::default(),
             audio_ai_panel: AudioAi3DPanel::default(),
             waveforms: BTreeMap::new(),
-            render_graph: RenderGraph::new(),
+            render_graph,
             preview_pipeline,
             preview_tex_id,
             audio_state,
@@ -217,6 +224,8 @@ impl EditorApp {
             dock_state,
             ime_panel: ImePocPanel::new(),
             relink_inputs: BTreeMap::new(),
+            custom_wgsl_path_input: "shaders/custom_chromatic_aberration.wgsl".to_string(),
+            custom_wgsl_msg: format!("監視中 WGSL: {loaded_shaders} 件"),
             export_format: ExportFormat::Mp4H264,
             export_status: "待機中".to_string(),
             preview_scale: 2,
@@ -566,6 +575,36 @@ impl TabViewer for EditorTabViewer<'_> {
                             }
                         }
 
+                        // Phase 4: プラグイン API 経由のエフェクト追加（PluginRegistry 動的列挙）
+                        let manifests = self.app.render_graph.plugins.list_manifests();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("プラグイン適用:");
+                            for m in manifests {
+                                if ui.button(&m.name).clicked() {
+                                    let mut params = BTreeMap::new();
+                                    for p in &m.params {
+                                        params.insert(p.key.clone(), p.default_value);
+                                    }
+                                    let mut g = self.app.session.lock().unwrap();
+                                    let s = &mut *g;
+                                    let _ = s.bus.execute(
+                                        &mut s.project,
+                                        EditCommand::AddEffect {
+                                            item_id: item.id,
+                                            effect: EffectNode {
+                                                id: Uuid::new_v4(),
+                                                effect_type: m.id.clone(),
+                                                enabled: true,
+                                                params,
+                                            },
+                                        },
+                                        CommandSource::Gui,
+                                        None,
+                                    );
+                                }
+                            }
+                        });
+
                         // テキストオブジェクトの場合は文字ごとアニメーター＋日本語IME
                         if let ItemKind::Text {
                             mut content,
@@ -668,6 +707,63 @@ impl TabViewer for EditorTabViewer<'_> {
                             });
                         }
                     }
+                    ui.separator();
+                    ui.heading("カスタム WGSL ホットリロード (Phase 4)");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut self.app.custom_wgsl_path_input);
+                        if ui.button("監視登録").clicked()
+                            && !self.app.custom_wgsl_path_input.trim().is_empty()
+                        {
+                            let p = PathBuf::from(self.app.custom_wgsl_path_input.trim());
+                            let id = p
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "custom".into());
+                            match self.app.render_graph.hot_shaders.register_file(id, &p) {
+                                Ok(e) => {
+                                    self.app.custom_wgsl_msg =
+                                        format!("登録完了: {} (rev {})", e.id, e.revision);
+                                }
+                                Err(err) => {
+                                    self.app.custom_wgsl_msg = err;
+                                }
+                            }
+                        }
+                        if ui.button("今すぐ検証").clicked() {
+                            let reloaded = self.app.render_graph.hot_shaders.poll_reload();
+                            self.app.custom_wgsl_msg = if reloaded.is_empty() {
+                                "変更なし".into()
+                            } else {
+                                format!("ホットリロード完了: {}", reloaded.join(", "))
+                            };
+                        }
+                    });
+                    ui.weak(&self.app.custom_wgsl_msg);
+                    for entry in self.app.render_graph.hot_shaders.list() {
+                        match &entry.status {
+                            ShaderReloadStatus::Loaded {
+                                revision,
+                                entry_points,
+                            } => {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_GREEN,
+                                    format!("✔ {} (rev {}) {:?}", entry.id, revision, entry_points),
+                                );
+                            }
+                            ShaderReloadStatus::Error {
+                                last_good_revision,
+                                message,
+                            } => {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_RED,
+                                    format!(
+                                        "✖ {} (rev {} 維持): {}",
+                                        entry.id, last_good_revision, message
+                                    ),
+                                );
+                            }
+                        }
+                    }
                 });
             }
             Pane::AudioAi3D => {
@@ -684,6 +780,12 @@ impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.ime_panel.capture_events(&ctx);
+
+        // カスタム WGSL シェーダーの自動ホットリロードポーリング
+        let reloaded = self.render_graph.hot_shaders.poll_reload();
+        if !reloaded.is_empty() {
+            self.custom_wgsl_msg = format!("自動ホットリロード: {}", reloaded.join(", "));
+        }
 
         // 上部バー: Dual-Workspace UX 切替 + シーンパンくずリスト + Precomp キャッシュ統計
         egui::Panel::top("workspace_switcher_bar").show(ui, |ui| {
@@ -765,7 +867,7 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // Render Graph 評価（Precomp + 口パク + 3Dカメラ） → wgpu Linear f16 テクスチャへアップロード
+        // Render Graph 評価（Precomp + 口パク(PNG/PSD) + 3Dカメラ + プラグイン） → wgpu Linear f16
         if let (Some(wgpu_state), Some(pipe)) =
             (frame.wgpu_render_state(), self.preview_pipeline.as_ref())
         {
@@ -803,7 +905,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor — Phase 3 (Audio AI + LipSync + 3D Camera)"),
+            .with_title("Next-Gen Hybrid Video Editor v0.1.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

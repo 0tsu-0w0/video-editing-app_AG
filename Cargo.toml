@@ -5,6 +5,7 @@ members = [
     "crates/media",
     "crates/audio",
     "crates/render",
+    "crates/plugin-api",
     "crates/ai",
     "crates/mcp",
     "crates/app",
@@ -22,6 +23,7 @@ ve-core = { path = "crates/core" }
 ve-media = { path = "crates/media" }
 ve-audio = { path = "crates/audio" }
 ve-render = { path = "crates/render" }
+ve-plugin-api = { path = "crates/plugin-api" }
 ve-ai = { path = "crates/ai" }
 ve-mcp = { path = "crates/mcp" }
 
@@ -41,11 +43,13 @@ cpal = "0.15"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "query", "native-tls"] }
 keyring = { version = "3.6", features = ["windows-native", "apple-native", "linux-native"] }
 
-# Rendering & Text
+# Rendering, Shaders, PSD & Text
 wgpu = "30.0"
+naga = { version = "30.0", features = ["wgsl-in"] }
 cosmic-text = "0.19"
 half = { version = "2.6", features = ["bytemuck"] }
 png = "0.18"
+psd = "0.3"
 
 # GUI
 egui = "0.37"

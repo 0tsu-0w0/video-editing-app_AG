@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 ve-core.workspace = true
 ve-render.workspace = true
+ve-plugin-api.workspace = true
 ve-ai.workspace = true
 serde.workspace = true
 serde_json.workspace = true

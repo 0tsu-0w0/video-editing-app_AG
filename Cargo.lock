@@ -3255,6 +3255,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "psd"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a25f9b8cfffd65d911baf31a033239f7a0facb755faa2481575b70db5dc9195"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4667,6 +4676,7 @@ dependencies = [
  "ve-core",
  "ve-mcp",
  "ve-media",
+ "ve-plugin-api",
  "ve-render",
  "wgpu",
 ]
@@ -4703,6 +4713,7 @@ dependencies = [
  "uuid",
  "ve-ai",
  "ve-core",
+ "ve-plugin-api",
  "ve-render",
 ]
 
@@ -4719,17 +4730,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ve-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "ve-core",
+]
+
+[[package]]
 name = "ve-render"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "half",
+ "naga",
  "png",
+ "psd",
  "serde_json",
  "tempfile",
  "uuid",
  "ve-audio",
  "ve-core",
+ "ve-plugin-api",
  "wgpu",
 ]
 
