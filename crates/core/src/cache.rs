@@ -7,6 +7,22 @@ use thiserror::Error;
 pub enum CacheError {
     #[error("Cache I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Invalid cache key (path traversal or unsupported characters): {0}")]
+    InvalidKey(String),
+}
+
+/// キャッシュキーにパストラバーサル文字やパス区切りが含まれないことを検証する
+fn validate_cache_key(key: &str) -> Result<(), CacheError> {
+    if !key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        Ok(())
+    } else {
+        Err(CacheError::InvalidKey(key.to_string()))
+    }
 }
 
 /// FNV-1a 64bit の決定論的ハッシュ（キャッシュキー生成用）
@@ -69,6 +85,7 @@ impl PrecompCacheManager {
             let path = entry.path();
             if path.is_file()
                 && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && validate_cache_key(stem).is_ok()
             {
                 let size = entry.metadata()?.len();
                 self.access_counter += 1;
@@ -89,6 +106,7 @@ impl PrecompCacheManager {
 
     /// ハッシュキーでキャッシュを読み出し、LRUアクセス時刻を更新する
     pub fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        validate_cache_key(key)?;
         if let Some(entry) = self.entries.get_mut(key) {
             if !entry.path.exists() {
                 self.total_bytes = self.total_bytes.saturating_sub(entry.size_bytes);
@@ -106,6 +124,7 @@ impl PrecompCacheManager {
 
     /// ハッシュキーでキャッシュを保存し、上限超過時は LRU（最古参照）から自動削除する
     pub fn put(&mut self, key: &str, data: &[u8]) -> Result<PathBuf, CacheError> {
+        validate_cache_key(key)?;
         let path = self.dir.join(format!("{key}.bin"));
         fs::write(&path, data)?;
         let size = data.len() as u64;
@@ -130,6 +149,7 @@ impl PrecompCacheManager {
     }
 
     pub fn invalidate(&mut self, key: &str) -> Result<(), CacheError> {
+        validate_cache_key(key)?;
         if let Some(entry) = self.entries.remove(key) {
             self.total_bytes = self.total_bytes.saturating_sub(entry.size_bytes);
             if entry.path.exists() {
@@ -183,5 +203,23 @@ mod tests {
         assert!(cache.get(&k2).unwrap().is_none());
         assert!(cache.get(&k1).unwrap().is_some());
         assert!(cache.get(&k3).unwrap().is_some());
+    }
+
+    #[test]
+    fn rejects_path_traversal_cache_keys() {
+        let tmp = tempdir().unwrap();
+        let mut cache = PrecompCacheManager::new(tmp.path().join("precomp"), 1024).unwrap();
+
+        for bad in ["../escape", "a/b", r"a\b", "", "..", "foo.bar"] {
+            assert!(matches!(
+                cache.put(bad, b"data"),
+                Err(CacheError::InvalidKey(_))
+            ));
+            assert!(matches!(cache.get(bad), Err(CacheError::InvalidKey(_))));
+            assert!(matches!(
+                cache.invalidate(bad),
+                Err(CacheError::InvalidKey(_))
+            ));
+        }
     }
 }

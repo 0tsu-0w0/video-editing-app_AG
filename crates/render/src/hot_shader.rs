@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use ve_core::content_hash_hex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub struct HotShaderEntry {
     pub id: String,
     pub path: PathBuf,
     pub last_mtime: Option<SystemTime>,
+    pub last_len: u64,
     pub last_hash: String,
     /// 最後に構文・型検証（naga）を通過した安全な WGSL ソース
     pub valid_wgsl: String,
@@ -49,7 +50,9 @@ impl ShaderHotReloader {
         let path = path.into();
         let source = fs::read_to_string(&path)
             .map_err(|e| format!("WGSL ファイル読み込み失敗 ({}): {e}", path.display()))?;
-        let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let meta = fs::metadata(&path).ok();
+        let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+        let len = meta.map(|m| m.len()).unwrap_or(source.len() as u64);
         let hash = content_hash_hex(source.as_bytes());
         let entry_points = validate_wgsl(&source)?;
 
@@ -57,6 +60,7 @@ impl ShaderHotReloader {
             id: id.clone(),
             path,
             last_mtime: mtime,
+            last_len: len,
             last_hash: hash,
             valid_wgsl: source,
             revision: 1,
@@ -70,20 +74,37 @@ impl ShaderHotReloader {
     }
 
     /// 登録済み全 WGSL ファイルの更新をポーリングし、変更があれば検証＆ホットリロードする。
+    /// まず `fs::metadata`（mtime・サイズ）を確認し、未変更ファイルはディスク読み込みをスキップする。
     /// 構文エラー時は直前の正常シェーダーを保持したままエラー診断を返す（アプリをクラッシュさせない）。
     pub fn poll_reload(&mut self) -> Vec<String> {
+        let now = SystemTime::now();
         let mut reloaded_ids = Vec::new();
         for (id, entry) in &mut self.shaders {
+            let Ok(meta) = fs::metadata(&entry.path) else {
+                continue;
+            };
+            let mtime = meta.modified().ok();
+            let len = meta.len();
+            // mtime とサイズが一致し、ファイルシステム更新粒度ウィンドウ(2秒)外ならファイル読込を省略
+            if mtime.is_some()
+                && mtime == entry.last_mtime
+                && len == entry.last_len
+                && mtime
+                    .and_then(|t| now.duration_since(t).ok())
+                    .is_some_and(|age| age >= Duration::from_secs(2))
+            {
+                continue;
+            }
+
             let Ok(source) = fs::read_to_string(&entry.path) else {
                 continue;
             };
-            let mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
             let hash = content_hash_hex(source.as_bytes());
+            entry.last_mtime = mtime;
+            entry.last_len = len;
             if hash == entry.last_hash {
-                entry.last_mtime = mtime;
                 continue;
             }
-            entry.last_mtime = mtime;
             entry.last_hash = hash;
 
             match validate_wgsl(&source) {

@@ -36,7 +36,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Media & Audio
-symphonia = { version = "0.6", features = ["all"] }
+symphonia = { version = "0.6", default-features = false, features = [
+    "opt-simd",
+    "wav",
+    "mp3",
+    "aac",
+    "flac",
+    "ogg",
+    "vorbis",
+    "mkv",
+    "isomp4",
+    "pcm",
+] }
 cpal = "0.15"
 
 # AI & Networking & OS Credentials
@@ -59,3 +70,8 @@ egui_dock = "0.22"
 
 # Testing
 tempfile = "3.19"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

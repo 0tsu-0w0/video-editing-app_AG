@@ -87,6 +87,9 @@ struct EditorApp {
     export_format: ExportFormat,
     export_status: String,
     preview_scale: u32,
+    last_rendered_key: Option<(u64, i64, u32, usize, Uuid)>,
+    preview_dirty: bool,
+    last_shader_poll: std::time::Instant,
 }
 
 impl EditorApp {
@@ -229,6 +232,9 @@ impl EditorApp {
             export_format: ExportFormat::Mp4H264,
             export_status: "待機中".to_string(),
             preview_scale: 2,
+            last_rendered_key: None,
+            preview_dirty: true,
+            last_shader_poll: std::time::Instant::now(),
         }
     }
 
@@ -701,6 +707,7 @@ impl TabViewer for EditorTabViewer<'_> {
                                         {
                                             asset.fallback_absolute_path =
                                                 Some(PathBuf::from(entry.trim()));
+                                            self.app.preview_dirty = true;
                                         }
                                     }
                                 }
@@ -723,6 +730,7 @@ impl TabViewer for EditorTabViewer<'_> {
                                 Ok(e) => {
                                     self.app.custom_wgsl_msg =
                                         format!("登録完了: {} (rev {})", e.id, e.revision);
+                                    self.app.preview_dirty = true;
                                 }
                                 Err(err) => {
                                     self.app.custom_wgsl_msg = err;
@@ -734,6 +742,7 @@ impl TabViewer for EditorTabViewer<'_> {
                             self.app.custom_wgsl_msg = if reloaded.is_empty() {
                                 "変更なし".into()
                             } else {
+                                self.app.preview_dirty = true;
                                 format!("ホットリロード完了: {}", reloaded.join(", "))
                             };
                         }
@@ -781,10 +790,14 @@ impl eframe::App for EditorApp {
         let ctx = ui.ctx().clone();
         self.ime_panel.capture_events(&ctx);
 
-        // カスタム WGSL シェーダーの自動ホットリロードポーリング
-        let reloaded = self.render_graph.hot_shaders.poll_reload();
-        if !reloaded.is_empty() {
-            self.custom_wgsl_msg = format!("自動ホットリロード: {}", reloaded.join(", "));
+        // カスタム WGSL シェーダーの自動ホットリロードポーリング（500ms 間隔にスロットルして毎フレームI/Oを回避）
+        if self.last_shader_poll.elapsed() >= std::time::Duration::from_millis(500) {
+            self.last_shader_poll = std::time::Instant::now();
+            let reloaded = self.render_graph.hot_shaders.poll_reload();
+            if !reloaded.is_empty() {
+                self.custom_wgsl_msg = format!("自動ホットリロード: {}", reloaded.join(", "));
+                self.preview_dirty = true;
+            }
         }
 
         // 上部バー: Dual-Workspace UX 切替 + シーンパンくずリスト + Precomp キャッシュ統計
@@ -864,27 +877,45 @@ impl eframe::App for EditorApp {
         for (aid, wf) in &self.waveforms {
             if !self.render_graph.asset_waveforms.contains_key(aid) {
                 self.render_graph.register_waveform(*aid, wf.clone());
+                self.preview_dirty = true;
             }
         }
 
-        // Render Graph 評価（Precomp + 口パク(PNG/PSD) + 3Dカメラ + プラグイン） → wgpu Linear f16
+        // Render Graph 評価（ダーティ判定によりアイドル時はクローン・CPU描画・GPU転送を完全スキップ）
         if let (Some(wgpu_state), Some(pipe)) =
-            (frame.wgpu_render_state(), self.preview_pipeline.as_ref())
+            (frame.wgpu_render_state(), self.preview_pipeline.as_mut())
         {
-            let mut proj_clone = {
+            let (revision, active_id) = {
                 let sess = self.session.lock().unwrap();
-                sess.project.clone()
+                (sess.bus.revision(), sess.project.active_scene_id)
             };
-            let active_id = proj_clone.active_scene_id;
-            if let Some(s) = proj_clone.active_scene_mut() {
-                s.width /= self.preview_scale.max(1);
-                s.height /= self.preview_scale.max(1);
-            }
-            if let Some(linear_img) =
-                self.render_graph
-                    .render_project_scene(&proj_clone, active_id, current_time, false)
-            {
-                pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
+            let render_key = (
+                revision,
+                current_time.ticks,
+                self.preview_scale,
+                self.waveforms.len(),
+                active_id,
+            );
+
+            if self.preview_dirty || self.last_rendered_key != Some(render_key) {
+                let mut proj_clone = {
+                    let sess = self.session.lock().unwrap();
+                    sess.project.clone()
+                };
+                if let Some(s) = proj_clone.active_scene_mut() {
+                    s.width = (s.width / self.preview_scale.max(1)).max(1);
+                    s.height = (s.height / self.preview_scale.max(1)).max(1);
+                }
+                if let Some(linear_img) = self.render_graph.render_project_scene(
+                    &proj_clone,
+                    active_id,
+                    current_time,
+                    false,
+                ) {
+                    pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
+                    self.last_rendered_key = Some(render_key);
+                    self.preview_dirty = false;
+                }
             }
         }
 

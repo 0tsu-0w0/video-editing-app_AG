@@ -97,12 +97,16 @@ impl ProjectFolder {
         Ok(())
     }
 
-    /// 一時ファイル経由で原子的（atomic）に `project.json` を保存する
+    /// 一時ファイル経由＋`sync_all()` で原子的（atomic）かつ停電安全に `project.json` を保存する
     pub fn save_project(&self, project: &Project) -> Result<(), FolderError> {
         let tmp_path = self.root.join("project.json.tmp");
         let final_path = self.project_json_path();
         let json = serde_json::to_string_pretty(project)?;
-        fs::write(&tmp_path, json)?;
+        {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+        }
         fs::rename(&tmp_path, &final_path)?;
         Ok(())
     }
@@ -138,9 +142,11 @@ impl ProjectFolder {
         Ok(entries)
     }
 
-    /// アセット参照を解決する（相対パス優先 → 絶対パスフォールバック → オフライン判定）
+    /// アセット参照を解決する（安全なプロジェクト内相対パス優先 → 絶対パスフォールバック → オフライン判定）
     pub fn resolve_asset(&self, asset: &AssetRef) -> AssetResolution {
-        if let Some(rel) = &asset.relative_path {
+        if let Some(rel) = &asset.relative_path
+            && is_safe_project_relative_path(rel)
+        {
             let candidate = self.root.join(rel);
             if candidate.exists() {
                 return AssetResolution::Found(candidate);
@@ -154,7 +160,8 @@ impl ProjectFolder {
         AssetResolution::Offline
     }
 
-    /// プロジェクト収集: 外部参照アセットを `assets/` へコピーし相対パス参照へ更新する
+    /// プロジェクト収集: 外部参照アセットを `assets/` へコピーし相対パス参照へ更新する。
+    /// 異なるソース同士でファイル名が衝突する場合はアセットIDプレフィックスを付与して上書きを防止する。
     pub fn collect_asset(&self, asset: &mut AssetRef) -> Result<PathBuf, FolderError> {
         let src = match self.resolve_asset(asset) {
             AssetResolution::Found(p) => p,
@@ -163,9 +170,15 @@ impl ProjectFolder {
         let file_name = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| !n.is_empty() && n != "." && n != "..")
             .unwrap_or_else(|| format!("{}.bin", asset.id));
-        let dest_rel = PathBuf::from("assets").join(&file_name);
-        let dest_abs = self.root.join(&dest_rel);
+        let mut dest_rel = PathBuf::from("assets").join(&file_name);
+        let mut dest_abs = self.root.join(&dest_rel);
+        if dest_abs.exists() && src != dest_abs {
+            let short_id = &asset.id.simple().to_string()[..8];
+            dest_rel = PathBuf::from("assets").join(format!("{short_id}_{file_name}"));
+            dest_abs = self.root.join(&dest_rel);
+        }
         if src != dest_abs {
             fs::copy(&src, &dest_abs)?;
         }
@@ -173,6 +186,20 @@ impl ProjectFolder {
         asset.collected = true;
         Ok(dest_abs)
     }
+}
+
+/// 信頼できない `project.json` 内の `relative_path` によるディレクトリトラバーサルを防止する
+fn is_safe_project_relative_path(path: &Path) -> bool {
+    use std::path::Component;
+    let mut has_normal = false;
+    for comp in path.components() {
+        match comp {
+            Component::Normal(_) => has_normal = true,
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    has_normal
 }
 
 #[cfg(test)]
@@ -231,5 +258,65 @@ mod tests {
         assert_eq!(loaded.name, "Test Project");
         assert_eq!(loaded.assets.len(), 1);
         assert!(loaded.assets[0].collected);
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_relative_path() {
+        let tmp = tempdir().unwrap();
+        let secret = tmp.path().join("outside_secret.txt");
+        fs::write(&secret, b"top-secret").unwrap();
+
+        let proj_dir = tmp.path().join("Project");
+        let project = Project::new("SecTest", ProjectSettings::default());
+        let folder = ProjectFolder::init(&proj_dir, &project).unwrap();
+
+        let malicious = AssetRef {
+            id: Uuid::new_v4(),
+            name: "evil".into(),
+            kind: MediaKind::Audio,
+            relative_path: Some(PathBuf::from("../outside_secret.txt")),
+            fallback_absolute_path: None,
+            collected: true,
+        };
+        assert_eq!(folder.resolve_asset(&malicious), AssetResolution::Offline);
+    }
+
+    #[test]
+    fn collect_asset_avoids_filename_collision() {
+        let tmp = tempdir().unwrap();
+        let dir_a = tmp.path().join("dir_a");
+        let dir_b = tmp.path().join("dir_b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        let file_a = dir_a.join("voice.wav");
+        let file_b = dir_b.join("voice.wav");
+        fs::write(&file_a, b"CONTENT_A").unwrap();
+        fs::write(&file_b, b"CONTENT_B").unwrap();
+
+        let project = Project::new("CollisionTest", ProjectSettings::default());
+        let folder = ProjectFolder::init(tmp.path().join("proj"), &project).unwrap();
+
+        let mut asset_a = AssetRef {
+            id: Uuid::new_v4(),
+            name: "voice.wav".into(),
+            kind: MediaKind::Audio,
+            relative_path: None,
+            fallback_absolute_path: Some(file_a),
+            collected: false,
+        };
+        let mut asset_b = AssetRef {
+            id: Uuid::new_v4(),
+            name: "voice.wav".into(),
+            kind: MediaKind::Audio,
+            relative_path: None,
+            fallback_absolute_path: Some(file_b),
+            collected: false,
+        };
+
+        let path_a = folder.collect_asset(&mut asset_a).unwrap();
+        let path_b = folder.collect_asset(&mut asset_b).unwrap();
+        assert_ne!(path_a, path_b);
+        assert_eq!(fs::read(&path_a).unwrap(), b"CONTENT_A");
+        assert_eq!(fs::read(&path_b).unwrap(), b"CONTENT_B");
     }
 }

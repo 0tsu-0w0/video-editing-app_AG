@@ -20,23 +20,49 @@ struct DecodedPsdLayer {
     image: LinearImage,
 }
 
+/// PSD の安全上限（128 MiB / 8K解像度）による OOM 防御
+const MAX_PSD_FILE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PSD_DIMENSION: u32 = 8192;
+
 impl PsdCharacterAsset {
     pub fn from_file(path: &Path) -> Result<Self, String> {
+        let meta = fs::metadata(path).map_err(|e| format!("PSD stat error: {e}"))?;
+        if meta.len() > MAX_PSD_FILE_BYTES {
+            return Err(format!(
+                "PSD file exceeds {} MiB safety limit",
+                MAX_PSD_FILE_BYTES / (1024 * 1024)
+            ));
+        }
         let bytes = fs::read(path).map_err(|e| format!("PSD read error: {e}"))?;
         Self::from_bytes(&bytes)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() as u64 > MAX_PSD_FILE_BYTES {
+            return Err(format!(
+                "PSD buffer exceeds {} MiB safety limit",
+                MAX_PSD_FILE_BYTES / (1024 * 1024)
+            ));
+        }
         let psd = Psd::from_bytes(bytes).map_err(|e| format!("PSD parse error: {e}"))?;
         let width = psd.width().max(1);
         let height = psd.height().max(1);
+        if width > MAX_PSD_DIMENSION || height > MAX_PSD_DIMENSION {
+            return Err(format!(
+                "PSD dimensions {width}x{height} exceed safety limit {MAX_PSD_DIMENSION}"
+            ));
+        }
+        let expected_rgba_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|px| px.checked_mul(4))
+            .ok_or_else(|| "PSD buffer size overflow".to_string())?;
 
         let mut layers = Vec::with_capacity(psd.layers().len());
         // `psd.layers()` は Photoshop UI 準拠の上から下（手前から奥）の並び順のため、
         // SrcOver 合成用に逆順（奥から手前）で保持する
         for layer in psd.layers().iter().rev() {
             let rgba = layer.rgba();
-            if rgba.len() == (width as usize) * (height as usize) * 4 {
+            if rgba.len() == expected_rgba_len {
                 let image = LinearImage::from_rgba8_srgb(width, height, &rgba);
                 layers.push(DecodedPsdLayer {
                     name: layer.name().to_string(),
@@ -50,7 +76,7 @@ impl PsdCharacterAsset {
         // レイヤーセクションが空のフラットPSDの場合は合成済み画像を単一レイヤーとして扱う
         if layers.is_empty() {
             let rgba = psd.rgba();
-            if rgba.len() == (width as usize) * (height as usize) * 4 {
+            if rgba.len() == expected_rgba_len {
                 layers.push(DecodedPsdLayer {
                     name: "Background".to_string(),
                     originally_visible: true,

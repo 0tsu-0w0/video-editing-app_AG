@@ -1,5 +1,25 @@
 use half::f16;
+use std::sync::LazyLock;
 use ve_core::{BlendMode, RgbaColor, TrackMatteMode};
+
+const LINEAR_LUT_MAX: usize = 8192;
+
+static SRGB_U8_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    let mut table = [0.0f32; 256];
+    for (i, slot) in table.iter_mut().enumerate() {
+        *slot = srgb_to_linear(i as f32 / 255.0);
+    }
+    table
+});
+
+static LINEAR_TO_SRGB_U8_LUT: LazyLock<[u8; LINEAR_LUT_MAX + 1]> = LazyLock::new(|| {
+    let mut table = [0u8; LINEAR_LUT_MAX + 1];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let lin = i as f32 / LINEAR_LUT_MAX as f32;
+        *slot = (linear_to_srgb(lin) * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    table
+});
 
 #[inline]
 pub fn srgb_to_linear(c: f32) -> f32 {
@@ -19,6 +39,19 @@ pub fn linear_to_srgb(c: f32) -> f32 {
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     }
+}
+
+/// 8-bit sRGB 値を `LazyLock` LUT 経由で高速に Linear 値へ変換する
+#[inline]
+pub fn srgb_u8_to_linear(v: u8) -> f32 {
+    SRGB_U8_TO_LINEAR_LUT[v as usize]
+}
+
+/// Linear 値 (0.0..=1.0) を `LazyLock` 8193段 LUT 経由で高速に 8-bit sRGB へ変換する
+#[inline]
+pub fn linear_to_srgb_u8(c: f32) -> u8 {
+    let idx = (c.clamp(0.0, 1.0) * LINEAR_LUT_MAX as f32).round() as usize;
+    LINEAR_TO_SRGB_U8_LUT[idx.min(LINEAR_LUT_MAX)]
 }
 
 /// Linear sRGB + Premultiplied Alpha ピクセル
@@ -48,13 +81,18 @@ impl LinearPremul {
         }
     }
 
+    #[inline]
     pub fn from_rgba8_srgb(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self::from_srgb_straight(RgbaColor {
-            r: f32::from(r) / 255.0,
-            g: f32::from(g) / 255.0,
-            b: f32::from(b) / 255.0,
-            a: f32::from(a) / 255.0,
-        })
+        if a == 0 {
+            return Self::TRANSPARENT;
+        }
+        let af = f32::from(a) * (1.0 / 255.0);
+        Self {
+            r: srgb_u8_to_linear(r) * af,
+            g: srgb_u8_to_linear(g) * af,
+            b: srgb_u8_to_linear(b) * af,
+            a: af,
+        }
     }
 
     /// Rec.709 リニア輝度
@@ -105,18 +143,18 @@ impl LinearPremul {
         }
     }
 
-    /// 出力用（sRGB Straight RGBA8）へ変換
+    /// 出力用（sRGB Straight RGBA8）へ高速LUT変換
+    #[inline]
     pub fn to_rgba8_srgb(self) -> [u8; 4] {
         let a = self.a.clamp(0.0, 1.0);
-        let (r_lin, g_lin, b_lin) = if a > 1e-6 {
-            (self.r / a, self.g / a, self.b / a)
-        } else {
-            (0.0, 0.0, 0.0)
-        };
+        if a <= 1e-6 {
+            return [0, 0, 0, 0];
+        }
+        let inv_a = 1.0 / a;
         [
-            (linear_to_srgb(r_lin) * 255.0).round().clamp(0.0, 255.0) as u8,
-            (linear_to_srgb(g_lin) * 255.0).round().clamp(0.0, 255.0) as u8,
-            (linear_to_srgb(b_lin) * 255.0).round().clamp(0.0, 255.0) as u8,
+            linear_to_srgb_u8(self.r * inv_a),
+            linear_to_srgb_u8(self.g * inv_a),
+            linear_to_srgb_u8(self.b * inv_a),
             (a * 255.0).round().clamp(0.0, 255.0) as u8,
         ]
     }
@@ -135,15 +173,17 @@ impl LinearImage {
         Self {
             width,
             height,
-            pixels: vec![fill; (width * height) as usize],
+            pixels: vec![fill; (width as usize).saturating_mul(height as usize)],
         }
     }
 
     pub fn from_rgba8_srgb(width: u32, height: u32, data: &[u8]) -> Self {
-        let mut pixels = Vec::with_capacity((width * height) as usize);
-        for px in data.as_chunks::<4>().0 {
+        let count = (width as usize).saturating_mul(height as usize);
+        let mut pixels = Vec::with_capacity(count);
+        for px in data.as_chunks::<4>().0.iter().take(count) {
             pixels.push(LinearPremul::from_rgba8_srgb(px[0], px[1], px[2], px[3]));
         }
+        pixels.resize(count, LinearPremul::TRANSPARENT);
         Self {
             width,
             height,
@@ -159,24 +199,36 @@ impl LinearImage {
         out
     }
 
+    /// 呼び出し側の再利用バッファへ `wgpu::TextureFormat::Rgba16Float` バイト列を書き込む（毎フレームゼロ確保）
+    pub fn write_rgba16f_bytes(&self, out: &mut Vec<u8>) {
+        let needed = self.pixels.len() * 8;
+        out.clear();
+        if out.capacity() < needed {
+            out.reserve(needed - out.capacity());
+        }
+        for px in &self.pixels {
+            out.extend_from_slice(&f16::from_f32(px.r).to_le_bytes());
+            out.extend_from_slice(&f16::from_f32(px.g).to_le_bytes());
+            out.extend_from_slice(&f16::from_f32(px.b).to_le_bytes());
+            out.extend_from_slice(&f16::from_f32(px.a).to_le_bytes());
+        }
+    }
+
     /// `wgpu::TextureFormat::Rgba16Float` 転送・キャッシュ保存用バイト列へ変換
     pub fn to_rgba16f_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 8);
-        for px in &self.pixels {
-            for c in [px.r, px.g, px.b, px.a] {
-                out.extend_from_slice(&f16::from_f32(c).to_le_bytes());
-            }
-        }
+        self.write_rgba16f_bytes(&mut out);
         out
     }
 
     /// キャッシュされた `Rgba16Float` バイト列から復元する
     pub fn from_rgba16f_bytes(width: u32, height: u32, bytes: &[u8]) -> Option<Self> {
-        let expected = (width as usize) * (height as usize) * 8;
+        let count = (width as usize).checked_mul(height as usize)?;
+        let expected = count.checked_mul(8)?;
         if bytes.len() != expected {
             return None;
         }
-        let mut pixels = Vec::with_capacity((width * height) as usize);
+        let mut pixels = Vec::with_capacity(count);
         for chunk in bytes.as_chunks::<8>().0 {
             let r = f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
             let g = f16::from_le_bytes([chunk[2], chunk[3]]).to_f32();
@@ -204,47 +256,76 @@ impl LinearImage {
         mode: BlendMode,
     ) {
         let opacity = opacity.clamp(0.0, 1.0);
-        if opacity <= 0.0 {
+        if opacity <= 0.0
+            || src.width == 0
+            || src.height == 0
+            || self.width == 0
+            || self.height == 0
+        {
             return;
         }
-        for sy in 0..src.height {
-            let dy = sy as i32 + offset_y;
-            if dy < 0 || dy >= self.height as i32 {
-                continue;
-            }
-            for sx in 0..src.width {
-                let dx = sx as i32 + offset_x;
-                if dx < 0 || dx >= self.width as i32 {
+
+        // ループ外で描画交差領域を事前クリッピングし、内部ループの境界分岐を排除
+        let dst_x0 = offset_x.max(0) as i64;
+        let dst_y0 = offset_y.max(0) as i64;
+        let dst_x1 = (offset_x as i64 + src.width as i64).min(self.width as i64);
+        let dst_y1 = (offset_y as i64 + src.height as i64).min(self.height as i64);
+        if dst_x0 >= dst_x1 || dst_y0 >= dst_y1 {
+            return;
+        }
+
+        let copy_w = (dst_x1 - dst_x0) as usize;
+        let copy_h = (dst_y1 - dst_y0) as usize;
+        let src_x0 = (dst_x0 - offset_x as i64) as usize;
+        let src_y0 = (dst_y0 - offset_y as i64) as usize;
+        let dst_x0_u = dst_x0 as usize;
+        let dst_y0_u = dst_y0 as usize;
+        let src_stride = src.width as usize;
+        let dst_stride = self.width as usize;
+        let full_opacity = (opacity - 1.0).abs() <= 1e-6;
+
+        for row in 0..copy_h {
+            let src_row_start = (src_y0 + row) * src_stride + src_x0;
+            let dst_row_start = (dst_y0_u + row) * dst_stride + dst_x0_u;
+            let src_slice = &src.pixels[src_row_start..src_row_start + copy_w];
+            let dst_slice = &mut self.pixels[dst_row_start..dst_row_start + copy_w];
+
+            for (dst_px, &raw_sp) in dst_slice.iter_mut().zip(src_slice.iter()) {
+                // 完全透明ピクセルを高速スキップ（文字・立ち絵・図形レイヤー合成で大幅高速化）
+                if raw_sp.a <= 1e-6 && raw_sp.r == 0.0 && raw_sp.g == 0.0 && raw_sp.b == 0.0 {
                     continue;
                 }
-                let mut sp = src.pixels[(sy * src.width + sx) as usize];
-                sp.r *= opacity;
-                sp.g *= opacity;
-                sp.b *= opacity;
-                sp.a *= opacity;
-
-                let dst_idx = (dy as u32 * self.width + dx as u32) as usize;
-                self.pixels[dst_idx] = sp.blend(self.pixels[dst_idx], mode);
+                let sp = if full_opacity {
+                    raw_sp
+                } else {
+                    LinearPremul {
+                        r: raw_sp.r * opacity,
+                        g: raw_sp.g * opacity,
+                        b: raw_sp.b * opacity,
+                        a: raw_sp.a * opacity,
+                    }
+                };
+                *dst_px = sp.blend(*dst_px, mode);
             }
         }
     }
 
     /// トラックマット適用（アルファ／ルミナンスおよび反転）
     pub fn apply_track_matte(&mut self, matte: &LinearImage, mode: TrackMatteMode) {
-        let w = self.width.min(matte.width);
-        let h = self.height.min(matte.height);
+        let w = self.width.min(matte.width) as usize;
+        let h = self.height.min(matte.height) as usize;
+        let dst_stride = self.width as usize;
+        let matte_stride = matte.width as usize;
         for y in 0..h {
-            for x in 0..w {
-                let idx_dst = (y * self.width + x) as usize;
-                let idx_m = (y * matte.width + x) as usize;
-                let mp = matte.pixels[idx_m];
+            let dst_row = &mut self.pixels[y * dst_stride..y * dst_stride + w];
+            let matte_row = &matte.pixels[y * matte_stride..y * matte_stride + w];
+            for (dst, &mp) in dst_row.iter_mut().zip(matte_row.iter()) {
                 let factor = match mode {
                     TrackMatteMode::Alpha => mp.a.clamp(0.0, 1.0),
                     TrackMatteMode::AlphaInverted => (1.0 - mp.a).clamp(0.0, 1.0),
                     TrackMatteMode::Luma => mp.luma(),
                     TrackMatteMode::LumaInverted => (1.0 - mp.luma()).clamp(0.0, 1.0),
                 };
-                let dst = &mut self.pixels[idx_dst];
                 dst.r *= factor;
                 dst.g *= factor;
                 dst.b *= factor;
@@ -272,6 +353,17 @@ mod tests {
         let rgba8 = blended.to_rgba8_srgb();
         assert!((rgba8[0] as i32 - 188).abs() <= 2, "got {:?}", rgba8);
         assert_eq!(rgba8[3], 255);
+    }
+
+    #[test]
+    fn srgb_lut_roundtrip_is_exact_for_all_u8_values() {
+        for v in 0u8..=255 {
+            let lin = srgb_u8_to_linear(v);
+            let exact = srgb_to_linear(f32::from(v) / 255.0);
+            assert!((lin - exact).abs() < 1e-7);
+            let back = linear_to_srgb_u8(lin);
+            assert_eq!(back, v, "roundtrip mismatch at sRGB={v}");
+        }
     }
 
     #[test]

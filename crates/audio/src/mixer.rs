@@ -73,41 +73,56 @@ impl AudioGraph {
             let clip_end_sec = clip_end.as_seconds();
             let offset_sec = clip.source_offset.as_seconds();
 
-            for i in 0..frame_count {
-                let timeline_sec = (start_sample + i as i64) as f64 / dst_sr;
-                if timeline_sec < clip_start_sec || timeline_sec >= clip_end_sec {
-                    continue;
-                }
-                let src_sec = (timeline_sec - clip_start_sec) + offset_sec;
-                if src_sec < 0.0 {
-                    continue;
-                }
-                let src_pos = src_sec * src_sr;
-                let idx0 = src_pos.floor() as usize;
-                if idx0 >= src_frames {
-                    continue;
-                }
-                let idx1 = (idx0 + 1).min(src_frames - 1);
-                let frac = (src_pos - idx0 as f64) as f32;
+            let block_start_sec = start_sample as f64 / dst_sr;
+            let i_start = if block_start_sec < clip_start_sec {
+                ((clip_start_sec - block_start_sec) * dst_sr)
+                    .ceil()
+                    .max(0.0) as usize
+            } else {
+                0
+            };
+            let i_end = (((clip_end_sec - block_start_sec) * dst_sr).ceil().max(0.0) as usize)
+                .min(frame_count);
+            if i_start >= i_end {
+                continue;
+            }
 
-                let (l, r) = if src_ch == 1 {
-                    let s0 = clip.buffer.samples[idx0];
-                    let s1 = clip.buffer.samples[idx1];
-                    let v = s0 + (s1 - s0) * frac;
-                    (v, v)
-                } else {
-                    let l0 = clip.buffer.samples[idx0 * src_ch];
-                    let r0 = clip.buffer.samples[idx0 * src_ch + 1];
-                    let l1 = clip.buffer.samples[idx1 * src_ch];
-                    let r1 = clip.buffer.samples[idx1 * src_ch + 1];
-                    (l0 + (l1 - l0) * frac, r0 + (r1 - r0) * frac)
-                };
+            let step = src_sr / dst_sr;
+            let mut src_pos = ((start_sample + i_start as i64) as f64 / dst_sr - clip_start_sec
+                + offset_sec)
+                * src_sr;
 
-                let base = i * self.channels;
-                out[base] += l * clip.gain;
-                if self.channels > 1 {
-                    out[base + 1] += r * clip.gain;
+            for i in i_start..i_end {
+                if src_pos >= 0.0 {
+                    let idx0 = src_pos as usize;
+                    if idx0 >= src_frames {
+                        break;
+                    }
+                    let idx1 = (idx0 + 1).min(src_frames - 1);
+                    let frac = (src_pos - idx0 as f64) as f32;
+
+                    let (l, r) = if src_ch == 1 {
+                        let s0 = clip.buffer.samples[idx0];
+                        let s1 = clip.buffer.samples[idx1];
+                        let v = s0 + (s1 - s0) * frac;
+                        (v, v)
+                    } else {
+                        let base0 = idx0 * src_ch;
+                        let base1 = idx1 * src_ch;
+                        let l0 = clip.buffer.samples[base0];
+                        let r0 = clip.buffer.samples[base0 + 1];
+                        let l1 = clip.buffer.samples[base1];
+                        let r1 = clip.buffer.samples[base1 + 1];
+                        (l0 + (l1 - l0) * frac, r0 + (r1 - r0) * frac)
+                    };
+
+                    let base = i * self.channels;
+                    out[base] += l * clip.gain;
+                    if self.channels > 1 {
+                        out[base + 1] += r * clip.gain;
+                    }
                 }
+                src_pos += step;
             }
         }
 

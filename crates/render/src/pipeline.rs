@@ -11,15 +11,18 @@ pub struct WgpuPreviewPipeline {
     pub output_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    staging_f16: Vec<u8>,
 }
 
 impl WgpuPreviewPipeline {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let width = width.max(1);
+        let height = height.max(1);
         let linear_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ve_linear_f16_src"),
             size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -34,8 +37,8 @@ impl WgpuPreviewPipeline {
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ve_preview_srgb_out"),
             size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -129,25 +132,30 @@ impl WgpuPreviewPipeline {
         });
 
         Self {
-            width: width.max(1),
-            height: height.max(1),
+            width,
+            height,
             linear_texture,
             linear_view,
             output_texture,
             output_view,
             pipeline,
             bind_group,
+            staging_f16: Vec::with_capacity((width as usize) * (height as usize) * 8),
         }
     }
 
-    /// Linear f16 バッファを GPU へアップロードし、WGSL パイプラインで sRGB プレビューテクスチャへ描画する
+    /// Linear f16 バッファを GPU へアップロードし、WGSL パイプラインで sRGB プレビューテクスチャへ描画する。
+    /// 内部の `staging_f16` バッファを再利用し、毎フレームのヒープ確保を排除する。
     pub fn upload_and_present(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         image: &LinearImage,
     ) {
-        let bytes = image.to_rgba16f_bytes();
+        if image.width != self.width || image.height != self.height {
+            return;
+        }
+        image.write_rgba16f_bytes(&mut self.staging_f16);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.linear_texture,
@@ -155,7 +163,7 @@ impl WgpuPreviewPipeline {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &bytes,
+            &self.staging_f16,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 8),

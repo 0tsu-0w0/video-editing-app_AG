@@ -45,15 +45,20 @@ impl TimelineState {
     ) {
         let fps = session.project.settings.fps;
 
-        // ショートカット: Ctrl+Z / Ctrl+Y / Delete / S (分割)
-        let (undo_key, redo_key, split_key, delete_key) = ui.input(|i| {
-            let undo = i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
-            let redo = (i.modifiers.command && i.key_pressed(egui::Key::Y))
-                || (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z));
-            let split = !i.modifiers.command && i.key_pressed(egui::Key::S);
-            let del = i.key_pressed(egui::Key::Delete);
-            (undo, redo, split, del)
-        });
+        // ショートカット: Ctrl+Z / Ctrl+Y / Delete / S (分割) — テキスト入力フォーカス中は無効化
+        let text_editing = ui.ctx().egui_wants_keyboard_input();
+        let (undo_key, redo_key, split_key, delete_key) = if text_editing {
+            (false, false, false, false)
+        } else {
+            ui.input(|i| {
+                let undo = i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
+                let redo = (i.modifiers.command && i.key_pressed(egui::Key::Y))
+                    || (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z));
+                let split = !i.modifiers.command && i.key_pressed(egui::Key::S);
+                let del = i.key_pressed(egui::Key::Delete);
+                (undo, redo, split, del)
+            })
+        };
 
         // ツールバー
         ui.horizontal_wrapped(|ui| {

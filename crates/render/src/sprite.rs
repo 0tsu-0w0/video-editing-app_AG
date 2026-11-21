@@ -3,21 +3,39 @@ use std::fs::File;
 use std::path::Path;
 use ve_core::{MouthShape, RgbaColor};
 
+/// PNG の最大許容解像度（8K）・メモリ上限（64 MiB）による展開爆弾対策
+const MAX_PNG_DIMENSION: u32 = 8192;
+const MAX_PNG_DECODE_BYTES: usize = 64 * 1024 * 1024;
+
 /// PNG ファイルを読み込み Linear sRGB + Premultiplied Alpha バッファへ変換する
 pub fn load_png_linear(path: &Path) -> Option<LinearImage> {
     let file = File::open(path).ok()?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_limits(png::Limits {
+        bytes: MAX_PNG_DECODE_BYTES,
+    });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let out_size = reader.output_buffer_size()?;
+    if out_size > MAX_PNG_DECODE_BYTES {
+        return None;
+    }
+    let mut buf = vec![0u8; out_size];
     let info = reader.next_frame(&mut buf).ok()?;
     let bytes = &buf[..info.buffer_size()];
     let w = info.width;
     let h = info.height;
+    if w == 0 || h == 0 || w > MAX_PNG_DIMENSION || h > MAX_PNG_DIMENSION {
+        return None;
+    }
 
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    if info.color_type == png::ColorType::Rgba {
+        return Some(LinearImage::from_rgba8_srgb(w, h, bytes));
+    }
+
+    let cap = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    let mut rgba = Vec::with_capacity(cap);
     match info.color_type {
-        png::ColorType::Rgba => rgba.extend_from_slice(bytes),
         png::ColorType::Rgb => {
             for px in bytes.as_chunks::<3>().0 {
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
@@ -48,16 +66,28 @@ pub fn scale_linear_image(src: &LinearImage, dst_w: u32, dst_h: u32) -> LinearIm
     let mut dst = LinearImage::new(dst_w, dst_h, LinearPremul::TRANSPARENT);
     let sx_ratio = src.width as f32 / dst_w as f32;
     let sy_ratio = src.height as f32 / dst_h as f32;
+    let max_sx = (src.width.saturating_sub(1)) as f32;
+    let max_sy = (src.height.saturating_sub(1)) as f32;
+
+    // X方向の参照インデックスを事前計算し、行ループ内での浮動小数点丸めを排除
+    let sx_map: Vec<usize> = (0..dst_w)
+        .map(|x| {
+            ((x as f32 + 0.5) * sx_ratio - 0.5)
+                .round()
+                .clamp(0.0, max_sx) as usize
+        })
+        .collect();
+    let src_stride = src.width as usize;
+    let dst_stride = dst_w as usize;
 
     for y in 0..dst_h {
         let sy = ((y as f32 + 0.5) * sy_ratio - 0.5)
             .round()
-            .clamp(0.0, (src.height.saturating_sub(1)) as f32) as u32;
-        for x in 0..dst_w {
-            let sx = ((x as f32 + 0.5) * sx_ratio - 0.5)
-                .round()
-                .clamp(0.0, (src.width.saturating_sub(1)) as f32) as u32;
-            dst.pixels[(y * dst_w + x) as usize] = src.pixels[(sy * src.width + sx) as usize];
+            .clamp(0.0, max_sy) as usize;
+        let src_row = &src.pixels[sy * src_stride..(sy + 1) * src_stride];
+        let dst_row = &mut dst.pixels[(y as usize) * dst_stride..(y as usize + 1) * dst_stride];
+        for (dst_px, &sx) in dst_row.iter_mut().zip(sx_map.iter()) {
+            *dst_px = src_row[sx];
         }
     }
     dst

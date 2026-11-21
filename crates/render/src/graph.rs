@@ -18,13 +18,19 @@ use ve_plugin_api::PluginRegistry;
 /// 組み込み WGSL エフェクトチェーンシェーダーソース
 pub const EFFECTS_WGSL_SOURCE: &str = include_str!("shaders/effects.wgsl");
 
+/// インメモリ Precomp キャッシュの上限フレーム数（スクラブ時の RAM 肥大化を防止）
+pub const MAX_MEM_PRECOMP_FRAMES: usize = 32;
+const MAX_PNG_CACHE_ENTRIES: usize = 64;
+const MAX_PSD_CACHE_ENTRIES: usize = 16;
+
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
 /// 1. 各オブジェクトのキーフレーム評価・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
 /// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）適用
 /// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）
 pub struct RenderGraph {
     text_renderer: TextRenderer,
-    mem_precomp_cache: HashMap<String, LinearImage>,
+    mem_precomp_cache: HashMap<String, (u64, LinearImage)>,
+    mem_cache_tick: u64,
     disk_precomp_cache: Option<PrecompCacheManager>,
     png_cache: HashMap<PathBuf, LinearImage>,
     psd_cache: HashMap<PathBuf, PsdCharacterAsset>,
@@ -49,6 +55,7 @@ impl RenderGraph {
         Self {
             text_renderer: TextRenderer::new(),
             mem_precomp_cache: HashMap::new(),
+            mem_cache_tick: 0,
             disk_precomp_cache: None,
             png_cache: HashMap::new(),
             psd_cache: HashMap::new(),
@@ -58,6 +65,26 @@ impl RenderGraph {
             cache_hits: 0,
             cache_misses: 0,
         }
+    }
+
+    pub fn mem_precomp_cache_len(&self) -> usize {
+        self.mem_precomp_cache.len()
+    }
+
+    fn insert_mem_precomp(&mut self, key: String, img: LinearImage) {
+        if !self.mem_precomp_cache.contains_key(&key)
+            && self.mem_precomp_cache.len() >= MAX_MEM_PRECOMP_FRAMES
+            && let Some(oldest_key) = self
+                .mem_precomp_cache
+                .iter()
+                .min_by_key(|(_, (tick, _))| *tick)
+                .map(|(k, _)| k.clone())
+        {
+            self.mem_precomp_cache.remove(&oldest_key);
+        }
+        self.mem_cache_tick = self.mem_cache_tick.wrapping_add(1);
+        self.mem_precomp_cache
+            .insert(key, (self.mem_cache_tick, img));
     }
 
     pub fn with_disk_cache(mut self, manager: PrecompCacheManager) -> Self {
@@ -203,21 +230,30 @@ impl RenderGraph {
             }
         }
 
-        // トラックマット適用
+        // トラックマット適用（split_at_mut でフルフレームクローンを回避）
         let mut consumed_matte_layers = vec![false; scene.layers.len()];
         for (layer_idx, layer) in scene.layers.iter().enumerate() {
             if let Some(matte) = layer.track_matte
                 && matte.source_layer_index < scene.layers.len()
                 && matte.source_layer_index != layer_idx
             {
-                let matte_img_opt = layer_outputs[matte.source_layer_index]
-                    .as_ref()
-                    .map(|(img, _, _)| img.clone());
-                if let (Some(matte_img), Some((target_img, _, _))) =
-                    (matte_img_opt, layer_outputs[layer_idx].as_mut())
-                {
-                    target_img.apply_track_matte(&matte_img, matte.mode);
-                    consumed_matte_layers[matte.source_layer_index] = true;
+                let src_idx = matte.source_layer_index;
+                if src_idx < layer_idx {
+                    let (left, right) = layer_outputs.split_at_mut(layer_idx);
+                    if let (Some((matte_img, _, _)), Some((target_img, _, _))) =
+                        (left[src_idx].as_ref(), right[0].as_mut())
+                    {
+                        target_img.apply_track_matte(matte_img, matte.mode);
+                        consumed_matte_layers[src_idx] = true;
+                    }
+                } else {
+                    let (left, right) = layer_outputs.split_at_mut(src_idx);
+                    if let (Some((target_img, _, _)), Some((matte_img, _, _))) =
+                        (left[layer_idx].as_mut(), right[0].as_ref())
+                    {
+                        target_img.apply_track_matte(matte_img, matte.mode);
+                        consumed_matte_layers[src_idx] = true;
+                    }
                 }
             }
         }
@@ -368,6 +404,9 @@ impl RenderGraph {
                     if !self.psd_cache.contains_key(&psd_cfg.psd_path)
                         && let Ok(loaded) = PsdCharacterAsset::from_file(&psd_cfg.psd_path)
                     {
+                        if self.psd_cache.len() >= MAX_PSD_CACHE_ENTRIES {
+                            self.psd_cache.clear();
+                        }
                         self.psd_cache.insert(psd_cfg.psd_path.clone(), loaded);
                     }
                     if let Some(psd_asset) = self.psd_cache.get(&psd_cfg.psd_path) {
@@ -382,6 +421,9 @@ impl RenderGraph {
                     if !self.png_cache.contains_key(png_path)
                         && let Some(loaded) = load_png_linear(png_path)
                     {
+                        if self.png_cache.len() >= MAX_PNG_CACHE_ENTRIES {
+                            self.png_cache.clear();
+                        }
                         self.png_cache.insert(png_path.clone(), loaded);
                     }
                     if let Some(cached) = self.png_cache.get(png_path) {
@@ -410,7 +452,9 @@ impl RenderGraph {
                 );
                 let cache_key = content_hash_hex(key_payload.as_bytes());
 
-                if let Some(cached) = self.mem_precomp_cache.get(&cache_key) {
+                if let Some((tick, cached)) = self.mem_precomp_cache.get_mut(&cache_key) {
+                    self.mem_cache_tick = self.mem_cache_tick.wrapping_add(1);
+                    *tick = self.mem_cache_tick;
                     self.cache_hits += 1;
                     return Some(cached.clone());
                 }
@@ -419,7 +463,7 @@ impl RenderGraph {
                     && let Some(img) = LinearImage::from_rgba16f_bytes(canvas_w, canvas_h, &bytes)
                 {
                     self.cache_hits += 1;
-                    self.mem_precomp_cache.insert(cache_key, img.clone());
+                    self.insert_mem_precomp(cache_key, img.clone());
                     return Some(img);
                 }
 
@@ -429,7 +473,7 @@ impl RenderGraph {
                 if let Some(disk) = self.disk_precomp_cache.as_mut() {
                     let _ = disk.put(&cache_key, &rendered.to_rgba16f_bytes());
                 }
-                self.mem_precomp_cache.insert(cache_key, rendered.clone());
+                self.insert_mem_precomp(cache_key, rendered.clone());
                 Some(rendered)
             }
             ItemKind::Video { .. }
@@ -672,51 +716,98 @@ fn apply_named_effect(
     }
 }
 
+/// O(W * H) スライディングウィンドウ分離ボックスブラー（半径 R に依存しない一定計算量＋行優先メモリアクセス）
 fn box_blur_separable(image: &mut LinearImage, radius: i32) {
     let w = image.width as i32;
     let h = image.height as i32;
-    if w == 0 || h == 0 {
+    if w == 0 || h == 0 || radius <= 0 {
         return;
     }
+    let wu = w as usize;
+    let hu = h as usize;
     let mut temp = vec![LinearPremul::TRANSPARENT; image.pixels.len()];
-    let denom = (radius * 2 + 1) as f32;
+    let inv_denom = 1.0_f64 / f64::from(radius * 2 + 1);
 
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = LinearPremul::TRANSPARENT;
-            for dx in -radius..=radius {
-                let sx = (x + dx).clamp(0, w - 1);
-                let p = image.pixels[(y * w + sx) as usize];
-                acc.r += p.r;
-                acc.g += p.g;
-                acc.b += p.b;
-                acc.a += p.a;
-            }
-            temp[(y * w + x) as usize] = LinearPremul {
-                r: acc.r / denom,
-                g: acc.g / denom,
-                b: acc.b / denom,
-                a: acc.a / denom,
+    // 水平パス（行ごとにスライディングウィンドウ加算）
+    for y in 0..hu {
+        let src_row = &image.pixels[y * wu..(y + 1) * wu];
+        let dst_row = &mut temp[y * wu..(y + 1) * wu];
+
+        let mut acc = [0.0f64; 4];
+        for dx in -radius..=radius {
+            let sx = dx.clamp(0, w - 1) as usize;
+            let p = src_row[sx];
+            acc[0] += f64::from(p.r);
+            acc[1] += f64::from(p.g);
+            acc[2] += f64::from(p.b);
+            acc[3] += f64::from(p.a);
+        }
+        dst_row[0] = LinearPremul {
+            r: (acc[0] * inv_denom).max(0.0) as f32,
+            g: (acc[1] * inv_denom).max(0.0) as f32,
+            b: (acc[2] * inv_denom).max(0.0) as f32,
+            a: (acc[3] * inv_denom).max(0.0) as f32,
+        };
+
+        for x in 1..w {
+            let sub_x = (x - 1 - radius).clamp(0, w - 1) as usize;
+            let add_x = (x + radius).clamp(0, w - 1) as usize;
+            let p_sub = src_row[sub_x];
+            let p_add = src_row[add_x];
+            acc[0] += f64::from(p_add.r) - f64::from(p_sub.r);
+            acc[1] += f64::from(p_add.g) - f64::from(p_sub.g);
+            acc[2] += f64::from(p_add.b) - f64::from(p_sub.b);
+            acc[3] += f64::from(p_add.a) - f64::from(p_sub.a);
+            dst_row[x as usize] = LinearPremul {
+                r: (acc[0] * inv_denom).max(0.0) as f32,
+                g: (acc[1] * inv_denom).max(0.0) as f32,
+                b: (acc[2] * inv_denom).max(0.0) as f32,
+                a: (acc[3] * inv_denom).max(0.0) as f32,
             };
         }
     }
 
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = LinearPremul::TRANSPARENT;
-            for dy in -radius..=radius {
-                let sy = (y + dy).clamp(0, h - 1);
-                let p = temp[(sy * w + x) as usize];
-                acc.r += p.r;
-                acc.g += p.g;
-                acc.b += p.b;
-                acc.a += p.a;
-            }
-            image.pixels[(y * w + x) as usize] = LinearPremul {
-                r: acc.r / denom,
-                g: acc.g / denom,
-                b: acc.b / denom,
-                a: acc.a / denom,
+    // 垂直パス（幅 W の行アキュムレータで常に連続ストライド1のキャッシュフレンドリー走査）
+    let mut col_acc = vec![[0.0f64; 4]; wu];
+    for dy in -radius..=radius {
+        let sy = dy.clamp(0, h - 1) as usize;
+        let row = &temp[sy * wu..(sy + 1) * wu];
+        for (acc, &p) in col_acc.iter_mut().zip(row.iter()) {
+            acc[0] += f64::from(p.r);
+            acc[1] += f64::from(p.g);
+            acc[2] += f64::from(p.b);
+            acc[3] += f64::from(p.a);
+        }
+    }
+    for (dst, acc) in image.pixels[..wu].iter_mut().zip(col_acc.iter()) {
+        *dst = LinearPremul {
+            r: (acc[0] * inv_denom).max(0.0) as f32,
+            g: (acc[1] * inv_denom).max(0.0) as f32,
+            b: (acc[2] * inv_denom).max(0.0) as f32,
+            a: (acc[3] * inv_denom).max(0.0) as f32,
+        };
+    }
+
+    for y in 1..h {
+        let sub_y = (y - 1 - radius).clamp(0, h - 1) as usize;
+        let add_y = (y + radius).clamp(0, h - 1) as usize;
+        let sub_row = &temp[sub_y * wu..(sub_y + 1) * wu];
+        let add_row = &temp[add_y * wu..(add_y + 1) * wu];
+        let dst_row = &mut image.pixels[(y as usize) * wu..(y as usize + 1) * wu];
+        for ((acc, (&p_add, &p_sub)), dst) in col_acc
+            .iter_mut()
+            .zip(add_row.iter().zip(sub_row.iter()))
+            .zip(dst_row.iter_mut())
+        {
+            acc[0] += f64::from(p_add.r) - f64::from(p_sub.r);
+            acc[1] += f64::from(p_add.g) - f64::from(p_sub.g);
+            acc[2] += f64::from(p_add.b) - f64::from(p_sub.b);
+            acc[3] += f64::from(p_add.a) - f64::from(p_sub.a);
+            *dst = LinearPremul {
+                r: (acc[0] * inv_denom).max(0.0) as f32,
+                g: (acc[1] * inv_denom).max(0.0) as f32,
+                b: (acc[2] * inv_denom).max(0.0) as f32,
+                a: (acc[3] * inv_denom).max(0.0) as f32,
             };
         }
     }
@@ -1106,5 +1197,79 @@ mod tests {
         let mut graph = RenderGraph::new();
         let frame = graph.render_scene(&scene, RationalTime::ZERO);
         assert!(frame.pixels[8 * 16 + 8].r > frame.pixels[0].r);
+    }
+
+    #[test]
+    fn sliding_window_box_blur_matches_naive_reference() {
+        let (w, h) = (13u32, 11u32);
+        let mut img = LinearImage::new(w, h, LinearPremul::TRANSPARENT);
+        for y in 0..h {
+            for x in 0..w {
+                img.pixels[(y * w + x) as usize] = LinearPremul {
+                    r: ((x * 7 + y * 3) % 11) as f32 / 10.0,
+                    g: ((x * 5 + y * 13) % 17) as f32 / 16.0,
+                    b: ((x + y * 2) % 9) as f32 / 8.0,
+                    a: 1.0,
+                };
+            }
+        }
+        let orig = img.clone();
+
+        for radius in [1, 3, 6] {
+            let mut fast = orig.clone();
+            box_blur_separable(&mut fast, radius);
+
+            // ナイーブ参照実装との厳密一致検証
+            let denom = (radius * 2 + 1) as f64;
+            let mut tmp = vec![LinearPremul::TRANSPARENT; orig.pixels.len()];
+            for y in 0..h as i32 {
+                for x in 0..w as i32 {
+                    let (mut r, mut g, mut b, mut a) = (0.0, 0.0, 0.0, 0.0);
+                    for dx in -radius..=radius {
+                        let p =
+                            orig.pixels[(y * w as i32 + (x + dx).clamp(0, w as i32 - 1)) as usize];
+                        r += f64::from(p.r);
+                        g += f64::from(p.g);
+                        b += f64::from(p.b);
+                        a += f64::from(p.a);
+                    }
+                    tmp[(y * w as i32 + x) as usize] = LinearPremul {
+                        r: (r / denom) as f32,
+                        g: (g / denom) as f32,
+                        b: (b / denom) as f32,
+                        a: (a / denom) as f32,
+                    };
+                }
+            }
+            for y in 0..h as i32 {
+                for x in 0..w as i32 {
+                    let (mut r, mut g, mut b, mut a) = (0.0, 0.0, 0.0, 0.0);
+                    for dy in -radius..=radius {
+                        let p = tmp[((y + dy).clamp(0, h as i32 - 1) * w as i32 + x) as usize];
+                        r += f64::from(p.r);
+                        g += f64::from(p.g);
+                        b += f64::from(p.b);
+                        a += f64::from(p.a);
+                    }
+                    let got = fast.pixels[(y * w as i32 + x) as usize];
+                    assert!((got.r - (r / denom) as f32).abs() < 1e-5);
+                    assert!((got.g - (g / denom) as f32).abs() < 1e-5);
+                    assert!((got.b - (b / denom) as f32).abs() < 1e-5);
+                    assert!((got.a - (a / denom) as f32).abs() < 1e-5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mem_precomp_cache_is_bounded_by_lru_cap() {
+        let mut graph = RenderGraph::new();
+        for i in 0..(MAX_MEM_PRECOMP_FRAMES + 10) {
+            graph.insert_mem_precomp(
+                format!("key_{i:04}"),
+                LinearImage::new(2, 2, LinearPremul::TRANSPARENT),
+            );
+        }
+        assert_eq!(graph.mem_precomp_cache_len(), MAX_MEM_PRECOMP_FRAMES);
     }
 }

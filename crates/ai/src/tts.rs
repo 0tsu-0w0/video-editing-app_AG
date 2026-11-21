@@ -193,6 +193,26 @@ pub fn parse_voicevox_audio_query(query: &Value) -> (RationalTime, Vec<PhonemeSe
     (total, segments)
 }
 
+fn validate_tts_endpoint(base_url: &str) -> Result<(), TtsError> {
+    if base_url.starts_with("http://127.0.0.1:")
+        || base_url.starts_with("http://127.0.0.1/")
+        || base_url == "http://127.0.0.1"
+        || base_url.starts_with("http://localhost:")
+        || base_url.starts_with("http://localhost/")
+        || base_url == "http://localhost"
+        || base_url.starts_with("http://[::1]:")
+        || base_url.starts_with("http://[::1]/")
+        || base_url == "http://[::1]"
+        || base_url.starts_with("https://")
+    {
+        Ok(())
+    } else {
+        Err(TtsError::Failed(format!(
+            "非ローカル平文HTTPへのTTS送信は禁止されています（localhost または HTTPS のみ許可）: {base_url}"
+        )))
+    }
+}
+
 /// モード3B: VOICEVOX / COEIROINK / A.I.VOICE ローカルAPIクライアント
 #[derive(Debug, Clone)]
 pub struct LocalTtsClient {
@@ -212,21 +232,27 @@ impl LocalTtsClient {
 
     /// テキストから音声WAV・字幕・母音タイミングを1アクションで生成する（VOICEVOX互換 API）
     pub fn synthesize(&self, text: &str) -> Result<TtsImportBundle, TtsError> {
-        let client = reqwest::blocking::Client::new();
-        let query_url = format!("{}/audio_query", self.base_url.trim_end_matches('/'));
+        validate_tts_endpoint(&self.base_url)?;
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        let base = self.base_url.trim_end_matches('/');
+        let speaker_str = self.speaker_id.to_string();
+        let query_url = format!("{base}/audio_query");
         let query: Value = client
             .post(&query_url)
-            .query(&[("text", text), ("speaker", &self.speaker_id.to_string())])
+            .query(&[("text", text), ("speaker", &speaker_str)])
             .send()?
             .error_for_status()?
             .json()?;
 
         let (duration, phonemes) = parse_voicevox_audio_query(&query);
 
-        let synth_url = format!("{}/synthesis", self.base_url.trim_end_matches('/'));
+        let synth_url = format!("{base}/synthesis");
         let wav_bytes = client
             .post(&synth_url)
-            .query(&[("speaker", &self.speaker_id.to_string())])
+            .query(&[("speaker", &speaker_str)])
             .json(&query)
             .send()?
             .error_for_status()?
@@ -296,5 +322,16 @@ mod tests {
         assert_eq!(phonemes[1].mouth, MouthShape::O);
         assert_eq!(phonemes[3].mouth, MouthShape::A);
         assert_eq!(phonemes[4].mouth, MouthShape::Closed);
+    }
+
+    #[test]
+    fn rejects_cleartext_non_local_tts_endpoint() {
+        let mut client = LocalTtsClient::new(TtsEngine::Voicevox, 3);
+        client.base_url = "http://example.com:50021".to_string();
+        let err = client.synthesize("test").unwrap_err();
+        assert!(matches!(err, TtsError::Failed(_)));
+
+        assert!(validate_tts_endpoint("http://127.0.0.1:50021").is_ok());
+        assert!(validate_tts_endpoint("https://tts.example.com").is_ok());
     }
 }
