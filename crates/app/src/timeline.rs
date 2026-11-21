@@ -198,6 +198,8 @@ struct TimelineShortcutInput {
     paste: bool,
     duplicate: bool,
     select_all: bool,
+    group: bool,
+    unlink: bool,
     jump_home: bool,
     jump_end: bool,
     step_frames: i64,
@@ -216,7 +218,7 @@ impl TimelineState {
         let mut playback_action = TimelinePlaybackAction::None;
 
         // ショートカット:
-        // Ctrl+Z/Y, Ctrl+C/V/D/A, Ctrl+F, Delete/Backspace (+Shift=リップル), S, M, Home/End, ←→(Shift=10f), J/K/L
+        // Ctrl+Z/Y, Ctrl+C/V/D/A/G, Ctrl+Shift+G, Ctrl+F, Delete/Backspace (+Shift=リップル), S, M, Home/End, ←→(Shift=10f), J/K/L
         // テキスト入力フォーカス中はすべて抑止する
         let text_editing = ui.ctx().egui_wants_keyboard_input();
         let keys = if text_editing {
@@ -256,6 +258,8 @@ impl TimelineState {
                     paste: cmd && !shift && i.key_pressed(egui::Key::V),
                     duplicate: cmd && !shift && i.key_pressed(egui::Key::D),
                     select_all: cmd && !shift && i.key_pressed(egui::Key::A),
+                    group: cmd && !shift && i.key_pressed(egui::Key::G),
+                    unlink: cmd && shift && i.key_pressed(egui::Key::G),
                     jump_home: !cmd && i.key_pressed(egui::Key::Home),
                     jump_end: !cmd && i.key_pressed(egui::Key::End),
                     step_frames,
@@ -300,6 +304,30 @@ impl TimelineState {
         }
         if keys.duplicate {
             self.duplicate_selected(session);
+        }
+        if keys.group && !session.selected_items.is_empty() {
+            let ids = session.selected_items.clone();
+            let _ = session.bus.execute(
+                &mut session.project,
+                EditCommand::SetGroupId {
+                    item_ids: ids,
+                    group_id: Some(Uuid::new_v4()),
+                },
+                CommandSource::Gui,
+                None,
+            );
+        }
+        if keys.unlink && !session.selected_items.is_empty() {
+            let ids = session.selected_items.clone();
+            let _ = session.bus.execute(
+                &mut session.project,
+                EditCommand::SetGroupId {
+                    item_ids: ids,
+                    group_id: None,
+                },
+                CommandSource::Gui,
+                None,
+            );
         }
 
         // ===== 1. メイン編集ツールバー =====
@@ -360,6 +388,152 @@ impl TimelineState {
                 .clicked()
             {
                 self.precompose_selected(session);
+            }
+            // v1.0 #19: グルーピング＆A/Vリンク解除・スリップ/ロール/スライドトリム
+            if ui
+                .add_enabled(
+                    session.selected_items.len() >= 2,
+                    egui::Button::new("🔗 グループ (Ctrl+G)"),
+                )
+                .on_hover_text("選択中の複数クリップ（映像＋音声等）をグループ化します")
+                .clicked()
+            {
+                let ids = session.selected_items.clone();
+                let _ = session.bus.execute(
+                    &mut session.project,
+                    EditCommand::SetGroupId {
+                        item_ids: ids,
+                        group_id: Some(Uuid::new_v4()),
+                    },
+                    CommandSource::Gui,
+                    None,
+                );
+            }
+            if ui
+                .add_enabled(
+                    !session.selected_items.is_empty(),
+                    egui::Button::new("🔓 リンク解除"),
+                )
+                .on_hover_text("グループ／A-V リンクを解除します (Ctrl+Shift+G)")
+                .clicked()
+            {
+                let ids = session.selected_items.clone();
+                let _ = session.bus.execute(
+                    &mut session.project,
+                    EditCommand::SetGroupId {
+                        item_ids: ids,
+                        group_id: None,
+                    },
+                    CommandSource::Gui,
+                    None,
+                );
+            }
+            if let Some(first_id) = session.selected_items.first().copied() {
+                ui.menu_button("✂ プロトリム", |ui| {
+                    let step = RationalTime::from_seconds(0.1);
+                    let neg_step = RationalTime::from_seconds(-0.1);
+                    ui.label("スリップ (尺固定で素材開始点シフト)");
+                    ui.horizontal(|ui| {
+                        if ui.button("◀ -0.1s").clicked() {
+                            let _ = session.bus.execute(
+                                &mut session.project,
+                                EditCommand::SlipTrim {
+                                    item_id: first_id,
+                                    delta: neg_step,
+                                },
+                                CommandSource::Gui,
+                                None,
+                            );
+                        }
+                        if ui.button("+0.1s ▶").clicked() {
+                            let _ = session.bus.execute(
+                                &mut session.project,
+                                EditCommand::SlipTrim {
+                                    item_id: first_id,
+                                    delta: step,
+                                },
+                                CommandSource::Gui,
+                                None,
+                            );
+                        }
+                    });
+                    let neighbors = session.project.active_scene().and_then(|s| {
+                        for layer in &s.layers {
+                            if layer.items.iter().any(|i| i.id == first_id) {
+                                let mut sorted: Vec<(RationalTime, Uuid)> =
+                                    layer.items.iter().map(|i| (i.start, i.id)).collect();
+                                sorted.sort_by_key(|(st, _)| *st);
+                                let pos = sorted.iter().position(|(_, id)| *id == first_id)?;
+                                let left = pos.checked_sub(1).map(|p| sorted[p].1);
+                                let right = sorted.get(pos + 1).map(|(_, id)| *id);
+                                return Some((left, right));
+                            }
+                        }
+                        None
+                    });
+                    if let Some((left_nb, right_nb)) = neighbors {
+                        if let Some(r_id) = right_nb {
+                            ui.separator();
+                            ui.label("ロール (右隣接境界を同期移動)");
+                            ui.horizontal(|ui| {
+                                if ui.button("◀ -0.1s").clicked() {
+                                    let _ = session.bus.execute(
+                                        &mut session.project,
+                                        EditCommand::RollTrim {
+                                            left_item_id: first_id,
+                                            right_item_id: r_id,
+                                            delta: neg_step,
+                                        },
+                                        CommandSource::Gui,
+                                        None,
+                                    );
+                                }
+                                if ui.button("+0.1s ▶").clicked() {
+                                    let _ = session.bus.execute(
+                                        &mut session.project,
+                                        EditCommand::RollTrim {
+                                            left_item_id: first_id,
+                                            right_item_id: r_id,
+                                            delta: step,
+                                        },
+                                        CommandSource::Gui,
+                                        None,
+                                    );
+                                }
+                            });
+                        }
+                        ui.separator();
+                        ui.label("スライド (前後尺を自動伸縮)");
+                        ui.horizontal(|ui| {
+                            if ui.button("◀ -0.1s").clicked() {
+                                let _ = session.bus.execute(
+                                    &mut session.project,
+                                    EditCommand::SlideTrim {
+                                        item_id: first_id,
+                                        left_neighbor_id: left_nb,
+                                        right_neighbor_id: right_nb,
+                                        delta: neg_step,
+                                    },
+                                    CommandSource::Gui,
+                                    None,
+                                );
+                            }
+                            if ui.button("+0.1s ▶").clicked() {
+                                let _ = session.bus.execute(
+                                    &mut session.project,
+                                    EditCommand::SlideTrim {
+                                        item_id: first_id,
+                                        left_neighbor_id: left_nb,
+                                        right_neighbor_id: right_nb,
+                                        delta: step,
+                                    },
+                                    CommandSource::Gui,
+                                    None,
+                                );
+                            }
+                        });
+                    }
+                });
             }
             ui.separator();
 
@@ -1634,6 +1808,56 @@ impl TimelineState {
                         draw_waveform(&painter, clip_rect, wf);
                     }
 
+                    // v1.0 #19: ボリューム（黄色）・パン（シアン）オートメーションカーブをクリップ上へ直接描画
+                    if let Some(vol_kfs) = item.keyframes.get("volume")
+                        && !vol_kfs.is_empty()
+                    {
+                        let mut pts: Vec<Pos2> = vol_kfs
+                            .iter()
+                            .map(|kf| {
+                                let kx = (x0 + kf.time.as_seconds() as f32 * pps)
+                                    .clamp(clip_rect.left(), clip_rect.right());
+                                let norm = (kf.value / 2.0).clamp(0.0, 1.0);
+                                let ky = clip_rect.bottom() - norm * clip_rect.height();
+                                Pos2::new(kx, ky)
+                            })
+                            .collect();
+                        pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                        if pts.len() >= 2 {
+                            painter.add(egui::Shape::line(
+                                pts.clone(),
+                                Stroke::new(1.8, Color32::from_rgb(255, 224, 76)),
+                            ));
+                        }
+                        for p in pts {
+                            painter.circle_filled(p, 3.0, Color32::from_rgb(255, 224, 76));
+                        }
+                    }
+                    if let Some(pan_kfs) = item.keyframes.get("pan")
+                        && !pan_kfs.is_empty()
+                    {
+                        let mut pts: Vec<Pos2> = pan_kfs
+                            .iter()
+                            .map(|kf| {
+                                let kx = (x0 + kf.time.as_seconds() as f32 * pps)
+                                    .clamp(clip_rect.left(), clip_rect.right());
+                                let norm = ((kf.value + 1.0) * 0.5).clamp(0.0, 1.0);
+                                let ky = clip_rect.bottom() - norm * clip_rect.height();
+                                Pos2::new(kx, ky)
+                            })
+                            .collect();
+                        pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                        if pts.len() >= 2 {
+                            painter.add(egui::Shape::line(
+                                pts.clone(),
+                                Stroke::new(1.6, Color32::from_rgb(80, 225, 255)),
+                            ));
+                        }
+                        for p in pts {
+                            painter.circle_filled(p, 2.8, Color32::from_rgb(80, 225, 255));
+                        }
+                    }
+
                     // キーフレームマーカー（黄色ドット）
                     for kfs in item.keyframes.values() {
                         for kf in kfs {
@@ -1663,6 +1887,9 @@ impl TimelineState {
                     );
 
                     let mut speed_tag = String::new();
+                    if item.group_id.is_some() {
+                        speed_tag.push_str(" 🔗");
+                    }
                     if (item.playback.speed - 1.0).abs() > 0.01 {
                         speed_tag.push_str(&format!(" [{:.2}x]", item.playback.speed));
                     }

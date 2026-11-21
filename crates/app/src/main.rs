@@ -13,6 +13,7 @@ mod ram_preview;
 mod render_queue;
 mod timeline;
 mod v09_panels;
+mod v10_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -34,15 +35,17 @@ use std::sync::{Arc, Mutex, mpsc};
 use timeline::{TimelinePlaybackAction, TimelineState};
 use uuid::Uuid;
 use v09_panels::V09PanelsState;
+use v10_panels::{V10PanelsState, apply_user_visuals};
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
-    AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand, EffectNode,
-    FilterTargetScope, FrameRate, HistoryEntry, Interpolation, ItemKind, Keyframe, Project,
-    ProjectSettings, RationalTime, RgbaColor, ScenePreset, ShapeKind, TextAnimator, TimelineItem,
-    TrackMatte, TrackMatteMode, Transform2D, build_motion_track_keyframes_command,
+    AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
+    EditorUserSettings, EffectNode, FilterTargetScope, FrameRate, HistoryEntry, Interpolation,
+    ItemKind, Keyframe, Project, ProjectSettings, RationalTime, RgbaColor, ScenePreset, ShapeKind,
+    TextAnimator, TimelineItem, TrackMatte, TrackMatteMode, Transform2D,
+    build_motion_track_keyframes_command, tr,
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
-use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
+use ve_media::{ExportConfig, ExportFormat, HwDecodeBackend, VideoEncoder};
 use ve_plugin_api::WasmPluginManager;
 use ve_render::{
     GpuPostProcessPass, RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, compute_video_scopes,
@@ -112,6 +115,10 @@ struct EditorApp {
     inspector_extras: InspectorExtrasState,
     color_scopes: ColorScopesState,
     v09_panels: V09PanelsState,
+    v10_panels: V10PanelsState,
+    user_settings: EditorUserSettings,
+    hw_decode: HwDecodeBackend,
+    visuals_dirty: bool,
     audio_ai_panel: AudioAi3DPanel,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
@@ -304,6 +311,10 @@ impl EditorApp {
             inspector_extras: InspectorExtrasState::default(),
             color_scopes: ColorScopesState::default(),
             v09_panels: V09PanelsState::default(),
+            v10_panels: V10PanelsState::default(),
+            user_settings: EditorUserSettings::default(),
+            hw_decode: HwDecodeBackend::Auto,
+            visuals_dirty: true,
             audio_ai_panel: AudioAi3DPanel::default(),
             waveforms: BTreeMap::new(),
             render_graph,
@@ -450,7 +461,11 @@ impl EditorApp {
             Ok(folder) => {
                 sess.bus = CommandBus::with_folder(folder.clone());
                 sess.folder = Some(folder.clone());
+                let max_bytes = self.user_settings.disk_frame_cache_mib * 1024 * 1024;
                 self.render_graph.set_project_folder(Some(folder.clone()));
+                self.render_graph
+                    .enable_disk_frame_cache(folder.cache_frames_dir(), max_bytes);
+                let _ = folder.save_user_settings(&self.user_settings);
                 self.asset_browser.sync_with_project_folder(&folder);
                 self.pending_recovery.clear();
                 self.preview_dirty = true;
@@ -470,9 +485,20 @@ impl EditorApp {
                 sess.folder = Some(opened.folder.clone());
                 sess.selected_items.clear();
                 sess.playhead = RationalTime::ZERO;
+                self.user_settings = opened.folder.load_user_settings();
+                self.v10_panels.keymap_json_buf = self
+                    .user_settings
+                    .keymap
+                    .to_json_pretty()
+                    .unwrap_or_default();
+                self.visuals_dirty = true;
+                let max_bytes = self.user_settings.disk_frame_cache_mib * 1024 * 1024;
+                self.ram_preview.disk_cache_max_bytes = max_bytes;
                 self.render_graph.clear_media_caches();
                 self.render_graph
                     .set_project_folder(Some(opened.folder.clone()));
+                self.render_graph
+                    .enable_disk_frame_cache(opened.folder.cache_frames_dir(), max_bytes);
                 self.asset_browser.sync_with_project_folder(&opened.folder);
                 self.pending_recovery = opened.pending_recovery;
                 self.preview_dirty = true;
@@ -528,6 +554,7 @@ impl EditorApp {
         let (file_name, transparent_bg) = match self.export_format {
             ExportFormat::Mp4H264 => ("export_h264.mp4", false),
             ExportFormat::Mp4H265 => ("export_h265.mp4", false),
+            ExportFormat::Mp4H265HdrPq10Bit => ("export_h265_hdr10.mp4", false),
             ExportFormat::WebmVp9Alpha => ("export_alpha.webm", true),
             ExportFormat::PngSequence => ("export_frame_%04d.png", true),
             ExportFormat::WavAudioOnly => ("export_audio.wav", false),
@@ -565,6 +592,8 @@ impl EditorApp {
             transparent_bg,
             gpu_passes,
             shader_files,
+            worker_threads: self.user_settings.export_worker_threads,
+            hw_decode: self.hw_decode,
         }));
         self.export_status = "バックグラウンド書き出し開始...".to_string();
     }
@@ -602,19 +631,29 @@ impl TabViewer for EditorTabViewer<'_> {
                     let scopes_h = 170.0;
                     let total_h = ui.available_height();
                     let preview_h = (total_h - scopes_h).max(160.0);
-                    ui.allocate_ui(egui::Vec2::new(ui.available_width(), preview_h), |ui| {
-                        let mut sess = self.app.session.lock().unwrap();
-                        if self.app.preview_canvas.show(
+                    let resp =
+                        ui.allocate_ui(egui::Vec2::new(ui.available_width(), preview_h), |ui| {
+                            let mut sess = self.app.session.lock().unwrap();
+                            if self.app.preview_canvas.show(
+                                ui,
+                                self.app.preview_tex_id,
+                                &mut sess,
+                                self.app.last_ram_cached_hit,
+                            ) {
+                                self.app.preview_dirty = true;
+                            }
+                        });
+                    if self.app.v10_panels.multicam_grid_active {
+                        let sess = self.app.session.lock().unwrap();
+                        self.app.v10_panels.draw_multicam_grid_overlay(
                             ui,
-                            self.app.preview_tex_id,
-                            &mut sess,
-                            self.app.last_ram_cached_hit,
-                        ) {
-                            self.app.preview_dirty = true;
-                        }
-                    });
+                            resp.response.rect,
+                            &sess,
+                        );
+                    }
                     self.app.color_scopes.show_video_scopes_panel(ui);
                 } else {
+                    let avail = ui.available_rect_before_wrap();
                     let mut sess = self.app.session.lock().unwrap();
                     if self.app.preview_canvas.show(
                         ui,
@@ -623,6 +662,11 @@ impl TabViewer for EditorTabViewer<'_> {
                         self.app.last_ram_cached_hit,
                     ) {
                         self.app.preview_dirty = true;
+                    }
+                    if self.app.v10_panels.multicam_grid_active {
+                        self.app
+                            .v10_panels
+                            .draw_multicam_grid_overlay(ui, avail, &sess);
                     }
                 }
             }
@@ -705,8 +749,9 @@ impl TabViewer for EditorTabViewer<'_> {
                         ui.separator();
 
                         let fmt_label = match self.app.export_format {
-                            ExportFormat::Mp4H264 => "MP4 (H.264)",
-                            ExportFormat::Mp4H265 => "MP4 (H.265)",
+                            ExportFormat::Mp4H264 => "MP4 (H.264 Rec.709)",
+                            ExportFormat::Mp4H265 => "MP4 (H.265 Rec.709)",
+                            ExportFormat::Mp4H265HdrPq10Bit => "MP4 (H.265 HDR10 PQ 10-bit)",
                             ExportFormat::WebmVp9Alpha => "WebM (VP9+透過)",
                             ExportFormat::PngSequence => "PNG連番 (透過)",
                             ExportFormat::WavAudioOnly => "WAV (音声のみ)",
@@ -717,12 +762,17 @@ impl TabViewer for EditorTabViewer<'_> {
                                 ui.selectable_value(
                                     &mut self.app.export_format,
                                     ExportFormat::Mp4H264,
-                                    "MP4 (H.264)",
+                                    "MP4 (H.264 Rec.709)",
                                 );
                                 ui.selectable_value(
                                     &mut self.app.export_format,
                                     ExportFormat::Mp4H265,
-                                    "MP4 (H.265)",
+                                    "MP4 (H.265 Rec.709)",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.export_format,
+                                    ExportFormat::Mp4H265HdrPq10Bit,
+                                    "MP4 (H.265 HDR10 PQ 10-bit)",
                                 );
                                 ui.selectable_value(
                                     &mut self.app.export_format,
@@ -1662,6 +1712,20 @@ impl TabViewer for EditorTabViewer<'_> {
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.visuals_dirty {
+            apply_user_visuals(&ctx, &self.user_settings);
+            self.render_graph.set_hw_decode(self.hw_decode);
+            self.ram_preview.hw_decode = self.hw_decode;
+            self.ram_preview.disk_cache_max_bytes =
+                self.user_settings.disk_frame_cache_mib * 1024 * 1024;
+            self.visuals_dirty = false;
+        }
+        {
+            let ph = self.session.lock().unwrap().playhead;
+            if self.v10_panels.handle_multicam_hotkeys(&ctx, ph) {
+                self.preview_dirty = true;
+            }
+        }
         self.ime_panel.capture_events(&ctx);
 
         // バックグラウンド生成された軽量プロキシを RenderGraph へ登録
@@ -1921,6 +1985,26 @@ impl eframe::App for EditorApp {
                     && self.color_scopes.show_scopes
                 {
                     self.preview_dirty = true;
+                }
+                if ui
+                    .toggle_value(
+                        &mut self.v10_panels.show_studio_window,
+                        tr(self.user_settings.language, "multicam_title"),
+                    )
+                    .on_hover_text("v1.0 プロダクションスタジオ（マルチカム / トラックミキサー＆マイク録音 / 納品検証＆ZIP）")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_studio_window
+                }
+                if ui
+                    .toggle_value(
+                        &mut self.v10_panels.show_settings_window,
+                        tr(self.user_settings.language, "settings_title"),
+                    )
+                    .on_hover_text("v1.0 環境設定・カスタムキーバインド・HWデコード・公式SHA-256拡張レジストリ")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_settings_window
                 }
                 ui.weak(format!(
                     "Precomp: {}/{} | Proxy={}",
@@ -2335,6 +2419,43 @@ impl eframe::App for EditorApp {
                 .show_window(&ctx, &mut self.show_render_queue, &sess);
         }
 
+        // v1.0 #17/#19: プロダクションスタジオ（マルチカム / トラックミキサー＆アフレコ / 納品検証＆ZIP）
+        if self.v10_panels.show_studio_window {
+            let mut sess = self.session.lock().unwrap();
+            if self
+                .v10_panels
+                .show_studio_window(&ctx, &mut sess, self.user_settings.language)
+            {
+                self.preview_dirty = true;
+            }
+        }
+
+        // v1.0 #18/#20: 環境設定・キーバインド・HWデコード・SHA-256公式拡張レジストリ
+        if self.v10_panels.show_settings_window {
+            let disk_stats = self.render_graph.disk_frame_cache_stats();
+            let sess = self.session.lock().unwrap();
+            let (settings_changed, ext_installed) =
+                self.v10_panels.show_settings_and_registry_window(
+                    &ctx,
+                    &mut self.user_settings,
+                    &mut self.hw_decode,
+                    disk_stats,
+                    &sess,
+                );
+            if settings_changed {
+                self.visuals_dirty = true;
+            }
+            if ext_installed {
+                if let Some(ref folder) = sess.folder {
+                    let _ = register_shader_dir(
+                        &mut self.render_graph.hot_shaders,
+                        &folder.root().join("shaders"),
+                    );
+                }
+                self.preview_dirty = true;
+            }
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2361,7 +2482,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v0.7.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v1.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

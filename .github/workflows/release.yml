@@ -1,4 +1,4 @@
-name: Release Binaries (Windows 11 / Linux)
+name: Release Binaries (Windows 11 / macOS Universal / Linux AppImage)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to publish (e.g. v0.4.0). Leave empty for dry-run artifact build."
+        description: "Release tag to publish (e.g. v1.0.0). Leave empty for dry-run artifact build."
         required: false
         default: ""
 
@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-windows:
-    name: Build Release (Windows 11 x64)
+    name: Build Release (Windows 11 x64 + winget)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
       - name: Build optimized ve-app.exe
         run: cargo build --release -p ve-app
 
-      - name: Package Windows ZIP + SHA-256
+      - name: Package Windows ZIP + winget manifest + SHA-256
         shell: pwsh
         run: |
           $stage = "stage/ve-app-windows-x64"
@@ -52,13 +52,68 @@ jobs:
           $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
           "$hash  ve-app-windows-x64.zip" | Out-File -FilePath "$zipPath.sha256" -Encoding ascii -NoNewline
 
+          if (Test-Path "packaging/winget/0tsu-0w0.VideoEditingApp.yaml") {
+            $manifest = Get-Content "packaging/winget/0tsu-0w0.VideoEditingApp.yaml" -Raw
+            $manifest = $manifest.Replace("REPLACE_WITH_RELEASE_SHA256", $hash.ToUpper())
+            $manifest | Out-File -FilePath "dist/0tsu-0w0.VideoEditingApp.winget.yaml" -Encoding utf8
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: ve-app-windows-x64
           path: dist/
 
+  build-macos-universal:
+    name: Build Release (macOS Universal .app Bundle)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Apple Silicon + Intel binaries and combine with lipo
+        run: |
+          cargo build --release -p ve-app --target aarch64-apple-darwin
+          cargo build --release -p ve-app --target x86_64-apple-darwin
+          mkdir -p stage/NextGenVideoEditor.app/Contents/MacOS
+          mkdir -p stage/NextGenVideoEditor.app/Contents/Resources
+          mkdir -p dist
+          lipo -create \
+            target/aarch64-apple-darwin/release/ve-app \
+            target/x86_64-apple-darwin/release/ve-app \
+            -output stage/NextGenVideoEditor.app/Contents/MacOS/ve-app
+          chmod +x stage/NextGenVideoEditor.app/Contents/MacOS/ve-app
+          cp -r shaders stage/NextGenVideoEditor.app/Contents/Resources/shaders
+          cp LICENSE-MIT LICENSE-APACHE README.md stage/NextGenVideoEditor.app/Contents/Resources/
+          cat > stage/NextGenVideoEditor.app/Contents/Info.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Next-Gen Hybrid Video Editor</string>
+            <key>CFBundleIdentifier</key><string>io.github.0tsu-0w0.video-editing-app</string>
+            <key>CFBundleExecutable</key><string>ve-app</string>
+            <key>CFBundleVersion</key><string>1.0.0</string>
+            <key>CFBundleShortVersionString</key><string>1.0.0</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          tar -C stage -czf dist/ve-app-macos-universal.app.tar.gz NextGenVideoEditor.app
+          (cd dist && shasum -a 256 ve-app-macos-universal.app.tar.gz > ve-app-macos-universal.app.tar.gz.sha256)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ve-app-macos-universal
+          path: dist/
+
   build-linux:
-    name: Build Release (Ubuntu Linux x64)
+    name: Build Release (Ubuntu Linux x64 tar.gz + AppDir)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,10 +136,11 @@ jobs:
       - name: Build optimized ve-app binary
         run: cargo build --release -p ve-app
 
-      - name: Package Linux tar.gz + SHA-256
+      - name: Package Linux tar.gz + AppDir + SHA-256
         run: |
           STAGE="stage/ve-app-linux-x64"
-          mkdir -p "$STAGE" dist
+          APPDIR="stage/ve-app.AppDir"
+          mkdir -p "$STAGE" "$APPDIR/usr/bin" "$APPDIR/usr/share/ve-app" dist
           cp target/release/ve-app "$STAGE/ve-app"
           chmod +x "$STAGE/ve-app"
           cp -r shaders "$STAGE/shaders"
@@ -95,6 +151,20 @@ jobs:
           tar -C stage -czf dist/ve-app-linux-x64.tar.gz ve-app-linux-x64
           (cd dist && sha256sum ve-app-linux-x64.tar.gz > ve-app-linux-x64.tar.gz.sha256)
 
+          # AppDir staging (AppImage ready)
+          cp target/release/ve-app "$APPDIR/usr/bin/ve-app"
+          chmod +x "$APPDIR/usr/bin/ve-app"
+          cp -r shaders "$APPDIR/usr/share/ve-app/shaders"
+          cp packaging/linux/ve-app.desktop "$APPDIR/ve-app.desktop"
+          cat > "$APPDIR/AppRun" << 'EOF'
+          #!/usr/bin/env bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          exec "$HERE/usr/bin/ve-app" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+          tar -C stage -czf dist/ve-app-linux-x64-AppDir.tar.gz ve-app.AppDir
+          (cd dist && sha256sum ve-app-linux-x64-AppDir.tar.gz > ve-app-linux-x64-AppDir.tar.gz.sha256)
+
       - uses: actions/upload-artifact@v4
         with:
           name: ve-app-linux-x64
@@ -102,7 +172,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-macos-universal, build-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
     steps:

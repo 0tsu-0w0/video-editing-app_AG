@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.0] - 2026-11-21
+
+長尺・大規模・プロ品質のプロダクション完成版マイルストーン v1.0（#17〜#20）をすべて実装しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **54 MCP ツール**）。
+
+### #17 マルチカメラ編集 ＆ 音声相互相関による自動同期
+* `ve-audio`: 2 段階正規化相互相関（500Hz RMS エンベロープ粗探索 → 8kHz 波形精密探索、`estimate_audio_offset_xcorr`）によるサブフレーム精度（0.125ms）の自動同期オフセット算出を実装
+* `ve-core` / `ve-app` / `ve-mcp`: マルチカム自動整列（`build_multicam_sync_align_commands`）・2×2 / 3×3 同時プレビューグリッド＆数字キー `1`〜`9` ライブスイッチング記録・1 ステップ Undo 切替カット確定（`build_multicam_switch_cut_commands`）および MCP `sync_multicam` を追加
+
+### #18 パフォーマンス革命：HW デコード ＆ 並列合成 ＆ 永続ディスクキャッシュ
+* `ve-media`: FFmpeg ハードウェアデコード（`d3d11va` / `dxva2` / `vaapi` / `videotoolbox`）自動検出＆安全 Software フォールバック（`open_video_stream_with_hwaccel`）および解像度・コーデック可変プロキシ生成（`ProxyProfile` / `H264Fast` / `MjpegIntra`）を実装
+* `ve-render`: マルチスレッド並列フレームバッチレンダリング（`render_frame_batch_parallel`）と `@compute @workgroup_size(8, 8)` `wgpu` コンピュートシェーダーコンポジタ（`WgpuComputeCompositor` / `composite_compute.wgsl`）を実装
+* `ve-core` / `ve-app`: アプリ再起動後も再利用できる SSD 永続フレームキャッシュ（`PersistentFrameCache` / `cache/frames/` コンテンツハッシュ＋LRU 管理）を `RenderGraph` / `RamPreviewManager` へ統合し、バックグラウンド書き出しも並列化
+
+### #19 ノンリニア編集プロ機能 ＆ 音声ポストプロダクション完成
+* `ve-core` / `ve-app`: スリップ／ロール／スライドトリム（`SlipTrim` / `RollTrim` / `SlideTrim`）、クリップグルーピング＆A/V リンク解除（`Ctrl+G` / `Ctrl+Shift+G` / `SetGroupId`）、タイムライン上のボリューム（黄）・パン（シアン）オートメーションカーブ直接描画、トラックミキサー（`SetLayerMixer`：フェーダー/パン/ソロ/ミュート/バス/Aux リバーブセンド）、マイク直接アフレコ録音（`VoiceoverRecorder`）を実装
+* `ve-audio`: Pure-Rust Hann 窓 STFT スペクトル減算ノイズリダクション（`noise_reduction`）、ダイナミック LPF ディエッサー（`de_esser`）、オフライン Mid/Side＋帯域ボーカル／BGM 分離（`separate_vocal_bgm_stems`）を追加
+* `ve-core` / `ve-media` / `ve-mcp`: 書き出し前検証チェックリスト（`validate_project_delivery`）、Pure-Rust IEEE CRC-32 ZIP アーカイブパッケージ化（`archive_project_to_zip`）、Rec.709 SDR カラータグ＆HDR10 PQ 10-bit（BT.2020 / ST 2084 / `yuv420p10le`）書き出し、および MCP `nle_pro_edit` / `validate_and_package_project` を追加
+
+### #20 v1.0 品質保証・カスタマイズ・配布エコシステム
+* `ve-core` / `ve-app` / `ve-mcp`: カスタムキーバインド（AviUtl2 / Premiere Pro / DaVinci Resolve / After Effects プリセット＆JSON 入出力）、多言語 UI（日本語 / 英語 `tr`）、UI テーマ 4 種＆フォント倍率アクセシビリティ、FIPS 180-4 Pure-Rust SHA-256 署名検証＆サンドボックス権限明示付き公式拡張レジストリブラウザ、および MCP `manage_ecosystem` を追加（全 **54 MCP ツール**）
+* 配布＆QA: Windows `winget` マニフェスト（`packaging/winget/0tsu-0w0.VideoEditingApp.yaml`）・macOS Universal `.app` Bundle・Linux AppDir（`packaging/linux/ve-app.desktop`）対応 `.github/workflows/release.yml`、およびゴールデン視覚回帰テストスイート（`crates/render/tests/visual_regression.rs`）を追加
+
 ## [0.9.0] - 2026-11-21
 
 AE 級プロシージャル演出・テンプレート量産・高度な 2D/3D 合成を実現する v0.9 ロードマップ（#14〜#16）をすべて実装しました。

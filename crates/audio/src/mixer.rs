@@ -18,9 +18,13 @@ pub struct AudioClip {
     pub source_offset: RationalTime,
     pub gain: f32,
     pub muted: bool,
+    pub pan: f32,
+    pub send_reverb: f32,
     pub speed: f32,
     pub loop_playback: bool,
     pub time_remap_kfs: Vec<Keyframe>,
+    pub volume_kfs: Vec<Keyframe>,
+    pub pan_kfs: Vec<Keyframe>,
     pub effects: Vec<AudioEffectNode>,
     pub buffer: Arc<AudioBuffer>,
 }
@@ -103,14 +107,17 @@ impl AudioGraph {
         let Some(scene) = project.scene(scene_id) else {
             return;
         };
+        let any_solo = depth == 0 && scene.layers.iter().any(|l| l.solo);
         for (layer_idx, layer) in scene.layers.iter().enumerate() {
-            if layer.muted {
+            if layer.muted || (any_solo && !layer.solo) {
                 continue;
             }
             let layer_gain = layer.volume.max(0.0);
             if layer_gain <= 0.0 {
                 continue;
             }
+            let layer_pan = layer.pan.clamp(-1.0, 1.0);
+            let layer_send_reverb = layer.send_reverb.clamp(0.0, 1.0);
             let effective_layer = parent_layer_index.unwrap_or(layer_idx);
             for item in &layer.items {
                 match &item.kind {
@@ -139,6 +146,9 @@ impl AudioGraph {
                                 .get("time_remap")
                                 .cloned()
                                 .unwrap_or_default();
+                            let volume_kfs =
+                                item.keyframes.get("volume").cloned().unwrap_or_default();
+                            let pan_kfs = item.keyframes.get("pan").cloned().unwrap_or_default();
                             self.clips.push(AudioClip {
                                 layer_index: effective_layer,
                                 timeline_start: time_offset + item.start,
@@ -146,9 +156,13 @@ impl AudioGraph {
                                 source_offset: *source_offset,
                                 gain,
                                 muted: false,
+                                pan: layer_pan,
+                                send_reverb: layer_send_reverb,
                                 speed: item.playback.speed,
                                 loop_playback: item.playback.loop_playback,
                                 time_remap_kfs,
+                                volume_kfs,
+                                pan_kfs,
                                 effects: item.audio_effects.clone(),
                                 buffer: Arc::clone(buffer),
                             });
@@ -198,6 +212,12 @@ impl AudioGraph {
             Vec::new()
         };
         let mut bgm_bus = if ducking_active {
+            vec![0.0f32; total_samples]
+        } else {
+            Vec::new()
+        };
+        let has_aux_reverb = self.clips.iter().any(|c| !c.muted && c.send_reverb > 1e-4);
+        let mut aux_reverb_bus = if has_aux_reverb {
             vec![0.0f32; total_samples]
         } else {
             Vec::new()
@@ -264,6 +284,11 @@ impl AudioGraph {
             let src_frames_f = src_frames as f64;
             let reverse_anchor_frames = (src_frames_f - 1.0).max(0.0);
             let has_remap = !clip.time_remap_kfs.is_empty();
+            let has_vol_auto = !clip.volume_kfs.is_empty();
+            let has_pan_auto = !clip.pan_kfs.is_empty();
+            let base_pan = clip.pan.clamp(-1.0, 1.0);
+            let (base_pan_l, base_pan_r) = constant_power_pan(base_pan);
+            let send_rev = clip.send_reverb.clamp(0.0, 1.0);
 
             let step = (src_sr / dst_sr) * speed;
             let local_start_sec = (start_sample + i_start as i64) as f64 / dst_sr - clip_start_sec;
@@ -273,7 +298,27 @@ impl AudioGraph {
                 (local_start_sec * speed + offset_sec) * src_sr
             };
 
+            let mut cur_auto_vol = 1.0f32;
+            let mut cur_pan_l = base_pan_l;
+            let mut cur_pan_r = base_pan_r;
+
             for i in i_start..i_end {
+                // 32 サンプルごと（48kHz で 0.67ms）にボリューム/パン オートメーションカーブを再評価
+                if (has_vol_auto || has_pan_auto) && ((i - i_start) & 31 == 0) {
+                    let local_sec = (start_sample + i as i64) as f64 / dst_sr - clip_start_sec;
+                    let local_t = RationalTime::from_seconds(local_sec.max(0.0));
+                    if has_vol_auto {
+                        cur_auto_vol =
+                            evaluate_track(1.0, &clip.volume_kfs, local_t).clamp(0.0, 4.0);
+                    }
+                    if has_pan_auto {
+                        let p = evaluate_track(base_pan, &clip.pan_kfs, local_t).clamp(-1.0, 1.0);
+                        let (pl, pr) = constant_power_pan(p);
+                        cur_pan_l = pl;
+                        cur_pan_r = pr;
+                    }
+                }
+
                 let sample_pos = if has_remap {
                     let local_sec = (start_sample + i as i64) as f64 / dst_sr - clip_start_sec;
                     let mapped_sec = f64::from(evaluate_track(
@@ -318,17 +363,27 @@ impl AudioGraph {
                         (l0 + (l1 - l0) * frac, r0 + (r1 - r0) * frac)
                     };
 
+                    let eff_gain = clip.gain * cur_auto_vol;
+                    let out_l = l * eff_gain * cur_pan_l;
+                    let out_r = r * eff_gain * cur_pan_r;
+
                     if has_clip_fx {
                         let base = (i - i_start) * self.channels;
-                        clip_scratch[base] = l * clip.gain;
+                        clip_scratch[base] = out_l;
                         if self.channels > 1 {
-                            clip_scratch[base + 1] = r * clip.gain;
+                            clip_scratch[base + 1] = out_r;
                         }
                     } else {
                         let base = i * self.channels;
-                        target_bus[base] += l * clip.gain;
+                        target_bus[base] += out_l;
                         if self.channels > 1 {
-                            target_bus[base + 1] += r * clip.gain;
+                            target_bus[base + 1] += out_r;
+                        }
+                        if has_aux_reverb && send_rev > 1e-4 {
+                            aux_reverb_bus[base] += out_l * send_rev;
+                            if self.channels > 1 {
+                                aux_reverb_bus[base + 1] += out_r * send_rev;
+                            }
                         }
                     }
                 }
@@ -348,7 +403,30 @@ impl AudioGraph {
                     if self.channels > 1 {
                         target_bus[base + 1] += frame[1];
                     }
+                    if has_aux_reverb && send_rev > 1e-4 {
+                        aux_reverb_bus[base] += frame[0] * send_rev;
+                        if self.channels > 1 {
+                            aux_reverb_bus[base + 1] += frame[1] * send_rev;
+                        }
+                    }
                 }
+            }
+        }
+
+        // v1.0 #19: Aux リバーブセンドバスのウェット処理と合算
+        if has_aux_reverb {
+            let mut aux_rev = AudioEffectNode::with_defaults("reverb");
+            aux_rev.params.insert("room_size".into(), 0.65);
+            aux_rev.params.insert("damping".into(), 0.35);
+            aux_rev.params.insert("mix".into(), 1.0);
+            apply_audio_effect_chain(
+                &mut aux_reverb_bus,
+                self.channels,
+                self.sample_rate,
+                &[aux_rev],
+            );
+            for (dst, wet) in out[..total_samples].iter_mut().zip(aux_reverb_bus.iter()) {
+                *dst += *wet * 0.6;
             }
         }
 
@@ -399,6 +477,18 @@ impl AudioGraph {
         }
         out
     }
+}
+
+/// 等パワーパン法則（`pan = 0.0` で `(1.0, 1.0)`、`-1.0` で完全左、`+1.0` で完全右）
+#[inline]
+fn constant_power_pan(pan: f32) -> (f32, f32) {
+    let p = pan.clamp(-1.0, 1.0);
+    if p.abs() < 1e-5 {
+        return (1.0, 1.0);
+    }
+    let theta = (p + 1.0) * std::f32::consts::FRAC_PI_4;
+    let norm = std::f32::consts::SQRT_2;
+    (theta.cos() * norm, theta.sin() * norm)
 }
 
 fn resolve_project_asset_path(
@@ -452,18 +542,36 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use uuid::Uuid;
-    use ve_core::{AssetRef, MediaKind, ProjectSettings, TimelineItem};
+    use ve_core::{AssetRef, Interpolation, MediaKind, ProjectSettings, TimelineItem};
     use ve_media::write_wav_pcm16;
+
+    fn test_clip(layer_index: usize, buf: Arc<AudioBuffer>) -> AudioClip {
+        AudioClip {
+            layer_index,
+            timeline_start: RationalTime::ZERO,
+            duration: RationalTime::from_seconds(1.0),
+            source_offset: RationalTime::ZERO,
+            gain: 1.0,
+            muted: false,
+            pan: 0.0,
+            send_reverb: 0.0,
+            speed: 1.0,
+            loop_playback: false,
+            time_remap_kfs: Vec::new(),
+            volume_kfs: Vec::new(),
+            pan_kfs: Vec::new(),
+            effects: Vec::new(),
+            buffer: buf,
+        }
+    }
 
     #[test]
     fn resamples_44100_into_48000_and_mixes_tracks() {
-        // 44.1kHz モノラル一定値 0.25 のクリップ
         let buf_44k = Arc::new(AudioBuffer {
             sample_rate: 44_100,
             channels: 1,
             samples: vec![0.25; 44_100],
         });
-        // 48kHz ステレオ一定値 0.30 のクリップ
         let buf_48k = Arc::new(AudioBuffer {
             sample_rate: 48_000,
             channels: 2,
@@ -471,32 +579,8 @@ mod tests {
         });
 
         let mut graph = AudioGraph::new(48_000);
-        graph.add_clip(AudioClip {
-            layer_index: 0,
-            timeline_start: RationalTime::ZERO,
-            duration: RationalTime::from_seconds(1.0),
-            source_offset: RationalTime::ZERO,
-            gain: 1.0,
-            muted: false,
-            speed: 1.0,
-            loop_playback: false,
-            time_remap_kfs: Vec::new(),
-            effects: Vec::new(),
-            buffer: buf_44k,
-        });
-        graph.add_clip(AudioClip {
-            layer_index: 1,
-            timeline_start: RationalTime::ZERO,
-            duration: RationalTime::from_seconds(1.0),
-            source_offset: RationalTime::ZERO,
-            gain: 1.0,
-            muted: false,
-            speed: 1.0,
-            loop_playback: false,
-            time_remap_kfs: Vec::new(),
-            effects: Vec::new(),
-            buffer: buf_48k,
-        });
+        graph.add_clip(test_clip(0, buf_44k));
+        graph.add_clip(test_clip(1, buf_48k));
 
         let rendered = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(0.1));
         assert_eq!(rendered.len(), 4_800 * 2);
@@ -514,40 +598,18 @@ mod tests {
             samples: ramp,
         });
 
-        // 2x speed with loop over 1.0s (covers two full cycles)
         let mut graph = AudioGraph::new(1000);
-        graph.add_clip(AudioClip {
-            layer_index: 0,
-            timeline_start: RationalTime::ZERO,
-            duration: RationalTime::from_seconds(1.0),
-            source_offset: RationalTime::ZERO,
-            gain: 1.0,
-            muted: false,
-            speed: 2.0,
-            loop_playback: true,
-            time_remap_kfs: Vec::new(),
-            effects: Vec::new(),
-            buffer: Arc::clone(&buf),
-        });
+        let mut c = test_clip(0, Arc::clone(&buf));
+        c.speed = 2.0;
+        c.loop_playback = true;
+        graph.add_clip(c);
         let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
-        // At t=0.75s with 2x speed, src_pos = 1500 % 1000 = 500 -> value ~0.5
         assert!((pcm[750 * 2] - 0.5).abs() < 0.02, "got {}", pcm[750 * 2]);
 
-        // Reverse playback (-1x) starts near end (~0.999) and decreases toward 0.0
         let mut rev_graph = AudioGraph::new(1000);
-        rev_graph.add_clip(AudioClip {
-            layer_index: 0,
-            timeline_start: RationalTime::ZERO,
-            duration: RationalTime::from_seconds(1.0),
-            source_offset: RationalTime::ZERO,
-            gain: 1.0,
-            muted: false,
-            speed: -1.0,
-            loop_playback: false,
-            time_remap_kfs: Vec::new(),
-            effects: Vec::new(),
-            buffer: buf,
-        });
+        let mut rc = test_clip(0, buf);
+        rc.speed = -1.0;
+        rev_graph.add_clip(rc);
         let rev = rev_graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
         assert!(rev[0] > 0.95 && rev[900 * 2] < 0.15);
     }
@@ -586,7 +648,6 @@ mod tests {
         let graph = AudioGraph::from_project_scene(&project, project.active_scene_id, None, 48_000);
         assert_eq!(graph.clips.len(), 1);
         let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(0.1));
-        // 0.4 * clip(0.5) * layer(0.5) = 0.1
         assert!((pcm[20] - 0.1).abs() < 0.01, "got {}", pcm[20]);
     }
 
@@ -614,41 +675,88 @@ mod tests {
             attack_sec: 0.01,
             release_sec: 0.03,
         };
-        // BGM on layer 2 from 0..1s
-        graph.add_clip(AudioClip {
-            layer_index: 2,
-            timeline_start: RationalTime::ZERO,
-            duration: RationalTime::from_seconds(1.0),
-            source_offset: RationalTime::ZERO,
-            gain: 1.0,
-            muted: false,
-            speed: 1.0,
-            loop_playback: false,
-            time_remap_kfs: Vec::new(),
-            effects: Vec::new(),
-            buffer: bgm_buf,
-        });
-        // Voice on layer 3 from 0.25..0.75s
-        graph.add_clip(AudioClip {
-            layer_index: 3,
-            timeline_start: RationalTime::from_seconds(0.25),
-            duration: RationalTime::from_seconds(0.5),
-            source_offset: RationalTime::ZERO,
-            gain: 1.0,
-            muted: false,
-            speed: 1.0,
-            loop_playback: false,
-            time_remap_kfs: Vec::new(),
-            effects: Vec::new(),
-            buffer: voice_buf,
-        });
+        graph.add_clip(test_clip(2, bgm_buf));
+        let mut vc = test_clip(3, voice_buf);
+        vc.timeline_start = RationalTime::from_seconds(0.25);
+        vc.duration = RationalTime::from_seconds(0.5);
+        graph.add_clip(vc);
 
         let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
-        // Before voice (t=0.1s): full BGM (~0.4)
         let before = pcm[(sr as usize / 10) * 2];
-        // During voice (t=0.5s): voice(0.25) + ducked BGM(0.4 * 0.125 = 0.05) ~= 0.30 < un-ducked (0.65)
         let during = pcm[(sr as usize / 2) * 2];
         assert!((before - 0.4).abs() < 0.02, "before={before}");
         assert!(during < 0.38, "expected ducked sum < 0.38, got {during}");
+    }
+
+    #[test]
+    fn v10_mixer_solo_pan_and_volume_automation_work() {
+        let tmp = tempdir().unwrap();
+        let wav_path = tmp.path().join("tone.wav");
+        write_wav_pcm16(&wav_path, &vec![0.4f32; 48_000], 48_000, 1).unwrap();
+
+        let mut project = Project::new("MixerV10", ProjectSettings::default());
+        let asset_id = Uuid::new_v4();
+        project.assets.push(AssetRef {
+            id: asset_id,
+            name: "tone.wav".into(),
+            kind: MediaKind::Audio,
+            relative_path: None,
+            fallback_absolute_path: Some(wav_path),
+            collected: false,
+        });
+        {
+            let scene = project.active_scene_mut().unwrap();
+            // Layer 2: solo=false (should be silenced when Layer 3 has solo=true)
+            scene.layers[2].items.push(TimelineItem::new(
+                "MutedBySolo",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(1.0),
+                ItemKind::Audio {
+                    asset_id,
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            ));
+            // Layer 3: solo=true, panned hard right (+1.0), volume fades 0.0 -> 1.0 over 1.0s
+            scene.layers[3].solo = true;
+            scene.layers[3].pan = 1.0;
+            let mut item = TimelineItem::new(
+                "SoloRightFade",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(1.0),
+                ItemKind::Audio {
+                    asset_id,
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            );
+            item.keyframes.insert(
+                "volume".into(),
+                vec![
+                    Keyframe {
+                        time: RationalTime::ZERO,
+                        value: 0.0,
+                        interpolation: Interpolation::Linear,
+                    },
+                    Keyframe {
+                        time: RationalTime::from_seconds(1.0),
+                        value: 1.0,
+                        interpolation: Interpolation::Linear,
+                    },
+                ],
+            );
+            scene.layers[3].items.push(item);
+        }
+
+        let graph = AudioGraph::from_project_scene(&project, project.active_scene_id, None, 48_000);
+        // Only the soloed layer should be collected
+        assert_eq!(graph.clips.len(), 1);
+        let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
+        // Near start (t=0.01s), volume automation ~0.01
+        assert!(pcm[480 * 2 + 1].abs() < 0.05);
+        // Near end (t=0.9s), hard-right pan means L ~= 0 and R >> 0.35
+        let idx = (48_000 * 9 / 10) * 2;
+        assert!(pcm[idx].abs() < 0.01, "expected L~0, got {}", pcm[idx]);
+        assert!(pcm[idx + 1] > 0.35, "expected R>0.35, got {}", pcm[idx + 1]);
     }
 }

@@ -3,6 +3,6 @@ pub mod ffmpeg;
 
 pub use audio_decode::{AudioBuffer, decode_audio_file, write_wav_pcm16};
 pub use ffmpeg::{
-    ExportConfig, ExportFormat, FfmpegCli, FfmpegExportSession, MediaError, MediaProbe,
-    VideoEncoder, VideoStreamDecoder,
+    ExportColorSpace, ExportConfig, ExportFormat, FfmpegCli, FfmpegExportSession, HwDecodeBackend,
+    MediaError, MediaProbe, ProxyCodec, ProxyProfile, VideoEncoder, VideoStreamDecoder,
 };

@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: 0tsu-0w0.VideoEditingApp
+PackageVersion: 1.0.0
+PackageLocale: ja-JP
+Publisher: 0tsu-0w0
+PublisherUrl: https://github.com/0tsu-0w0/video-editing-app_AG
+PublisherSupportUrl: https://github.com/0tsu-0w0/video-editing-app_AG/issues
+PackageName: Next-Gen Hybrid Video Editor
+PackageUrl: https://github.com/0tsu-0w0/video-editing-app_AG
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/0tsu-0w0/video-editing-app_AG/blob/main/LICENSE-MIT
+ShortDescription: Pure-Rust hybrid NLE & motion graphics editor combining AviUtl2 speed, After Effects expressiveness, and embedded MCP AI control.
+Tags:
+  - video-editor
+  - nle
+  - motion-graphics
+  - rust
+  - wgpu
+  - mcp
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: ve-app.exe
+    PortableCommandAlias: ve-app
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/0tsu-0w0/video-editing-app_AG/releases/download/v1.0.0/ve-app-windows-x64.zip
+    InstallerSha256: REPLACE_WITH_RELEASE_SHA256
+ManifestType: singleton
+ManifestVersion: 1.6.0

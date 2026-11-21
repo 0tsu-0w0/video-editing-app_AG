@@ -265,6 +265,16 @@ impl AudioEffectNode {
                 params.insert("drive".into(), 2.5);
                 params.insert("mix".into(), 0.85);
             }
+            "noise_reduction" => {
+                params.insert("strength".into(), 0.75);
+                params.insert("noise_floor_db".into(), -42.0);
+                params.insert("smoothing".into(), 0.65);
+            }
+            "de_esser" => {
+                params.insert("freq_hz".into(), 6500.0);
+                params.insert("threshold_db".into(), -22.0);
+                params.insert("reduction_db".into(), -9.0);
+            }
             _ => {}
         }
         Self {
@@ -1301,6 +1311,9 @@ pub struct TimelineItem {
     /// v0.9 #15: モーショングラフィックス テンプレート紐づけメタデータ（Precomp 用）
     #[serde(default)]
     pub template_binding: Option<crate::template::TemplateBinding>,
+    /// v1.0 #19: クリップグルーピング／映像・音声リンク識別子（同一 group_id で連動移動・削除）
+    #[serde(default)]
+    pub group_id: Option<Uuid>,
     pub kind: ItemKind,
 }
 
@@ -1329,6 +1342,7 @@ impl TimelineItem {
             masks: Vec::new(),
             expressions: BTreeMap::new(),
             template_binding: None,
+            group_id: None,
             kind,
         }
     }
@@ -1419,12 +1433,19 @@ impl TimelineItem {
     }
 }
 
+fn default_audio_bus() -> String {
+    "Master".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     pub id: LayerId,
     pub name: String,
     pub visible: bool,
     pub muted: bool,
+    /// v1.0 #19: トラックミキサー ソロ状態
+    #[serde(default)]
+    pub solo: bool,
     /// AviUtl2 準拠のレイヤー一括 X/Y オフセット
     #[serde(default)]
     pub offset_x: f32,
@@ -1433,6 +1454,15 @@ pub struct Layer {
     /// AviUtl2 準拠のレイヤー一括音量倍率（既定 1.0）
     #[serde(default = "default_one_f32")]
     pub volume: f32,
+    /// v1.0 #19: ステレオパン（-1.0 左 〜 0.0 中央 〜 +1.0 右）
+    #[serde(default)]
+    pub pan: f32,
+    /// v1.0 #19: 出力バス名（"Master", "Voice", "BGM", "SE" 等）
+    #[serde(default = "default_audio_bus")]
+    pub bus: String,
+    /// v1.0 #19: Aux リバーブセンド量（0.0..=1.0）
+    #[serde(default)]
+    pub send_reverb: f32,
     /// レイヤー識別用のカラータグ
     #[serde(default)]
     pub color_tag: Option<RgbaColor>,
@@ -1448,9 +1478,13 @@ impl Layer {
             name: name.into(),
             visible: true,
             muted: false,
+            solo: false,
             offset_x: 0.0,
             offset_y: 0.0,
             volume: 1.0,
+            pan: 0.0,
+            bus: default_audio_bus(),
+            send_reverb: 0.0,
             color_tag: None,
             track_matte: None,
             items: Vec::new(),

@@ -15,13 +15,14 @@ pub use color_grading::{
     VideoScopeData, WAVEFORM_BINS, WAVEFORM_COLS, apply_scene_color_grade, compute_video_scopes,
     emit_sample_cube_luts,
 };
-pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph};
+pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph, render_frame_batch_parallel};
 pub use hot_shader::{
     HotShaderEntry, ShaderHotReloader, ShaderReloadStatus, register_shader_dir, validate_wgsl,
 };
 pub use mask_tracker::{apply_bezier_masks, track_point_across_frames, track_point_in_scene};
 pub use pipeline::{
-    GpuEffectUniform, GpuPostProcessPass, HeadlessGpuOffloader, WgpuPreviewPipeline,
+    COMPOSITE_COMPUTE_WGSL_SOURCE, GpuEffectUniform, GpuPostProcessPass, HeadlessGpuOffloader,
+    WgpuComputeCompositor, WgpuPreviewPipeline,
 };
 pub use psd_sprite::PsdCharacterAsset;
 pub use sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
