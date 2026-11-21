@@ -24,6 +24,7 @@ pub struct OpenProjectResult {
 pub struct ImportSummary {
     pub imported_count: usize,
     pub spawned_proxies: usize,
+    pub max_end: Option<RationalTime>,
     pub messages: Vec<String>,
 }
 
@@ -148,16 +149,19 @@ pub fn import_dropped_files(
                     });
                 }
 
-                let item = TimelineItem::new(
+                let dur = RationalTime::from_seconds(dur_sec);
+                let mut item = TimelineItem::new(
                     file_name.clone(),
                     start_base,
-                    RationalTime::from_seconds(dur_sec),
+                    dur,
                     ItemKind::Video {
                         asset_id,
                         source_offset: RationalTime::ZERO,
                         volume: 1.0,
                     },
                 );
+                item.playback.source_duration = Some(dur);
+                let end_t = item.end();
                 let item_id = item.id;
                 if session
                     .bus
@@ -174,6 +178,7 @@ pub fn import_dropped_files(
                 {
                     session.selected_items = vec![item_id];
                     summary.imported_count += 1;
+                    summary.max_end = Some(summary.max_end.map_or(end_t, |cur| cur.max(end_t)));
                     summary
                         .messages
                         .push(format!("動画読込: {file_name} ({dur_sec:.1}s)"));
@@ -206,7 +211,9 @@ pub fn import_dropped_files(
                             volume: 1.0,
                         },
                     );
+                    audio_item.playback.source_duration = Some(bundle.duration);
                     audio_item.phoneme_segments = bundle.phonemes.clone();
+                    let end_t = audio_item.end();
                     let sub_item = TimelineItem::new(
                         "TTS字幕",
                         start_base,
@@ -242,6 +249,7 @@ pub fn import_dropped_files(
                         .is_ok()
                     {
                         summary.imported_count += 1;
+                        summary.max_end = Some(summary.max_end.map_or(end_t, |cur| cur.max(end_t)));
                         summary.messages.push(format!(
                             "TTSペア読込: {file_name} (字幕+音素{}個)",
                             bundle.phonemes.len()
@@ -276,16 +284,19 @@ pub fn import_dropped_files(
                     fallback_absolute_path: Some(path.clone()),
                     collected: false,
                 });
-                let item = TimelineItem::new(
+                let dur = RationalTime::from_seconds(dur_sec);
+                let mut item = TimelineItem::new(
                     file_name.clone(),
                     start_base,
-                    RationalTime::from_seconds(dur_sec),
+                    dur,
                     ItemKind::Audio {
                         asset_id,
                         source_offset: RationalTime::ZERO,
                         volume: 1.0,
                     },
                 );
+                item.playback.source_duration = Some(dur);
+                let end_t = item.end();
                 let item_id = item.id;
                 if session
                     .bus
@@ -302,6 +313,7 @@ pub fn import_dropped_files(
                 {
                     session.selected_items = vec![item_id];
                     summary.imported_count += 1;
+                    summary.max_end = Some(summary.max_end.map_or(end_t, |cur| cur.max(end_t)));
                     summary
                         .messages
                         .push(format!("音声読込: {file_name} ({dur_sec:.1}s)"));

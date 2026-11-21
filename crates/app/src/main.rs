@@ -1,16 +1,23 @@
+mod asset_browser;
 mod audio_ai_panel;
 mod exporter;
+mod font_picker;
 mod graph_editor;
 mod ime_poc;
+mod inspector_extras;
 mod project_io;
 mod timeline;
+mod watch_folder;
 
+use asset_browser::AssetBrowserPanel;
 use audio_ai_panel::AudioAi3DPanel;
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
 use exporter::{ExportJobHandle, ExportJobRequest, ExportProgressSnapshot};
+use font_picker::FontPickerState;
 use graph_editor::GraphEditorState;
 use ime_poc::ImePocPanel;
+use inspector_extras::InspectorExtrasState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -41,6 +48,7 @@ enum Pane {
     Timeline,
     GraphEditor,
     Inspector,
+    AssetBrowser,
     AudioAi3D,
 }
 
@@ -50,9 +58,12 @@ fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
             let mut dock = DockState::new(vec![Pane::Preview]);
             let surface = dock.main_surface_mut();
             let [top, _bottom] =
-                surface.split_below(egui_dock::NodeIndex::root(), 0.58, vec![Pane::Timeline]);
-            let [_left, _right] =
-                surface.split_right(top, 0.66, vec![Pane::Inspector, Pane::AudioAi3D]);
+                surface.split_below(egui_dock::NodeIndex::root(), 0.56, vec![Pane::Timeline]);
+            let [_left, _right] = surface.split_right(
+                top,
+                0.64,
+                vec![Pane::Inspector, Pane::AssetBrowser, Pane::AudioAi3D],
+            );
             dock
         }
         WorkspaceMode::MotionComposite => {
@@ -60,8 +71,11 @@ fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
             let surface = dock.main_surface_mut();
             let [top, bottom] =
                 surface.split_below(egui_dock::NodeIndex::root(), 0.50, vec![Pane::Timeline]);
-            let [_left, _right] =
-                surface.split_right(top, 0.60, vec![Pane::Inspector, Pane::AudioAi3D]);
+            let [_left, _right] = surface.split_right(
+                top,
+                0.58,
+                vec![Pane::Inspector, Pane::AssetBrowser, Pane::AudioAi3D],
+            );
             let [_tl, _ge] = surface.split_right(bottom, 0.52, vec![Pane::GraphEditor]);
             dock
         }
@@ -74,12 +88,17 @@ struct EditorApp {
     mcp_server: Option<EmbeddedMcpServer>,
     timeline_state: TimelineState,
     graph_editor: GraphEditorState,
+    asset_browser: AssetBrowserPanel,
+    font_picker: FontPickerState,
+    inspector_extras: InspectorExtrasState,
     audio_ai_panel: AudioAi3DPanel,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
     preview_pipeline: Option<WgpuPreviewPipeline>,
     preview_tex_id: Option<egui::TextureId>,
     audio_state: Arc<AudioEngineState>,
+    #[cfg(not(windows))]
+    meter_scratch: Vec<f32>,
     #[cfg(windows)]
     _live_audio: Option<ve_audio::output::live::LiveAudioStream>,
     dock_state: DockState<Pane>,
@@ -229,12 +248,17 @@ impl EditorApp {
             mcp_server,
             timeline_state: TimelineState::default(),
             graph_editor: GraphEditorState::default(),
+            asset_browser: AssetBrowserPanel::new(),
+            font_picker: FontPickerState::new(),
+            inspector_extras: InspectorExtrasState::default(),
             audio_ai_panel: AudioAi3DPanel::default(),
             waveforms: BTreeMap::new(),
             render_graph,
             preview_pipeline,
             preview_tex_id,
             audio_state,
+            #[cfg(not(windows))]
+            meter_scratch: vec![0.0f32; 512 * 2],
             #[cfg(windows)]
             _live_audio: live_audio,
             dock_state,
@@ -295,6 +319,7 @@ impl EditorApp {
                 sess.bus = CommandBus::with_folder(folder.clone());
                 sess.folder = Some(folder.clone());
                 self.render_graph.set_project_folder(Some(folder.clone()));
+                self.asset_browser.sync_with_project_folder(&folder);
                 self.pending_recovery.clear();
                 self.preview_dirty = true;
                 self.project_status = format!("新規プロジェクト作成: {}", folder.root().display());
@@ -314,7 +339,9 @@ impl EditorApp {
                 sess.selected_items.clear();
                 sess.playhead = RationalTime::ZERO;
                 self.render_graph.clear_media_caches();
-                self.render_graph.set_project_folder(Some(opened.folder));
+                self.render_graph
+                    .set_project_folder(Some(opened.folder.clone()));
+                self.asset_browser.sync_with_project_folder(&opened.folder);
                 self.pending_recovery = opened.pending_recovery;
                 self.preview_dirty = true;
                 self.project_status = if self.pending_recovery.is_empty() {
@@ -421,6 +448,7 @@ impl TabViewer for EditorTabViewer<'_> {
                 WorkspaceMode::MainEdit => "インスペクタ / MCP / 日本語IME".into(),
                 WorkspaceMode::MotionComposite => "AEモーション・エフェクト・マット".into(),
             },
+            Pane::AssetBrowser => "🗂 アセット・エイリアス・監視".into(),
             Pane::AudioAi3D => "🎙 音声自動化・立ち絵・3D".into(),
         }
     }
@@ -450,6 +478,8 @@ impl TabViewer for EditorTabViewer<'_> {
                     .export_job
                     .as_ref()
                     .is_some_and(|j| !j.is_finished());
+                let space_pressed = !ui.ctx().egui_wants_keyboard_input()
+                    && ui.input(|i| !i.modifiers.command && i.key_pressed(egui::Key::Space));
                 {
                     let mut sess = self.app.session.lock().unwrap();
                     let fps = sess.project.settings.fps;
@@ -465,6 +495,7 @@ impl TabViewer for EditorTabViewer<'_> {
                                 "▶ 再生"
                             })
                             .clicked()
+                            || space_pressed
                         {
                             let mut clock = self.app.audio_state.clock.write().unwrap();
                             if is_playing {
@@ -488,6 +519,10 @@ impl TabViewer for EditorTabViewer<'_> {
                             "{secs:.3}s | Frame {frame} ({:.2}fps)",
                             fps.as_f64()
                         ));
+                        inspector_extras::draw_audio_meter_bar(
+                            ui,
+                            self.app.audio_state.meter.load(),
+                        );
                         ui.separator();
 
                         let fmt_label = match self.app.export_format {
@@ -710,41 +745,44 @@ impl TabViewer for EditorTabViewer<'_> {
                             );
                         }
 
-                        // WGSL エフェクトチェーン追加
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("エフェクト追加:");
-                            for (label, eff_type, k, v) in [
-                                ("ブラー", "blur", "radius", 3.0),
-                                ("グロー", "glow", "intensity", 1.2),
-                                ("色調補正", "color_grade", "exposure", 0.35),
-                                ("クリップ", "clip_rect", "left", 0.1),
-                            ] {
-                                if ui.button(label).clicked() {
-                                    let mut params = BTreeMap::new();
-                                    params.insert(k.to_string(), v);
-                                    let mut g = self.app.session.lock().unwrap();
-                                    let s = &mut *g;
-                                    let _ = s.bus.execute(
-                                        &mut s.project,
-                                        EditCommand::AddEffect {
-                                            item_id: item.id,
-                                            effect: EffectNode {
-                                                id: Uuid::new_v4(),
-                                                effect_type: eff_type.to_string(),
-                                                enabled: true,
-                                                params,
-                                            },
-                                        },
-                                        CommandSource::Gui,
-                                        None,
-                                    );
-                                }
-                            }
-                        });
-                        if !item.effect_chain.is_empty() {
-                            for eff in &item.effect_chain {
-                                ui.monospace(format!("  • {} {:?}", eff.effect_type, eff.params));
-                            }
+                        // A-1: 名前付きカラーパレット（複数選択オブジェクト一括色変更対応）
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_color_palette_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                            );
+                        }
+
+                        // A-4: シーンチェンジ（トランジション）設定
+                        if let ItemKind::Transition {
+                            transition,
+                            softness,
+                            ..
+                        } = item.kind
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_transition_ui(
+                                ui, &mut g, item.id, transition, softness,
+                            );
+                        }
+
+                        // A-5: 動画・音声の再生速度・逆再生・ループ・時間制御
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_playback_speed_ui(ui, &mut g, &item);
+                        }
+
+                        // A-6 + B-7: 映像エフェクト追加・並び替え・コピペ・実務頻出フィルタ・演出プリセット
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_video_effects_and_presets_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                                &item,
+                            );
                         }
 
                         // Phase 4: プラグイン API 経由のエフェクト追加（PluginRegistry 動的列挙）
@@ -777,14 +815,65 @@ impl TabViewer for EditorTabViewer<'_> {
                             }
                         });
 
-                        // テキストオブジェクトの場合は文字ごとアニメーター＋日本語IME
+                        // テキストオブジェクトの場合はフォント視覚化ピッカー・字幕装飾・文字ごとアニメーター・制御文字補完＋日本語IME
                         if let ItemKind::Text {
                             mut content,
+                            font_family,
+                            mut font_size,
                             mut animator,
                             ..
-                        } = item.kind
+                        } = item.kind.clone()
                         {
                             ui.separator();
+                            let prev_size = font_size;
+                            ui.horizontal(|ui| {
+                                ui.label(format!("フォント: {font_family}"));
+                                ui.add(
+                                    egui::Slider::new(&mut font_size, 10.0..=180.0).text("サイズ"),
+                                );
+                            });
+                            if (font_size - prev_size).abs() > 0.05 {
+                                let mut g = self.app.session.lock().unwrap();
+                                let s = &mut *g;
+                                let _ = s.bus.execute(
+                                    &mut s.project,
+                                    EditCommand::SetTextFont {
+                                        item_id: item.id,
+                                        font_family: font_family.clone(),
+                                        font_size,
+                                    },
+                                    CommandSource::Gui,
+                                    Some("text_font_size"),
+                                );
+                            }
+
+                            // B-2: フォント視覚化ピッカー＆お気に入りフォント
+                            ui.collapsing(
+                                "🔤 フォント視覚化ピッカー（★お気に入り対応）",
+                                |ui| {
+                                    let mut g = self.app.session.lock().unwrap();
+                                    self.app.font_picker.show(
+                                        ui,
+                                        &mut g,
+                                        self.app.render_graph.text_renderer_mut(),
+                                        item.id,
+                                        &font_family,
+                                        font_size,
+                                    );
+                                },
+                            );
+
+                            // 字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景）
+                            {
+                                let mut g = self.app.session.lock().unwrap();
+                                inspector_extras::show_text_style_ui(
+                                    ui,
+                                    &mut g,
+                                    item.id,
+                                    item.text_style,
+                                );
+                            }
+
                             let prev_anim = animator;
                             ui.checkbox(&mut animator.enabled, "文字ごとアニメーター有効");
                             if animator.enabled {
@@ -812,7 +901,17 @@ impl TabViewer for EditorTabViewer<'_> {
                             }
 
                             ui.separator();
+                            // A-2: AviUtl2 インライン制御文字＆Ctrl+Space補完
                             let before = content.clone();
+                            {
+                                let g = self.app.session.lock().unwrap();
+                                inspector_extras::show_inline_tag_helper(
+                                    ui,
+                                    &mut self.app.inspector_extras,
+                                    &g,
+                                    &mut content,
+                                );
+                            }
                             self.app.ime_panel.ui(ui, &mut content);
                             if content != before {
                                 let mut g = self.app.session.lock().unwrap();
@@ -828,7 +927,33 @@ impl TabViewer for EditorTabViewer<'_> {
                                 );
                             }
                         }
+
+                        // B-3: 音声DSPエフェクト（クリップ＆マスター）＋ LUFS ラウドネス正規化
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_audio_dsp_and_lufs_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                                Some(&item),
+                            );
+                        }
                     } else {
+                        // 未選択時でもカラーパレットとマスター音声DSP/LUFSは操作可能
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_color_palette_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                            );
+                            inspector_extras::show_audio_dsp_and_lufs_ui(
+                                ui,
+                                &mut self.app.inspector_extras,
+                                &mut g,
+                                None,
+                            );
+                        }
                         let mut dummy =
                             String::from("（タイムラインでオブジェクトを選択してください）");
                         self.app.ime_panel.ui(ui, &mut dummy);
@@ -941,6 +1066,18 @@ impl TabViewer for EditorTabViewer<'_> {
                     }
                 });
             }
+            Pane::AssetBrowser => {
+                let mut sess = self.app.session.lock().unwrap();
+                if self.app.asset_browser.show(
+                    ui,
+                    &mut sess,
+                    &mut self.app.waveforms,
+                    Some(&self.app.proxy_tx),
+                    &self.app.audio_state,
+                ) {
+                    self.app.preview_dirty = true;
+                }
+            }
             Pane::AudioAi3D => {
                 let mut sess = self.app.session.lock().unwrap();
                 self.app
@@ -1001,6 +1138,34 @@ impl eframe::App for EditorApp {
             if !summary.messages.is_empty() {
                 self.project_status = summary.messages.join(" / ");
             }
+        }
+
+        // B-6: かんしくん風 フォルダ監視による新着ファイル自動配置（再生ヘッド自動送り対応）
+        if self.asset_browser.is_watching() {
+            let arrived = self.asset_browser.poll_watch_folder();
+            if !arrived.is_empty() {
+                let mut sess = self.session.lock().unwrap();
+                for path in arrived {
+                    let summary = project_io::import_dropped_files(
+                        std::slice::from_ref(&path),
+                        &mut sess,
+                        &mut self.waveforms,
+                        Some(&self.proxy_tx),
+                    );
+                    if summary.imported_count > 0 {
+                        self.preview_dirty = true;
+                        if self.asset_browser.watch_auto_advance
+                            && let Some(end_t) = summary.max_end
+                        {
+                            sess.playhead = end_t;
+                        }
+                    }
+                    if !summary.messages.is_empty() {
+                        self.project_status = format!("[監視] {}", summary.messages.join(" / "));
+                    }
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
 
         // カスタム WGSL シェーダーの自動ホットリロードポーリング（500ms 間隔にスロットルして毎フレームI/Oを回避）
@@ -1137,20 +1302,41 @@ impl eframe::App for EditorApp {
         }
 
         // 再生中の場合は音声マスタークロックから playhead を更新
-        let current_time = {
+        let (is_playing, current_time, current_sample) = {
             let clock = self.audio_state.clock.read().unwrap();
             if clock.is_playing() {
                 clock.tick_fallback_clock();
                 ctx.request_repaint();
                 let t = clock.current_time();
+                let s = clock.current_sample();
                 if let Ok(mut sess) = self.session.lock() {
                     sess.playhead = t;
                 }
-                t
+                (true, t, s)
             } else {
-                self.session.lock().unwrap().playhead
+                (false, self.session.lock().unwrap().playhead, 0)
             }
         };
+
+        // 非 Windows 環境（フォールバッククロック）でも VU / Peak / LUFS メーターをリアルタイム更新
+        #[cfg(not(windows))]
+        {
+            if is_playing {
+                if let Ok(graph) = self.audio_state.graph.try_read() {
+                    let frames = self.meter_scratch.len() / 2;
+                    graph.render_block(current_sample, frames, &mut self.meter_scratch);
+                    self.audio_state
+                        .meter
+                        .store(ve_audio::measure_block_meter(&self.meter_scratch));
+                }
+            } else {
+                self.audio_state
+                    .meter
+                    .store(ve_audio::AudioMeterSnapshot::default());
+            }
+        }
+        #[cfg(windows)]
+        let _ = (is_playing, current_sample);
 
         // 立ち絵の音量連動口パク用に最新波形データを RenderGraph へ同期
         for (aid, wf) in &self.waveforms {

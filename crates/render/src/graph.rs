@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{
-    AssetResolution, BlendMode, CharacterSpriteConfig, EffectNode, FilterTargetScope, ItemKind,
-    LipSyncMode, MouthShape, PrecompCacheManager, Project, ProjectFolder, RationalTime, RgbaColor,
-    Scene, SceneId, ShapeKind, TimelineItem, Transform2D, content_hash_hex, evaluate_vowel_mouth,
-    resolve_mouth_png, rms_to_mouth,
+    AssetResolution, BlendMode, CharacterSpriteConfig, ColorPalette, EffectNode, FilterTargetScope,
+    ItemKind, LipSyncMode, MouthShape, PrecompCacheManager, Project, ProjectFolder, RationalTime,
+    RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D, TransitionKind,
+    content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png, rms_to_mouth,
 };
 use ve_media::FfmpegCli;
 use ve_plugin_api::PluginRegistry;
@@ -29,7 +29,7 @@ type VideoFrameCacheKey = (Uuid, i64, u32, u32, bool);
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
 /// 1. 各オブジェクトのキーフレーム評価・実動画/画像デコード・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
-/// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）適用
+/// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）・シーンチェンジ適用
 /// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）
 pub struct RenderGraph {
     text_renderer: TextRenderer,
@@ -82,6 +82,14 @@ impl RenderGraph {
             cache_hits: 0,
             cache_misses: 0,
         }
+    }
+
+    pub fn text_renderer(&self) -> &TextRenderer {
+        &self.text_renderer
+    }
+
+    pub fn text_renderer_mut(&mut self) -> &mut TextRenderer {
+        &mut self.text_renderer
     }
 
     pub fn set_project_folder(&mut self, folder: Option<ProjectFolder>) {
@@ -220,6 +228,8 @@ impl RenderGraph {
             vec![None; scene.layers.len()];
         let mut filter_passes: Vec<(usize, String, FilterTargetScope, BTreeMap<String, f32>)> =
             Vec::new();
+        let mut transition_passes: Vec<(usize, TransitionKind, FilterTargetScope, f32, f32)> =
+            Vec::new();
         let mut group_passes: Vec<(usize, usize, Transform2D)> = Vec::new();
 
         // Step 1: 各レイヤーのアクティブオブジェクトを描画し、個別エフェクト・3Dカメラ透視投影/DoFを適用
@@ -250,6 +260,22 @@ impl RenderGraph {
                             params.clone(),
                         ));
                     }
+                    ItemKind::Transition {
+                        transition,
+                        scope,
+                        softness,
+                    } => {
+                        let dur_s = item.duration.as_seconds().max(1e-4);
+                        let progress =
+                            ((time - item.start).as_seconds() / dur_s).clamp(0.0, 1.0) as f32;
+                        transition_passes.push((
+                            layer_idx,
+                            *transition,
+                            *scope,
+                            progress,
+                            *softness,
+                        ));
+                    }
                     ItemKind::GroupControl { target_layer_count } => {
                         group_passes.push((layer_idx, *target_layer_count, tf));
                     }
@@ -264,12 +290,13 @@ impl RenderGraph {
                                 &self.plugins,
                             );
 
-                            let (mut draw_x, mut draw_y) = (tf.x, tf.y);
+                            let (mut draw_x, mut draw_y) =
+                                (tf.x + layer.offset_x, tf.y + layer.offset_y);
                             if scene.camera.enabled && tf3d.enable_3d {
                                 let cx = w as f32 * 0.5;
                                 let cy = h as f32 * 0.5;
-                                let item_cx = tf.x + item_img.width as f32 * 0.5 - cx;
-                                let item_cy = tf.y + item_img.height as f32 * 0.5 - cy;
+                                let item_cx = draw_x + item_img.width as f32 * 0.5 - cx;
+                                let item_cy = draw_y + item_img.height as f32 * 0.5 - cy;
                                 let Some(proj) = scene.camera.project(item_cx, item_cy, tf3d.z, h)
                                 else {
                                     continue;
@@ -360,24 +387,18 @@ impl RenderGraph {
 
         // AviUtl2風フィルタオブジェクト（指定レイヤー範囲へ適用）
         for (filter_layer_idx, effect_type, scope, params) in &filter_passes {
-            let target_indices: Vec<usize> = match *scope {
-                FilterTargetScope::ImmediateLayer => {
-                    if *filter_layer_idx > 0 {
-                        vec![filter_layer_idx - 1]
-                    } else {
-                        vec![]
-                    }
-                }
-                FilterTargetScope::LayerRange { count } => {
-                    let start = filter_layer_idx.saturating_sub(count);
-                    (start..*filter_layer_idx).collect()
-                }
-                FilterTargetScope::AllRemaining => (0..*filter_layer_idx).collect(),
-            };
-
-            for target_idx in target_indices {
+            for target_idx in resolve_scope_layers(*filter_layer_idx, *scope) {
                 if let Some((img, _, _)) = layer_outputs[target_idx].as_mut() {
                     apply_named_effect(img, effect_type, params, time.as_seconds(), &self.plugins);
+                }
+            }
+        }
+
+        // AviUtl2風シーンチェンジ（トランジションオブジェクト）適用
+        for &(tr_layer_idx, transition, scope, progress, softness) in &transition_passes {
+            for target_idx in resolve_scope_layers(tr_layer_idx, scope) {
+                if let Some((img, _, _)) = layer_outputs[target_idx].as_mut() {
+                    apply_transition(img, transition, progress, softness);
                 }
             }
         }
@@ -445,6 +466,32 @@ impl RenderGraph {
                     ShapeKind::Rectangle => {
                         img.pixels.fill(fill);
                     }
+                    ShapeKind::RoundedRectangle => {
+                        let radius = (sw.min(sh) as f32 * 0.14).clamp(4.0, 48.0);
+                        let cx = sw as f32 * 0.5;
+                        let cy = sh as f32 * 0.5;
+                        let hx = (cx - radius).max(0.0);
+                        let hy = (cy - radius).max(0.0);
+                        for y in 0..sh {
+                            let fy = y as f32 + 0.5;
+                            for x in 0..sw {
+                                let fx = x as f32 + 0.5;
+                                let qx = (fx - cx).abs() - hx;
+                                let qy = (fy - cy).abs() - hy;
+                                let dist =
+                                    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius;
+                                let cov = (0.5 - dist).clamp(0.0, 1.0);
+                                if cov > 0.0 {
+                                    img.pixels[(y * sw + x) as usize] = LinearPremul {
+                                        r: fill.r * cov,
+                                        g: fill.g * cov,
+                                        b: fill.b * cov,
+                                        a: fill.a * cov,
+                                    };
+                                }
+                            }
+                        }
+                    }
                     ShapeKind::Ellipse => {
                         let rx = sw as f32 * 0.5;
                         let ry = sh as f32 * 0.5;
@@ -467,16 +514,24 @@ impl RenderGraph {
                 font_size,
                 color,
                 animator,
-            } => Some(self.text_renderer.render_text_animated(
-                content,
-                font_family,
-                *font_size * tf.scale_y.max(0.1),
-                *color,
-                animator,
-                local_time.as_seconds() as f32,
-                canvas_w,
-                canvas_h,
-            )),
+            } => {
+                let default_palette = ColorPalette::default();
+                let palette = project
+                    .map(|p| &p.color_palette)
+                    .unwrap_or(&default_palette);
+                Some(self.text_renderer.render_text_styled(
+                    content,
+                    font_family,
+                    *font_size * tf.scale_y.max(0.1),
+                    *color,
+                    animator,
+                    &item.text_style,
+                    palette,
+                    local_time.as_seconds() as f32,
+                    canvas_w,
+                    canvas_h,
+                ))
+            }
             ItemKind::CharacterSprite {
                 config,
                 width,
@@ -602,7 +657,8 @@ impl RenderGraph {
             } => {
                 let proj = project?;
                 let (path, is_proxy) = self.resolve_asset_path(proj, *asset_id, true)?;
-                let src_time = (local_time + *source_offset).max(RationalTime::ZERO);
+                let src_sec = item.evaluate_source_time_sec(local_time, *source_offset, None);
+                let src_time = RationalTime::from_seconds(src_sec).max(RationalTime::ZERO);
                 let frame_idx = src_time.to_frame_floor(scene.fps).max(0);
                 let tw = ((canvas_w as f32) * tf.scale_x.max(0.01))
                     .round()
@@ -628,6 +684,7 @@ impl RenderGraph {
             }
             ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }
+            | ItemKind::Transition { .. }
             | ItemKind::GroupControl { .. } => None,
         }
     }
@@ -843,6 +900,338 @@ fn apply_named_effect(
                 }
             }
         }
+        "chroma_key" => {
+            // グリーンバック / ブルーバック / 任意色クロマキー＋スピル抑制
+            let kr = params.get("key_r").copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let kg = params.get("key_g").copied().unwrap_or(1.0).clamp(0.0, 1.0);
+            let kb = params.get("key_b").copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let tolerance = params
+                .get("tolerance")
+                .copied()
+                .unwrap_or(0.35)
+                .clamp(0.01, 1.5);
+            let softness = params
+                .get("softness")
+                .copied()
+                .unwrap_or(0.15)
+                .clamp(0.01, 1.0);
+            let spill = params
+                .get("spill_suppress")
+                .copied()
+                .unwrap_or(0.4)
+                .clamp(0.0, 1.0);
+            let key_lin = LinearPremul::from_srgb_straight(RgbaColor {
+                r: kr,
+                g: kg,
+                b: kb,
+                a: 1.0,
+            });
+            for px in &mut image.pixels {
+                if px.a <= 1e-6 {
+                    continue;
+                }
+                let inv_a = 1.0 / px.a;
+                let r = px.r * inv_a;
+                let mut g = px.g * inv_a;
+                let b = px.b * inv_a;
+                let dr = r - key_lin.r;
+                let dg = g - key_lin.g;
+                let db = b - key_lin.b;
+                let dist = (dr * dr + dg * dg + db * db).sqrt();
+                let mask = ((dist - tolerance) / softness).clamp(0.0, 1.0);
+                if spill > 0.0 && kg >= kr && kg >= kb {
+                    let max_rb = r.max(b);
+                    if g > max_rb {
+                        g -= (g - max_rb) * spill;
+                    }
+                }
+                let new_a = px.a * mask;
+                px.r = r * new_a;
+                px.g = g * new_a;
+                px.b = b * new_a;
+                px.a = new_a;
+            }
+        }
+        "luma_key" => {
+            // 黒背景・白背景エフェクト素材透過用のルミナンスキー
+            let threshold = params
+                .get("threshold")
+                .copied()
+                .unwrap_or(0.12)
+                .clamp(0.0, 1.0);
+            let softness = params
+                .get("softness")
+                .copied()
+                .unwrap_or(0.08)
+                .clamp(0.005, 1.0);
+            let invert = params.get("invert").copied().unwrap_or(0.0) >= 0.5;
+            for px in &mut image.pixels {
+                if px.a <= 1e-6 {
+                    continue;
+                }
+                let luma = px.luma() / px.a.max(1e-5);
+                let mut mask = ((luma - threshold) / softness).clamp(0.0, 1.0);
+                if invert {
+                    mask = 1.0 - mask;
+                }
+                px.r *= mask;
+                px.g *= mask;
+                px.b *= mask;
+                px.a *= mask;
+            }
+        }
+        "mosaic" => {
+            // ブロック平均モザイク / ピクセレート（個人情報隠し・ネタ演出）
+            let block = params
+                .get("block_size")
+                .copied()
+                .unwrap_or(12.0)
+                .round()
+                .clamp(2.0, 128.0) as u32;
+            let w = image.width;
+            let h = image.height;
+            for by in (0..h).step_by(block as usize) {
+                let y_end = (by + block).min(h);
+                for bx in (0..w).step_by(block as usize) {
+                    let x_end = (bx + block).min(w);
+                    let mut sum = [0.0f64; 4];
+                    let mut cnt = 0.0f64;
+                    for y in by..y_end {
+                        for x in bx..x_end {
+                            let p = image.pixels[(y * w + x) as usize];
+                            sum[0] += f64::from(p.r);
+                            sum[1] += f64::from(p.g);
+                            sum[2] += f64::from(p.b);
+                            sum[3] += f64::from(p.a);
+                            cnt += 1.0;
+                        }
+                    }
+                    if cnt > 0.0 {
+                        let inv = 1.0 / cnt;
+                        let avg = LinearPremul {
+                            r: (sum[0] * inv) as f32,
+                            g: (sum[1] * inv) as f32,
+                            b: (sum[2] * inv) as f32,
+                            a: (sum[3] * inv) as f32,
+                        };
+                        for y in by..y_end {
+                            for x in bx..x_end {
+                                image.pixels[(y * w + x) as usize] = avg;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "rounded_clip" => {
+            // 角丸クリッピング（ワイプ枠・小窓演出用）
+            let w = image.width as f32;
+            let h = image.height as f32;
+            let margin = params
+                .get("margin")
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, w.min(h) * 0.45);
+            let max_r = ((w - margin * 2.0).min(h - margin * 2.0) * 0.5).max(0.0);
+            let radius = params
+                .get("radius")
+                .copied()
+                .unwrap_or(28.0)
+                .clamp(0.0, max_r);
+            let cx = w * 0.5;
+            let cy = h * 0.5;
+            let hx = (w * 0.5 - margin - radius).max(0.0);
+            let hy = (h * 0.5 - margin - radius).max(0.0);
+            for y in 0..image.height {
+                let fy = y as f32 + 0.5;
+                for x in 0..image.width {
+                    let fx = x as f32 + 0.5;
+                    let qx = (fx - cx).abs() - hx;
+                    let qy = (fy - cy).abs() - hy;
+                    let dist = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius;
+                    let cov = (0.5 - dist).clamp(0.0, 1.0);
+                    if cov < 1.0 {
+                        let p = &mut image.pixels[(y * image.width + x) as usize];
+                        p.r *= cov;
+                        p.g *= cov;
+                        p.b *= cov;
+                        p.a *= cov;
+                    }
+                }
+            }
+        }
+        "diagonal_clip" => {
+            // AviUtl 定番「斜めクリッピング」（画面分割・スラッシュ演出）
+            let angle_rad = params
+                .get("angle_deg")
+                .copied()
+                .unwrap_or(30.0)
+                .to_radians();
+            let center_x = params
+                .get("center_x")
+                .copied()
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0);
+            let center_y = params
+                .get("center_y")
+                .copied()
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0);
+            let half_width = params.get("width").copied().unwrap_or(0.0).max(0.0) * 0.5;
+            let feather = params.get("feather").copied().unwrap_or(2.0).max(0.5);
+            let nx = angle_rad.cos();
+            let ny = angle_rad.sin();
+            let cx = image.width as f32 * center_x;
+            let cy = image.height as f32 * center_y;
+            for y in 0..image.height {
+                let dy = y as f32 + 0.5 - cy;
+                for x in 0..image.width {
+                    let dx = x as f32 + 0.5 - cx;
+                    let signed = dx * nx + dy * ny;
+                    let cov = if half_width > 0.0 {
+                        // バンド幅指定時は中心帯を残す
+                        let d = half_width - signed.abs();
+                        (d / feather + 0.5).clamp(0.0, 1.0)
+                    } else {
+                        // 片側クリップ
+                        (signed / feather + 0.5).clamp(0.0, 1.0)
+                    };
+                    if cov < 1.0 {
+                        let p = &mut image.pixels[(y * image.width + x) as usize];
+                        p.r *= cov;
+                        p.g *= cov;
+                        p.b *= cov;
+                        p.a *= cov;
+                    }
+                }
+            }
+        }
+        "shake" => {
+            // AviUtl 定番「振動」（手ブレ・ツッコミ衝撃シェイク）
+            let amp_x = params
+                .get("amp_x")
+                .copied()
+                .unwrap_or(14.0)
+                .clamp(0.0, 200.0);
+            let amp_y = params
+                .get("amp_y")
+                .copied()
+                .unwrap_or(10.0)
+                .clamp(0.0, 200.0);
+            let freq = params
+                .get("freq")
+                .copied()
+                .unwrap_or(24.0)
+                .clamp(0.5, 120.0);
+            let seed = params.get("seed").copied().unwrap_or(1.0);
+            let t = time_sec as f32 * freq;
+            let ox = ((t * 1.7 + seed * 3.1).sin() * 0.65 + (t * 3.3 + seed).cos() * 0.35) * amp_x;
+            let oy = ((t * 2.1 + seed * 5.7).cos() * 0.65 + (t * 4.1 + seed).sin() * 0.35) * amp_y;
+            let dx = ox.round() as i32;
+            let dy = oy.round() as i32;
+            if dx != 0 || dy != 0 {
+                let mut shifted =
+                    LinearImage::new(image.width, image.height, LinearPremul::TRANSPARENT);
+                shifted.blend_over(image, dx, dy, 1.0);
+                *image = shifted;
+            }
+        }
+        "outline" => {
+            // 任意画像・立ち絵・字幕へ適用できる縁取りフィルタ
+            let width = params.get("width").copied().unwrap_or(3.0).clamp(1.0, 14.0);
+            let oc = LinearPremul::from_srgb_straight(RgbaColor {
+                r: params.get("r").copied().unwrap_or(0.0),
+                g: params.get("g").copied().unwrap_or(0.0),
+                b: params.get("b").copied().unwrap_or(0.0),
+                a: params.get("a").copied().unwrap_or(1.0),
+            });
+            let rad = width.ceil() as i32;
+            let rad_sq = width * width + 0.5;
+            let mut offsets = Vec::new();
+            for dy in -rad..=rad {
+                for dx in -rad..=rad {
+                    if (dx * dx + dy * dy) as f32 <= rad_sq {
+                        offsets.push((dx, dy));
+                    }
+                }
+            }
+            let w = image.width as i32;
+            let h = image.height as i32;
+            let mut out = LinearImage::new(image.width, image.height, LinearPremul::TRANSPARENT);
+            for y in 0..h {
+                for x in 0..w {
+                    let mut max_a = 0.0f32;
+                    for &(dx, dy) in &offsets {
+                        let sx = x + dx;
+                        let sy = y + dy;
+                        if sx >= 0 && sx < w && sy >= 0 && sy < h {
+                            let a = image.pixels[(sy as u32 * image.width + sx as u32) as usize].a;
+                            if a > max_a {
+                                max_a = a;
+                                if max_a >= 0.999 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let idx = (y as u32 * image.width + x as u32) as usize;
+                    let border = LinearPremul {
+                        r: oc.r * max_a,
+                        g: oc.g * max_a,
+                        b: oc.b * max_a,
+                        a: oc.a * max_a,
+                    };
+                    out.pixels[idx] = image.pixels[idx].over(border);
+                }
+            }
+            *image = out;
+        }
+        "drop_shadow" => {
+            // 任意画像・立ち絵・字幕へ適用できるドロップシャドウフィルタ
+            let ox = params.get("offset_x").copied().unwrap_or(6.0).round() as i32;
+            let oy = params.get("offset_y").copied().unwrap_or(6.0).round() as i32;
+            let blur = params
+                .get("blur")
+                .copied()
+                .unwrap_or(4.0)
+                .round()
+                .clamp(0.0, 14.0) as i32;
+            let opacity = params
+                .get("opacity")
+                .copied()
+                .unwrap_or(0.6)
+                .clamp(0.0, 1.0);
+            let mut shadow = LinearImage::new(image.width, image.height, LinearPremul::TRANSPARENT);
+            let w = image.width as i32;
+            let h = image.height as i32;
+            for y in 0..h {
+                let sy = y - oy;
+                if sy < 0 || sy >= h {
+                    continue;
+                }
+                for x in 0..w {
+                    let sx = x - ox;
+                    if sx < 0 || sx >= w {
+                        continue;
+                    }
+                    let a =
+                        image.pixels[(sy as u32 * image.width + sx as u32) as usize].a * opacity;
+                    shadow.pixels[(y as u32 * image.width + x as u32) as usize] = LinearPremul {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a,
+                    };
+                }
+            }
+            if blur > 0 {
+                box_blur_separable(&mut shadow, blur);
+            }
+            for (dst, &src) in shadow.pixels.iter_mut().zip(image.pixels.iter()) {
+                *dst = src.over(*dst);
+            }
+            *image = shadow;
+        }
         other => {
             // Phase 4: プラグイン API 経由のエフェクトディスパッチ
             if plugins.get_effect(other).is_some() {
@@ -858,6 +1247,111 @@ fn apply_named_effect(
                         dst.b = src[2];
                         dst.a = src[3];
                     }
+                }
+            }
+        }
+    }
+}
+
+fn resolve_scope_layers(owner_layer_idx: usize, scope: FilterTargetScope) -> Vec<usize> {
+    match scope {
+        FilterTargetScope::ImmediateLayer => {
+            if owner_layer_idx > 0 {
+                vec![owner_layer_idx - 1]
+            } else {
+                vec![]
+            }
+        }
+        FilterTargetScope::LayerRange { count } => {
+            let start = owner_layer_idx.saturating_sub(count);
+            (start..owner_layer_idx).collect()
+        }
+        FilterTargetScope::AllRemaining => (0..owner_layer_idx).collect(),
+    }
+}
+
+/// AviUtl2 風シーンチェンジ（トランジションオブジェクト）を対象レイヤーへ適用する
+fn apply_transition(
+    image: &mut LinearImage,
+    transition: TransitionKind,
+    progress: f32,
+    softness: f32,
+) {
+    let p = progress.clamp(0.0, 1.0);
+    let soft = softness.clamp(0.005, 0.5);
+    let w = image.width.max(1) as f32;
+    let h = image.height.max(1) as f32;
+
+    match transition {
+        TransitionKind::CrossFade => {
+            for px in &mut image.pixels {
+                px.r *= p;
+                px.g *= p;
+                px.b *= p;
+                px.a *= p;
+            }
+        }
+        TransitionKind::WipeLeft
+        | TransitionKind::WipeRight
+        | TransitionKind::WipeUp
+        | TransitionKind::WipeDown => {
+            let edge = p * (1.0 + soft) - soft * 0.5;
+            for y in 0..image.height {
+                let v = (y as f32 + 0.5) / h;
+                for x in 0..image.width {
+                    let u = (x as f32 + 0.5) / w;
+                    let coord = match transition {
+                        TransitionKind::WipeLeft => u,
+                        TransitionKind::WipeRight => 1.0 - u,
+                        TransitionKind::WipeUp => v,
+                        TransitionKind::WipeDown => 1.0 - v,
+                        _ => u,
+                    };
+                    let mask = ((edge - coord) / soft + 0.5).clamp(0.0, 1.0);
+                    if mask < 1.0 {
+                        let px = &mut image.pixels[(y * image.width + x) as usize];
+                        px.r *= mask;
+                        px.g *= mask;
+                        px.b *= mask;
+                        px.a *= mask;
+                    }
+                }
+            }
+        }
+        TransitionKind::SlideLeft | TransitionKind::SlideRight => {
+            let dir = if matches!(transition, TransitionKind::SlideLeft) {
+                -1.0
+            } else {
+                1.0
+            };
+            let shift_x = (dir * (1.0 - p) * w).round() as i32;
+            let mut moved = LinearImage::new(image.width, image.height, LinearPremul::TRANSPARENT);
+            moved.blend_over(image, shift_x, 0, 1.0);
+            *image = moved;
+        }
+        TransitionKind::Flash => {
+            // 中央 (p=0.5) でピークに達する発光トランジション
+            let bell = (1.0 - (p * 2.0 - 1.0).abs()).clamp(0.0, 1.0);
+            let boost = bell * bell * 2.5;
+            for px in &mut image.pixels {
+                if px.a > 0.0 {
+                    px.r += boost * px.a;
+                    px.g += boost * px.a;
+                    px.b += boost * px.a;
+                }
+            }
+        }
+        TransitionKind::RandomLines => {
+            // 決定論的ハッシュによる水平スキャンライン出現（AviUtl2「ランダムライン」相当）
+            let bands = 32u32;
+            let band_h = (image.height / bands).max(1);
+            for y in 0..image.height {
+                let band_idx = y / band_h;
+                let hash = ((band_idx.wrapping_mul(2_654_435_761)) >> 16) as f32 / 65535.0;
+                if hash > p {
+                    let row_start = (y * image.width) as usize;
+                    image.pixels[row_start..row_start + image.width as usize]
+                        .fill(LinearPremul::TRANSPARENT);
                 }
             }
         }
@@ -1525,5 +2019,85 @@ mod tests {
             .render_project_scene(&project, main_id, RationalTime::from_seconds(0.1), false)
             .unwrap();
         assert!(f_export.pixels[24 * 32 + 24].b > 0.6);
+    }
+
+    #[test]
+    fn scene_change_wipe_and_layer_offset_work() {
+        let mut scene = Scene::new("TransTest", 32, 16, FrameRate::FPS_60);
+        scene.layers[0].offset_x = 4.0;
+        scene.layers[0].items.push(TimelineItem::new(
+            "White",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 28.0,
+                height: 16.0,
+                color: RgbaColor::WHITE,
+            },
+        ));
+        scene.layers[1].items.push(TimelineItem::new(
+            "WipeLeft",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Transition {
+                transition: TransitionKind::WipeLeft,
+                scope: FilterTargetScope::ImmediateLayer,
+                softness: 0.02,
+            },
+        ));
+
+        let mut graph = RenderGraph::new();
+        // t=1.0s => progress=0.5: x=0..4 is transparent due to layer.offset_x=4, x=6 is visible, x=28 is wiped out
+        let frame =
+            graph.render_scene_inner(None, &scene, RationalTime::from_seconds(1.0), true, 0);
+        assert!(frame.pixels[2].a < 0.05);
+        assert!(frame.pixels[6].r > 0.8);
+        assert!(frame.pixels[28].a < 0.05);
+    }
+
+    #[test]
+    fn chroma_key_removes_green_and_preserves_red() {
+        let mut img = LinearImage::new(8, 4, LinearPremul::TRANSPARENT);
+        let green = LinearPremul::from_srgb_straight(RgbaColor {
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+            a: 1.0,
+        });
+        let red = LinearPremul::from_srgb_straight(RgbaColor {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        });
+        for y in 0..4 {
+            for x in 0..8 {
+                img.pixels[(y * 8 + x) as usize] = if x < 4 { green } else { red };
+            }
+        }
+        let plugins = PluginRegistry::new();
+        let params = BTreeMap::new();
+        apply_named_effect(&mut img, "chroma_key", &params, 0.0, &plugins);
+        assert!(img.pixels[1].a < 0.05, "green should be keyed out");
+        assert!(img.pixels[6].a > 0.95 && img.pixels[6].r > 0.9);
+    }
+
+    #[test]
+    fn mosaic_and_rounded_clip_modify_pixels_cleanly() {
+        let mut img = LinearImage::new(16, 16, LinearPremul::from_srgb_straight(RgbaColor::WHITE));
+        let plugins = PluginRegistry::new();
+        let mut rparams = BTreeMap::new();
+        rparams.insert("radius".into(), 6.0);
+        apply_named_effect(&mut img, "rounded_clip", &rparams, 0.0, &plugins);
+        // Corner pixel (0,0) clipped transparent, center (8,8) remains opaque white
+        assert!(img.pixels[0].a < 0.05);
+        assert!(img.pixels[8 * 16 + 8].a > 0.95);
+
+        let mut mparams = BTreeMap::new();
+        mparams.insert("block_size".into(), 4.0);
+        apply_named_effect(&mut img, "mosaic", &mparams, 0.0, &plugins);
+        // All pixels inside top-left 4x4 block become identical
+        assert_eq!(img.pixels[0], img.pixels[3 * 16 + 3]);
     }
 }

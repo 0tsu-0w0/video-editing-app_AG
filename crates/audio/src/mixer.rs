@@ -1,7 +1,11 @@
+use crate::dsp::{apply_audio_effect_chain, compute_lufs_gain, measure_integrated_lufs};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use ve_core::{AssetId, AssetResolution, ItemKind, Project, ProjectFolder, RationalTime, SceneId};
+use ve_core::{
+    AssetId, AssetResolution, AudioEffectNode, ItemKind, Keyframe, Project, ProjectFolder,
+    RationalTime, SceneId, evaluate_track,
+};
 use ve_media::{AudioBuffer, FfmpegCli, decode_audio_file};
 
 #[derive(Debug, Clone)]
@@ -11,15 +15,21 @@ pub struct AudioClip {
     pub source_offset: RationalTime,
     pub gain: f32,
     pub muted: bool,
+    pub speed: f32,
+    pub loop_playback: bool,
+    pub time_remap_kfs: Vec<Keyframe>,
+    pub effects: Vec<AudioEffectNode>,
     pub buffer: Arc<AudioBuffer>,
 }
 
-/// プレビュー再生・FFmpeg書き出し共通の Audio Graph（リサンプリング＋ステレオミキサー）
+/// プレビュー再生・FFmpeg書き出し共通の Audio Graph（リサンプリング＋速度/ループ＋DSP＋LUFS＋ステレオミキサー）
 #[derive(Debug, Clone)]
 pub struct AudioGraph {
     pub sample_rate: u32,
     pub channels: usize,
     pub master_gain: f32,
+    pub master_effects: Vec<AudioEffectNode>,
+    pub target_lufs: Option<f32>,
     pub clips: Vec<AudioClip>,
 }
 
@@ -29,6 +39,8 @@ impl AudioGraph {
             sample_rate,
             channels: 2,
             master_gain: 1.0,
+            master_effects: Vec::new(),
+            target_lufs: None,
             clips: Vec::new(),
         }
     }
@@ -46,6 +58,10 @@ impl AudioGraph {
         sample_rate: u32,
     ) -> Self {
         let mut graph = Self::new(sample_rate.max(8_000));
+        if let Some(scene) = project.scene(scene_id) {
+            graph.master_effects = scene.master_audio_effects.clone();
+            graph.target_lufs = scene.target_lufs;
+        }
         let mut decoded_cache: HashMap<AssetId, Option<Arc<AudioBuffer>>> = HashMap::new();
         let ffmpeg = FfmpegCli::default();
         graph.collect_scene_clips(
@@ -83,6 +99,10 @@ impl AudioGraph {
             if layer.muted {
                 continue;
             }
+            let layer_gain = layer.volume.max(0.0);
+            if layer_gain <= 0.0 {
+                continue;
+            }
             for item in &layer.items {
                 match &item.kind {
                     ItemKind::Audio {
@@ -95,7 +115,7 @@ impl AudioGraph {
                         source_offset,
                         volume,
                     } => {
-                        let gain = (*volume).max(0.0) * gain_mul;
+                        let gain = (*volume).max(0.0) * layer_gain * gain_mul;
                         if gain <= 0.0 {
                             continue;
                         }
@@ -105,12 +125,21 @@ impl AudioGraph {
                                 .map(Arc::new)
                         });
                         if let Some(buffer) = buf_opt.as_ref() {
+                            let time_remap_kfs = item
+                                .keyframes
+                                .get("time_remap")
+                                .cloned()
+                                .unwrap_or_default();
                             self.clips.push(AudioClip {
                                 timeline_start: time_offset + item.start,
                                 duration: item.duration,
                                 source_offset: *source_offset,
                                 gain,
                                 muted: false,
+                                speed: item.playback.speed,
+                                loop_playback: item.playback.loop_playback,
+                                time_remap_kfs,
+                                effects: item.audio_effects.clone(),
                                 buffer: Arc::clone(buffer),
                             });
                         }
@@ -123,7 +152,7 @@ impl AudioGraph {
                             *nested_id,
                             folder,
                             time_offset + item.start,
-                            gain_mul,
+                            gain_mul * layer_gain,
                             depth + 1,
                             ffmpeg,
                             decoded_cache,
@@ -187,19 +216,55 @@ impl AudioGraph {
                 continue;
             }
 
-            let step = src_sr / dst_sr;
-            let mut src_pos = ((start_sample + i_start as i64) as f64 / dst_sr - clip_start_sec
-                + offset_sec)
-                * src_sr;
+            let has_clip_fx = clip.effects.iter().any(|e| e.enabled);
+            let mut clip_scratch = if has_clip_fx {
+                vec![0.0f32; (i_end - i_start) * self.channels]
+            } else {
+                Vec::new()
+            };
+
+            let speed = f64::from(clip.speed);
+            let src_frames_f = src_frames as f64;
+            let reverse_anchor_frames = (src_frames_f - 1.0).max(0.0);
+            let has_remap = !clip.time_remap_kfs.is_empty();
+
+            let step = (src_sr / dst_sr) * speed;
+            let local_start_sec = (start_sample + i_start as i64) as f64 / dst_sr - clip_start_sec;
+            let mut src_pos = if speed < 0.0 {
+                reverse_anchor_frames - local_start_sec * speed.abs() * src_sr + offset_sec * src_sr
+            } else {
+                (local_start_sec * speed + offset_sec) * src_sr
+            };
 
             for i in i_start..i_end {
-                if src_pos >= 0.0 {
-                    let idx0 = src_pos as usize;
-                    if idx0 >= src_frames {
-                        break;
-                    }
-                    let idx1 = (idx0 + 1).min(src_frames - 1);
-                    let frac = (src_pos - idx0 as f64) as f32;
+                let sample_pos = if has_remap {
+                    let local_sec = (start_sample + i as i64) as f64 / dst_sr - clip_start_sec;
+                    let mapped_sec = f64::from(evaluate_track(
+                        (local_sec + offset_sec) as f32,
+                        &clip.time_remap_kfs,
+                        RationalTime::from_seconds(local_sec),
+                    ));
+                    mapped_sec * src_sr
+                } else {
+                    src_pos
+                };
+
+                let wrapped_pos = if clip.loop_playback && src_frames_f > 0.0 {
+                    Some(sample_pos.rem_euclid(src_frames_f))
+                } else if sample_pos >= 0.0 && sample_pos < src_frames_f {
+                    Some(sample_pos)
+                } else {
+                    None
+                };
+
+                if let Some(pos) = wrapped_pos {
+                    let idx0 = (pos as usize).min(src_frames - 1);
+                    let idx1 = if clip.loop_playback {
+                        (idx0 + 1) % src_frames
+                    } else {
+                        (idx0 + 1).min(src_frames - 1)
+                    };
+                    let frac = (pos - idx0 as f64).clamp(0.0, 1.0) as f32;
 
                     let (l, r) = if src_ch == 1 {
                         let s0 = clip.buffer.samples[idx0];
@@ -216,14 +281,48 @@ impl AudioGraph {
                         (l0 + (l1 - l0) * frac, r0 + (r1 - r0) * frac)
                     };
 
-                    let base = i * self.channels;
-                    out[base] += l * clip.gain;
-                    if self.channels > 1 {
-                        out[base + 1] += r * clip.gain;
+                    if has_clip_fx {
+                        let base = (i - i_start) * self.channels;
+                        clip_scratch[base] = l * clip.gain;
+                        if self.channels > 1 {
+                            clip_scratch[base + 1] = r * clip.gain;
+                        }
+                    } else {
+                        let base = i * self.channels;
+                        out[base] += l * clip.gain;
+                        if self.channels > 1 {
+                            out[base + 1] += r * clip.gain;
+                        }
                     }
                 }
                 src_pos += step;
             }
+
+            if has_clip_fx {
+                apply_audio_effect_chain(
+                    &mut clip_scratch,
+                    self.channels,
+                    self.sample_rate,
+                    &clip.effects,
+                );
+                for (rel_i, frame) in clip_scratch.chunks_exact(self.channels).enumerate() {
+                    let base = (i_start + rel_i) * self.channels;
+                    out[base] += frame[0];
+                    if self.channels > 1 {
+                        out[base + 1] += frame[1];
+                    }
+                }
+            }
+        }
+
+        // マスター音声 DSP エフェクトチェーン適用
+        if self.master_effects.iter().any(|e| e.enabled) {
+            apply_audio_effect_chain(
+                &mut out[..total_samples],
+                self.channels,
+                self.sample_rate,
+                &self.master_effects,
+            );
         }
 
         // マスターゲイン適用とクリッピング防止
@@ -232,12 +331,23 @@ impl AudioGraph {
         }
     }
 
-    /// 書き出し用: タイムライン全体の音声を一括レンダリングする
+    /// 書き出し用: タイムライン全体の音声を一括レンダリングする（`target_lufs` 指定時はラウドネス正規化）
     pub fn render_range(&self, start: RationalTime, duration: RationalTime) -> Vec<f32> {
         let start_sample = start.to_audio_samples(self.sample_rate);
         let frames = duration.to_audio_samples(self.sample_rate).max(0) as usize;
         let mut out = vec![0.0f32; frames * self.channels];
         self.render_block(start_sample, frames, &mut out);
+        if let Some(target_lufs) = self.target_lufs
+            && self.channels == 2
+        {
+            let measured = measure_integrated_lufs(&out, self.sample_rate);
+            let gain = compute_lufs_gain(measured, target_lufs);
+            if (gain - 1.0).abs() > 1e-3 {
+                for s in &mut out {
+                    *s = (*s * gain).clamp(-1.0, 1.0);
+                }
+            }
+        }
         out
     }
 }
@@ -318,6 +428,10 @@ mod tests {
             source_offset: RationalTime::ZERO,
             gain: 1.0,
             muted: false,
+            speed: 1.0,
+            loop_playback: false,
+            time_remap_kfs: Vec::new(),
+            effects: Vec::new(),
             buffer: buf_44k,
         });
         graph.add_clip(AudioClip {
@@ -326,6 +440,10 @@ mod tests {
             source_offset: RationalTime::ZERO,
             gain: 1.0,
             muted: false,
+            speed: 1.0,
+            loop_playback: false,
+            time_remap_kfs: Vec::new(),
+            effects: Vec::new(),
             buffer: buf_48k,
         });
 
@@ -334,6 +452,51 @@ mod tests {
         for &s in &rendered[10..100] {
             assert!((s - 0.55).abs() < 1e-4, "expected ~0.55, got {s}");
         }
+    }
+
+    #[test]
+    fn supports_loop_playback_and_reverse_speed() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32 / 1000.0).collect();
+        let buf = Arc::new(AudioBuffer {
+            sample_rate: 1000,
+            channels: 1,
+            samples: ramp,
+        });
+
+        // 2x speed with loop over 1.0s (covers two full cycles)
+        let mut graph = AudioGraph::new(1000);
+        graph.add_clip(AudioClip {
+            timeline_start: RationalTime::ZERO,
+            duration: RationalTime::from_seconds(1.0),
+            source_offset: RationalTime::ZERO,
+            gain: 1.0,
+            muted: false,
+            speed: 2.0,
+            loop_playback: true,
+            time_remap_kfs: Vec::new(),
+            effects: Vec::new(),
+            buffer: Arc::clone(&buf),
+        });
+        let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
+        // At t=0.75s with 2x speed, src_pos = 1500 % 1000 = 500 -> value ~0.5
+        assert!((pcm[750 * 2] - 0.5).abs() < 0.02, "got {}", pcm[750 * 2]);
+
+        // Reverse playback (-1x) starts near end (~0.999) and decreases toward 0.0
+        let mut rev_graph = AudioGraph::new(1000);
+        rev_graph.add_clip(AudioClip {
+            timeline_start: RationalTime::ZERO,
+            duration: RationalTime::from_seconds(1.0),
+            source_offset: RationalTime::ZERO,
+            gain: 1.0,
+            muted: false,
+            speed: -1.0,
+            loop_playback: false,
+            time_remap_kfs: Vec::new(),
+            effects: Vec::new(),
+            buffer: buf,
+        });
+        let rev = rev_graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(1.0));
+        assert!(rev[0] > 0.95 && rev[900 * 2] < 0.15);
     }
 
     #[test]
@@ -352,9 +515,10 @@ mod tests {
             fallback_absolute_path: Some(wav_path),
             collected: false,
         });
-        project.active_scene_mut().unwrap().layers[3]
-            .items
-            .push(TimelineItem::new(
+        {
+            let layer = &mut project.active_scene_mut().unwrap().layers[3];
+            layer.volume = 0.5;
+            layer.items.push(TimelineItem::new(
                 "BGM",
                 RationalTime::ZERO,
                 RationalTime::from_seconds(0.5),
@@ -364,10 +528,12 @@ mod tests {
                     volume: 0.5,
                 },
             ));
+        }
 
         let graph = AudioGraph::from_project_scene(&project, project.active_scene_id, None, 48_000);
         assert_eq!(graph.clips.len(), 1);
         let pcm = graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(0.1));
-        assert!((pcm[20] - 0.2).abs() < 0.01, "got {}", pcm[20]);
+        // 0.4 * clip(0.5) * layer(0.5) = 0.1
+        assert!((pcm[20] - 0.1).abs() < 0.01, "got {}", pcm[20]);
     }
 }

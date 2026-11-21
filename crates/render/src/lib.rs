@@ -14,4 +14,4 @@ pub use hot_shader::{
 pub use pipeline::WgpuPreviewPipeline;
 pub use psd_sprite::PsdCharacterAsset;
 pub use sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
-pub use text::TextRenderer;
+pub use text::{StyledSpan, TextRenderer, parse_inline_text_spans, strip_inline_tags};
