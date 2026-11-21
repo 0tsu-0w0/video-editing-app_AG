@@ -4,9 +4,9 @@ use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
 use crate::lipsync::CharacterSpriteConfig;
 use crate::preset::ColorPalette;
 use crate::project::{
-    AudioEffectNode, BlendMode, EffectId, EffectNode, ItemId, ItemKind, Layer, Project, RgbaColor,
-    Scene, SceneId, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, Transform2D,
-    TransitionKind,
+    AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BlendMode, EffectId, EffectNode,
+    ItemId, ItemKind, Layer, Project, RgbaColor, Scene, SceneId, TextAnimator, TextStyle,
+    TimelineItem, TimelineMarker, TrackMatte, Transform2D, TransitionKind,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -235,6 +235,13 @@ pub enum EditCommand {
         fps: crate::time::FrameRate,
         rescale_items: bool,
     },
+    SetAudioDucking {
+        ducking: AudioDuckingConfig,
+    },
+    SetAudioReactive {
+        item_id: ItemId,
+        reactive: AudioReactiveConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -284,6 +291,8 @@ impl EditCommand {
             Self::AddMarker { .. } => "add_marker",
             Self::RemoveMarker { .. } => "remove_marker",
             Self::SetSceneSettings { .. } => "set_scene_settings",
+            Self::SetAudioDucking { .. } => "set_audio_ducking",
+            Self::SetAudioReactive { .. } => "set_audio_reactive",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -740,6 +749,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 camera: Camera3D::default(),
                 master_audio_effects: Vec::new(),
                 target_lufs: None,
+                audio_ducking: AudioDuckingConfig::default(),
                 markers: Vec::new(),
                 layers: new_layers,
             };
@@ -1092,6 +1102,18 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             project.settings.width = new_w;
             project.settings.height = new_h;
             project.settings.fps = *fps;
+            Ok(())
+        }
+        EditCommand::SetAudioDucking { ducking } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            scene.audio_ducking = *ducking;
+            Ok(())
+        }
+        EditCommand::SetAudioReactive { item_id, reactive } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.audio_reactive = *reactive;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

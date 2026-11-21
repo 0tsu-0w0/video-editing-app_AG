@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use ve_core::AudioEffectNode;
+use ve_core::{AudioDuckingConfig, AudioEffectNode};
 
 /// リアルタイム音量メーター・ラウドネス測定結果
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -620,6 +620,150 @@ impl Biquad {
     }
 }
 
+/// v0.6 #4: 周波数帯域スペクトラム解析結果（Goertzel / 対数バンド分割）
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpectrumSnapshot {
+    pub bands: Vec<f32>,
+    pub low: f32,
+    pub mid: f32,
+    pub high: f32,
+    pub rms: f32,
+}
+
+/// Pure-Rust Hann窓付き Goertzel アルゴリズムでモノラル PCM から対数間隔の周波数帯域エネルギーを解析する
+pub fn analyze_spectrum_bands(
+    mono: &[f32],
+    sample_rate: u32,
+    band_count: usize,
+) -> SpectrumSnapshot {
+    let count = band_count.clamp(1, 64);
+    if mono.is_empty() || sample_rate == 0 {
+        return SpectrumSnapshot {
+            bands: vec![0.0; count],
+            ..Default::default()
+        };
+    }
+
+    // 最大 1024 サンプルの末尾ウィンドウを使用（高速かつ低遅延）
+    let win_len = mono.len().min(1024);
+    let slice = &mono[mono.len() - win_len..];
+    let n_f = win_len as f32;
+
+    let mut sum_sq = 0.0f64;
+    let mut windowed = Vec::with_capacity(win_len);
+    for (i, &s) in slice.iter().enumerate() {
+        sum_sq += f64::from(s) * f64::from(s);
+        let hann = if win_len > 1 {
+            0.5 * (1.0 - (2.0 * PI * i as f32 / (win_len - 1) as f32).cos())
+        } else {
+            1.0
+        };
+        windowed.push(s * hann);
+    }
+    let rms = (sum_sq / win_len as f64).sqrt() as f32;
+
+    let min_hz = 60.0f32;
+    let max_hz = (sample_rate as f32 * 0.45).clamp(200.0, 12_000.0);
+    let ratio = (max_hz / min_hz).max(1.01);
+    let sr = sample_rate as f32;
+
+    let mut bands = Vec::with_capacity(count);
+    for b in 0..count {
+        let t = if count > 1 {
+            b as f32 / (count - 1) as f32
+        } else {
+            0.5
+        };
+        let target_hz = min_hz * ratio.powf(t);
+        let omega = 2.0 * PI * target_hz / sr;
+        let coeff = 2.0 * omega.cos();
+        let mut s1 = 0.0f32;
+        let mut s2 = 0.0f32;
+        for &x in &windowed {
+            let s0 = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        let power = (s1 * s1 + s2 * s2 - coeff * s1 * s2).max(0.0);
+        // Hann 窓のコヒーレントゲイン (0.5) を補正して [0, 1] 正規化
+        let mag = (power.sqrt() * 4.0 / n_f).clamp(0.0, 1.0);
+        bands.push(mag);
+    }
+
+    let low_end = (count / 3).max(1);
+    let mid_end = ((count * 2) / 3).max(low_end).min(count);
+    let avg = |sl: &[f32]| -> f32 {
+        if sl.is_empty() {
+            0.0
+        } else {
+            sl.iter().sum::<f32>() / sl.len() as f32
+        }
+    };
+    let low = avg(&bands[..low_end]);
+    let mid = avg(&bands[low_end..mid_end]);
+    let high = avg(&bands[mid_end..]);
+
+    SpectrumSnapshot {
+        bands,
+        low,
+        mid,
+        high,
+        rms,
+    }
+}
+
+/// v0.6 #4: 発話（サイドチェイン）信号のエンベロープに応じて BGM ステレオバッファを滑らかに自動減衰する
+pub fn apply_sidechain_ducking(
+    voice_stereo: &[f32],
+    bgm_stereo: &mut [f32],
+    sample_rate: u32,
+    cfg: &AudioDuckingConfig,
+) {
+    if !cfg.enabled || sample_rate == 0 || voice_stereo.len() < 2 || bgm_stereo.len() < 2 {
+        return;
+    }
+    let sr = sample_rate as f32;
+    let threshold = cfg.threshold_rms.clamp(0.001, 0.9);
+    let duck_target = db_to_linear(cfg.reduction_db.clamp(-48.0, 0.0));
+    let attack_coeff = (-1.0 / (cfg.attack_sec.clamp(0.002, 2.0) * sr)).exp();
+    let release_coeff = (-1.0 / (cfg.release_sec.clamp(0.01, 5.0) * sr)).exp();
+
+    // 発話のゼロ交差でチャタリングしないよう、高速 RMS 検出エンベロープ（10ms / 45ms）を使用
+    let det_attack = (-1.0 / (0.010 * sr)).exp();
+    let det_release = (-1.0 / (0.045 * sr)).exp();
+    let mut det_env = 0.0f32;
+    let mut gain = 1.0f32;
+
+    let frames = voice_stereo.len().min(bgm_stereo.len()) / 2;
+    for i in 0..frames {
+        let base = i * 2;
+        let vl = voice_stereo[base];
+        let vr = voice_stereo[base + 1];
+        let v_rms = ((vl * vl + vr * vr) * 0.5).sqrt();
+        let dc = if v_rms > det_env {
+            det_attack
+        } else {
+            det_release
+        };
+        det_env = dc * det_env + (1.0 - dc) * v_rms;
+
+        let target_gain = if det_env >= threshold {
+            duck_target
+        } else {
+            1.0
+        };
+        let gc = if target_gain < gain {
+            attack_coeff
+        } else {
+            release_coeff
+        };
+        gain = gc * gain + (1.0 - gc) * target_gain;
+
+        bgm_stereo[base] *= gain;
+        bgm_stereo[base + 1] *= gain;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +817,65 @@ mod tests {
         }
         let after = measure_integrated_lufs(&buf, sr);
         assert!((after - (-14.0)).abs() < 0.8, "after={after}");
+    }
+
+    #[test]
+    fn spectrum_analyzer_separates_low_and_high_sine_waves() {
+        let sr = 48_000;
+        let low_mono: Vec<f32> = (0..1024)
+            .map(|i| (2.0 * PI * 120.0 * i as f32 / sr as f32).sin() * 0.8)
+            .collect();
+        let high_mono: Vec<f32> = (0..1024)
+            .map(|i| (2.0 * PI * 6000.0 * i as f32 / sr as f32).sin() * 0.8)
+            .collect();
+
+        let low_spec = analyze_spectrum_bands(&low_mono, sr, 18);
+        let high_spec = analyze_spectrum_bands(&high_mono, sr, 18);
+
+        assert_eq!(low_spec.bands.len(), 18);
+        assert!(low_spec.low > low_spec.high * 3.0, "low_spec={low_spec:?}");
+        assert!(
+            high_spec.high > high_spec.low * 3.0,
+            "high_spec={high_spec:?}"
+        );
+    }
+
+    #[test]
+    fn sidechain_ducking_attenuates_bgm_only_during_voice() {
+        let sr = 48_000;
+        // 1.5s: 0.0..0.5s 無音 -> 0.5..1.0s 発話 -> 1.0..1.5s 無音
+        let total_frames = sr as usize * 3 / 2;
+        let mut voice = vec![0.0f32; total_frames * 2];
+        for i in (sr as usize / 2)..(sr as usize) {
+            let s = (2.0 * PI * 300.0 * i as f32 / sr as f32).sin() * 0.6;
+            voice[i * 2] = s;
+            voice[i * 2 + 1] = s;
+        }
+        let mut bgm = sine_stereo(440.0, 0.5, sr, total_frames);
+        let cfg = AudioDuckingConfig {
+            enabled: true,
+            voice_layer_index: 3,
+            bgm_layer_index: 2,
+            threshold_rms: 0.05,
+            reduction_db: -12.0,
+            attack_sec: 0.015,
+            release_sec: 0.05,
+        };
+        apply_sidechain_ducking(&voice, &mut bgm, sr, &cfg);
+
+        let before_rms = measure_block_meter(&bgm[0..(sr as usize / 2) * 2]).rms_l;
+        let during_rms =
+            measure_block_meter(&bgm[(sr as usize * 3 / 4) * 2..(sr as usize) * 2]).rms_l;
+        let after_rms =
+            measure_block_meter(&bgm[(sr as usize * 5 / 4) * 2..total_frames * 2]).rms_l;
+
+        assert!(
+            during_rms < before_rms * 0.45,
+            "before={before_rms}, during={during_rms}, after={after_rms}"
+        );
+        assert!(
+            after_rms > during_rms * 2.0,
+            "BGM should recover after voice stops: during={during_rms}, after={after_rms}"
+        );
     }
 }

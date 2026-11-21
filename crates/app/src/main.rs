@@ -9,6 +9,7 @@ mod native_dialog;
 mod preview_canvas;
 mod project_io;
 mod ram_preview;
+mod render_queue;
 mod timeline;
 mod watch_folder;
 
@@ -23,6 +24,7 @@ use ime_poc::ImePocPanel;
 use inspector_extras::InspectorExtrasState;
 use preview_canvas::PreviewCanvasState;
 use ram_preview::{RamFrameKey, RamPreviewManager};
+use render_queue::RenderQueueState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -146,6 +148,9 @@ struct EditorApp {
     export_job: Option<ExportJobHandle>,
     last_export_snapshot: Option<ExportProgressSnapshot>,
     export_status: String,
+    // v0.6 #7: レンダーキュー（バッチ連続書き出し）
+    render_queue: RenderQueueState,
+    show_render_queue: bool,
     preview_scale: u32,
     last_rendered_key: Option<(u64, i64, u32, u32, usize, Uuid)>,
     preview_dirty: bool,
@@ -327,6 +332,8 @@ impl EditorApp {
             export_job: None,
             last_export_snapshot: None,
             export_status: "待機中".to_string(),
+            render_queue: RenderQueueState::default(),
+            show_render_queue: false,
             preview_scale: 2,
             last_rendered_key: None,
             preview_dirty: true,
@@ -743,6 +750,20 @@ impl TabViewer for EditorTabViewer<'_> {
                         } else if ui.button("🚀 書き出し").clicked() {
                             export_clicked = true;
                         }
+                        let rq_label = if self.app.render_queue.running {
+                            format!("📋 キュー (実行中 {})", self.app.render_queue.jobs.len())
+                        } else if !self.app.render_queue.jobs.is_empty() {
+                            format!("📋 キュー ({})", self.app.render_queue.jobs.len())
+                        } else {
+                            "📋 キュー".to_string()
+                        };
+                        if ui
+                            .selectable_label(self.app.show_render_queue, rq_label)
+                            .on_hover_text("バッチ連続書き出しレンダーキューを開く")
+                            .clicked()
+                        {
+                            self.app.show_render_queue = !self.app.show_render_queue;
+                        }
                         ui.label(&self.app.export_status);
                     });
 
@@ -1134,9 +1155,11 @@ impl TabViewer for EditorTabViewer<'_> {
                             }
                         }
 
-                        // B-3: 音声DSPエフェクト（クリップ＆マスター）＋ LUFS ラウドネス正規化
+                        // v0.6 #4: オーディオリアクティブ（音声エネルギー連動アニメーション）
+                        // B-3: 音声DSPエフェクト（クリップ＆マスター）＋ BGM自動ダッキング ＋ LUFS ラウドネス正規化
                         {
                             let mut g = self.app.session.lock().unwrap();
+                            inspector_extras::show_audio_reactive_ui(ui, &mut g, &item);
                             inspector_extras::show_audio_dsp_and_lufs_ui(
                                 ui,
                                 &mut self.app.inspector_extras,
@@ -1437,6 +1460,28 @@ impl eframe::App for EditorApp {
             if finished {
                 self.export_job = None;
             } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
+        }
+
+        // v0.6 #7: レンダーキュー（バッチ連続書き出し）の進捗ポーリング＆順次実行
+        if self.render_queue.running {
+            let (proj_clone, folder) = {
+                let sess = self.session.lock().unwrap();
+                (sess.project.clone(), sess.folder.clone())
+            };
+            let gpu_passes = self.build_active_gpu_passes();
+            let shader_files: Vec<(String, PathBuf)> = self
+                .render_graph
+                .hot_shaders
+                .list()
+                .into_iter()
+                .map(|e| (e.id.clone(), e.path.clone()))
+                .collect();
+            if self
+                .render_queue
+                .tick(&proj_clone, folder.as_ref(), &gpu_passes, &shader_files)
+            {
                 ctx.request_repaint_after(std::time::Duration::from_millis(80));
             }
         }
@@ -2042,6 +2087,13 @@ impl eframe::App for EditorApp {
             }
         }
 
+        // v0.6 #7: レンダーキュー（バッチ連続書き出し）ウィンドウ
+        if self.show_render_queue {
+            let sess = self.session.lock().unwrap();
+            self.render_queue
+                .show_window(&ctx, &mut self.show_render_queue, &sess);
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2068,7 +2120,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v0.5.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v0.6.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

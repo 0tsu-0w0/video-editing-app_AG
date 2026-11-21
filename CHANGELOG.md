@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0] - 2026-11-21
+
+解説・実況・ショート動画の量産性を飛躍させる v0.6 ロードマップ（#4〜#7）をすべて実装しました。
+
+### #4 BGM 自動ダッキング（サイドチェイン音量減衰）＆ オーディオリアクティブ
+* `ve-audio`: 発話レイヤー（サイドチェイン）のエンベロープに応じて BGM レイヤーを滑らかに自動減衰する `apply_sidechain_ducking` を `AudioGraph` へ統合（プレビュー再生＆書き出し完全一致）
+* `ve-audio`: Pure-Rust Hann 窓付き Goertzel 対数帯域スペクトラム解析 `analyze_spectrum_bands`（Low / Mid / High / RMS）を実装
+* `ve-core` / `ve-render`: `ItemKind::AudioSpectrum`（音声連動リアルタイムスペクトラム描画）と `AudioReactiveConfig`（帯域エネルギー連動の拡大率・Yバウンス・不透明度アニメーション）、`EditCommand::SetAudioDucking` / `SetAudioReactive` を実装
+* `ve-app` / `ve-mcp`: インスペクタの BGM ダッキング＆オーディオリアクティブ設定 UI、タイムライン「＋ スペクトラム」配置（Transform Gizmo 操作対応）、MCP ツール `set_audio_ducking` を追加
+
+### #5 台本（Markdown / CSV）→ タイムライン一括自動生成（ゆっくり・解説動画量産モード）
+* `ve-core`: `parse_script_csv` / `parse_script_markdown` / `parse_script_auto` と、話者別自動配色・日本語自動改行・座布団字幕・ポーズ間調整を 1 ステップ Undo で組み立てる `build_script_timeline_commands` を実装
+* `ve-app` / `ve-mcp`: `AudioAi3DPanel` の台本一括生成 UI（`.csv` / `.md` 読込、背景画像同時配置、任意でローカル TTS 実尺連携）および MCP ツール `import_script` を追加
+
+### #6 SRT / ASS 字幕入出力 ＆ 他ソフト互換（AviUtl `.exo` / OpenTimelineIO）
+* `ve-core`: Pure-Rust の SRT / ASS (v4+) 字幕インポート＆エクスポート、AviUtl `.exo` パーサ（UTF-16LE 16進 `text=` 日本語復号＋座標・色・拡大率・透明度・回転対応）、および OpenTimelineIO `.otio` JSON エクスポートを実装
+* `ve-app` / `ve-mcp`: `AudioAi3DPanel` の字幕・互換入出力 UI および MCP ツール `import_subtitles_or_exo` / `export_subtitles_or_otio` を追加
+
+### #7 レンダーキュー（バッチ連続書き出し）
+* `ve-app`: マルチジョブ連続書き出しマネージャー `RenderQueueState` を実装（MP4 H.264 / 9:16 縦動画自動リフレーム MP4 / H.265 / WebM Alpha / WAV / SRT / ASS / OTIO、1 クリック「YouTube 一括セット追加」、並び替え・削除、順次バックグラウンド書き出し＆進捗表示・キャンセル対応）
+
 ## [0.5.0] - 2026-11-21
 
 プレビュー直感操作・動画デコード高速化＆RAM先読み・縦動画プリセット／OSネイティブファイル選択／自動保存を実装しました。

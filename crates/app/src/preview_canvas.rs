@@ -509,9 +509,9 @@ struct ItemGeometry {
 
 fn estimate_item_base_size(item: &TimelineItem, scene: &Scene) -> Option<(f32, f32)> {
     match &item.kind {
-        ItemKind::Shape { width, height, .. } | ItemKind::CharacterSprite { width, height, .. } => {
-            Some((*width, *height))
-        }
+        ItemKind::Shape { width, height, .. }
+        | ItemKind::CharacterSprite { width, height, .. }
+        | ItemKind::AudioSpectrum { width, height, .. } => Some((*width, *height)),
         ItemKind::Text {
             content, font_size, ..
         } => {
