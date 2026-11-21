@@ -1,5 +1,6 @@
-use crate::project::{EffectNode, RgbaColor, TimelineItem};
+use crate::project::{EffectNode, RgbaColor, TextStyle, TimelineItem};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// 名前付きプリセット色（AviUtl2 カラーパレット相当）
@@ -151,7 +152,7 @@ impl ItemAlias {
     }
 }
 
-/// エフェクトチェーン単体のプリセット（コピー／貼り付け・再利用向け）
+/// エフェクトチェーン単体のプリセット（`presets/effects/*.json` 保存・1クリック適用向け）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EffectPreset {
     pub name: String,
@@ -168,6 +169,173 @@ impl EffectPreset {
                 e
             })
             .collect()
+    }
+
+    /// 標準組み込みエフェクトチェーンプリセット
+    pub fn default_presets() -> Vec<Self> {
+        let node = |effect_type: &str, pairs: &[(&str, f32)]| EffectNode {
+            id: Uuid::nil(),
+            effect_type: effect_type.to_string(),
+            enabled: true,
+            params: pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), *v))
+                .collect::<BTreeMap<_, _>>(),
+        };
+        vec![
+            Self {
+                name: "シネマティック暖色".into(),
+                effects: vec![
+                    node(
+                        "color_grade",
+                        &[("exposure", 0.12), ("contrast", 1.12), ("saturation", 1.15)],
+                    ),
+                    node("glow", &[("intensity", 0.65), ("threshold", 0.65)]),
+                ],
+            },
+            Self {
+                name: "解説ワイプ枠 (角丸+影)".into(),
+                effects: vec![
+                    node("rounded_clip", &[("radius", 28.0), ("margin", 4.0)]),
+                    node(
+                        "drop_shadow",
+                        &[
+                            ("offset_x", 8.0),
+                            ("offset_y", 8.0),
+                            ("blur", 6.0),
+                            ("opacity", 0.55),
+                        ],
+                    ),
+                ],
+            },
+            Self {
+                name: "強調パンチ (振動+発光)".into(),
+                effects: vec![
+                    node("shake", &[("amp_x", 10.0), ("amp_y", 8.0), ("freq", 22.0)]),
+                    node("glow", &[("intensity", 1.1), ("threshold", 0.48)]),
+                ],
+            },
+        ]
+    }
+}
+
+/// 字幕スタイルプリセット（`presets/text_styles/*.json` 保存・1クリック適用向け）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextStylePreset {
+    pub name: String,
+    pub font_family: String,
+    pub font_size: f32,
+    pub color: RgbaColor,
+    pub text_style: TextStyle,
+}
+
+impl TextStylePreset {
+    /// YouTube / ゆっくり解説 / シネマ向けの標準字幕スタイルプリセット
+    pub fn default_presets() -> Vec<Self> {
+        vec![
+            Self {
+                name: "YouTube 太縁テロップ".into(),
+                font_family: "sans-serif".into(),
+                font_size: 56.0,
+                color: RgbaColor::WHITE,
+                text_style: TextStyle {
+                    outline_width: 5.0,
+                    outline_color: RgbaColor::BLACK,
+                    shadow_offset: [4.0, 4.0],
+                    shadow_blur: 3.0,
+                    shadow_color: RgbaColor {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.72,
+                    },
+                    box_enabled: false,
+                    ..TextStyle::default()
+                },
+            },
+            Self {
+                name: "ゆっくり座布団字幕".into(),
+                font_family: "sans-serif".into(),
+                font_size: 44.0,
+                color: RgbaColor::WHITE,
+                text_style: TextStyle {
+                    outline_width: 2.5,
+                    outline_color: RgbaColor::BLACK,
+                    shadow_offset: [0.0, 2.0],
+                    shadow_blur: 2.0,
+                    shadow_color: RgbaColor {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.55,
+                    },
+                    box_enabled: true,
+                    box_color: RgbaColor {
+                        r: 0.04,
+                        g: 0.06,
+                        b: 0.11,
+                        a: 0.78,
+                    },
+                    box_padding: [18.0, 10.0],
+                    box_radius: 12.0,
+                },
+            },
+            Self {
+                name: "強調ツッコミ黄×赤縁".into(),
+                font_family: "sans-serif".into(),
+                font_size: 64.0,
+                color: RgbaColor {
+                    r: 1.0,
+                    g: 0.90,
+                    b: 0.18,
+                    a: 1.0,
+                },
+                text_style: TextStyle {
+                    outline_width: 6.0,
+                    outline_color: RgbaColor {
+                        r: 0.78,
+                        g: 0.08,
+                        b: 0.10,
+                        a: 1.0,
+                    },
+                    shadow_offset: [5.0, 5.0],
+                    shadow_blur: 4.0,
+                    shadow_color: RgbaColor {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.80,
+                    },
+                    box_enabled: false,
+                    ..TextStyle::default()
+                },
+            },
+            Self {
+                name: "シネマ繊細字幕".into(),
+                font_family: "serif".into(),
+                font_size: 38.0,
+                color: RgbaColor {
+                    r: 0.96,
+                    g: 0.95,
+                    b: 0.92,
+                    a: 1.0,
+                },
+                text_style: TextStyle {
+                    outline_width: 0.0,
+                    outline_color: RgbaColor::BLACK,
+                    shadow_offset: [0.0, 3.0],
+                    shadow_blur: 4.0,
+                    shadow_color: RgbaColor {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.70,
+                    },
+                    box_enabled: false,
+                    ..TextStyle::default()
+                },
+            },
+        ]
     }
 }
 
@@ -222,5 +390,19 @@ mod tests {
         assert_eq!(inst.start, RationalTime::from_seconds(10.0));
         assert_eq!(inst.duration, src.duration);
         assert_ne!(inst.effect_chain[0].id, src.effect_chain[0].id);
+    }
+
+    #[test]
+    fn builtin_text_style_and_effect_presets_are_valid() {
+        let text_presets = TextStylePreset::default_presets();
+        assert_eq!(text_presets.len(), 4);
+        assert!(text_presets.iter().any(|p| p.text_style.box_enabled));
+
+        let fx_presets = EffectPreset::default_presets();
+        assert_eq!(fx_presets.len(), 3);
+        let inst_a = fx_presets[0].instantiate();
+        let inst_b = fx_presets[0].instantiate();
+        assert_eq!(inst_a.len(), 2);
+        assert_ne!(inst_a[0].id, inst_b[0].id);
     }
 }

@@ -31,10 +31,13 @@ pub struct TimelineState {
     pub dragging_item: Option<DragOp>,
     // v0.4 #7: ラバーバンド（矩形）選択
     pub marquee_origin: Option<Pos2>,
-    // v0.4 #7: マーカー追加設定
+    // v0.4 #7 / v0.7.1: マーカー追加・編集設定
     pub marker_label_input: String,
     pub marker_color_idx: usize,
     pub marker_status: String,
+    pub editing_marker_id: Option<Uuid>,
+    // v0.7.1: クリップコピー＆ペースト用クリップボード `(layer_index, TimelineItem)`
+    pub clipboard_items: Vec<(usize, TimelineItem)>,
     // v0.4 #3: 無音区間自動カット（ジェットカット）
     pub show_jump_cut_bar: bool,
     pub jump_cut_audio_layer: usize,
@@ -87,6 +90,8 @@ impl Default for TimelineState {
             marker_label_input: String::new(),
             marker_color_idx: 0,
             marker_status: String::new(),
+            editing_marker_id: None,
+            clipboard_items: Vec::new(),
             show_jump_cut_bar: false,
             jump_cut_audio_layer: 3,
             jump_cut_rms_threshold: 0.025,
@@ -145,7 +150,35 @@ const MARKER_PALETTE: &[(&str, RgbaColor)] = &[
             a: 1.0,
         },
     ),
+    (
+        "赤",
+        RgbaColor {
+            r: 0.96,
+            g: 0.28,
+            b: 0.28,
+            a: 1.0,
+        },
+    ),
 ];
+
+#[derive(Default)]
+struct TimelineShortcutInput {
+    undo: bool,
+    redo: bool,
+    split: bool,
+    delete: bool,
+    ripple_delete: bool,
+    find: bool,
+    marker: bool,
+    copy: bool,
+    paste: bool,
+    duplicate: bool,
+    select_all: bool,
+    jump_home: bool,
+    jump_end: bool,
+    step_frames: i64,
+    shuttle: Option<TimelinePlaybackAction>,
+}
 
 impl TimelineState {
     pub fn show(
@@ -158,45 +191,19 @@ impl TimelineState {
         let fps = session.project.settings.fps;
         let mut playback_action = TimelinePlaybackAction::None;
 
-        // ショートカット: Ctrl+Z / Ctrl+Y / Ctrl+F / Delete / Shift+Delete / S / M / ←→(Shift=10f) / J・K・L
+        // ショートカット:
+        // Ctrl+Z/Y, Ctrl+C/V/D/A, Ctrl+F, Delete/Backspace (+Shift=リップル), S, M, Home/End, ←→(Shift=10f), J/K/L
         // テキスト入力フォーカス中はすべて抑止する
         let text_editing = ui.ctx().egui_wants_keyboard_input();
-        let (
-            undo_key,
-            redo_key,
-            split_key,
-            delete_key,
-            ripple_delete_key,
-            find_key,
-            marker_key,
-            step_frames,
-            shuttle_act,
-        ) = if text_editing {
-            (
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                0i64,
-                TimelinePlaybackAction::None,
-            )
+        let keys = if text_editing {
+            TimelineShortcutInput::default()
         } else {
             ui.input(|i| {
                 let cmd = i.modifiers.command;
                 let shift = i.modifiers.shift;
-                let undo = cmd && !shift && i.key_pressed(egui::Key::Z);
-                let redo = (cmd && i.key_pressed(egui::Key::Y))
-                    || (cmd && shift && i.key_pressed(egui::Key::Z));
-                let split = !cmd && i.key_pressed(egui::Key::S);
-                let del_pressed = i.key_pressed(egui::Key::Delete);
-                let del = del_pressed && !shift;
-                let ripple_del = del_pressed && shift;
-                let find = cmd && i.key_pressed(egui::Key::F);
-                let marker = !cmd && i.key_pressed(egui::Key::M);
-                let step = if !cmd && i.key_pressed(egui::Key::ArrowLeft) {
+                let del_pressed =
+                    i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace);
+                let step_frames = if !cmd && i.key_pressed(egui::Key::ArrowLeft) {
                     if shift { -10 } else { -1 }
                 } else if !cmd && i.key_pressed(egui::Key::ArrowRight) {
                     if shift { 10 } else { 1 }
@@ -204,33 +211,71 @@ impl TimelineState {
                     0
                 };
                 let shuttle = if !cmd && i.key_pressed(egui::Key::J) {
-                    TimelinePlaybackAction::ShuttleReverse
+                    Some(TimelinePlaybackAction::ShuttleReverse)
                 } else if !cmd && i.key_pressed(egui::Key::K) {
-                    TimelinePlaybackAction::ShuttlePause
+                    Some(TimelinePlaybackAction::ShuttlePause)
                 } else if !cmd && i.key_pressed(egui::Key::L) {
-                    TimelinePlaybackAction::ShuttleForward
+                    Some(TimelinePlaybackAction::ShuttleForward)
                 } else {
-                    TimelinePlaybackAction::None
+                    None
                 };
-                (
-                    undo, redo, split, del, ripple_del, find, marker, step, shuttle,
-                )
+                TimelineShortcutInput {
+                    undo: cmd && !shift && i.key_pressed(egui::Key::Z),
+                    redo: (cmd && i.key_pressed(egui::Key::Y))
+                        || (cmd && shift && i.key_pressed(egui::Key::Z)),
+                    split: !cmd && i.key_pressed(egui::Key::S),
+                    delete: del_pressed && !shift,
+                    ripple_delete: del_pressed && shift,
+                    find: cmd && i.key_pressed(egui::Key::F),
+                    marker: !cmd && i.key_pressed(egui::Key::M),
+                    copy: cmd && !shift && i.key_pressed(egui::Key::C),
+                    paste: cmd && !shift && i.key_pressed(egui::Key::V),
+                    duplicate: cmd && !shift && i.key_pressed(egui::Key::D),
+                    select_all: cmd && !shift && i.key_pressed(egui::Key::A),
+                    jump_home: !cmd && i.key_pressed(egui::Key::Home),
+                    jump_end: !cmd && i.key_pressed(egui::Key::End),
+                    step_frames,
+                    shuttle,
+                }
             })
         };
-        if find_key {
+        if keys.find {
             self.show_search_bar = !self.show_search_bar;
         }
-        if step_frames != 0 {
+        if keys.jump_home {
+            session.playhead = RationalTime::ZERO;
+            self.scroll_offset_sec = 0.0;
+            playback_action = TimelinePlaybackAction::ShuttlePause;
+        } else if keys.jump_end
+            && let Some(end_t) = session.project.active_scene().map(|s| s.total_duration())
+        {
+            session.playhead = end_t;
+            self.scroll_offset_sec = (end_t.as_seconds() - 2.0).max(0.0);
+            playback_action = TimelinePlaybackAction::ShuttlePause;
+        }
+        if keys.step_frames != 0 {
             let cur_f = session.playhead.to_frame_round(fps);
-            let next_f = (cur_f + step_frames).max(0);
+            let next_f = (cur_f + keys.step_frames).max(0);
             session.playhead = RationalTime::from_frame(next_f, fps);
             playback_action = TimelinePlaybackAction::ShuttlePause;
         }
-        if shuttle_act != TimelinePlaybackAction::None {
+        if let Some(shuttle_act) = keys.shuttle {
             playback_action = shuttle_act;
         }
-        if marker_key {
+        if keys.marker {
             self.add_marker_at_playhead(session);
+        }
+        if keys.select_all {
+            self.select_all_in_scene(session);
+        }
+        if keys.copy {
+            self.copy_selected(session);
+        }
+        if keys.paste {
+            self.paste_clipboard_at_playhead(session);
+        }
+        if keys.duplicate {
+            self.duplicate_selected(session);
         }
 
         // ===== 1. メイン編集ツールバー =====
@@ -238,21 +283,30 @@ impl TimelineState {
             if ui
                 .add_enabled(session.bus.can_undo(), egui::Button::new("↶ Undo"))
                 .clicked()
-                || undo_key
+                || keys.undo
             {
                 session.bus.undo(&mut session.project);
             }
             if ui
                 .add_enabled(session.bus.can_redo(), egui::Button::new("↷ Redo"))
                 .clicked()
-                || redo_key
+                || keys.redo
             {
                 session.bus.redo(&mut session.project);
             }
             ui.separator();
 
-            if ui.button("✂ 分割 (S)").clicked() || split_key {
+            if ui.button("✂ 分割 (S)").clicked() || keys.split {
                 self.split_selected_at_playhead(session);
+            }
+            if ui
+                .add_enabled(
+                    !session.selected_items.is_empty(),
+                    egui::Button::new("📋 複製 (Ctrl+D)"),
+                )
+                .clicked()
+            {
+                self.duplicate_selected(session);
             }
             if ui
                 .add_enabled(
@@ -260,7 +314,7 @@ impl TimelineState {
                     egui::Button::new("🗑 削除"),
                 )
                 .clicked()
-                || delete_key
+                || keys.delete
             {
                 self.delete_selected(session);
             }
@@ -270,7 +324,7 @@ impl TimelineState {
                     egui::Button::new("⇤ リップル削除 (Shift+Del)"),
                 )
                 .clicked()
-                || ripple_delete_key
+                || keys.ripple_delete
             {
                 self.ripple_delete_selected(session);
             }
@@ -497,7 +551,7 @@ impl TimelineState {
             );
         });
 
-        // マーカーラベル・色クイック設定（マーカー存在時または入力中・操作後）
+        // マーカーラベル・色クイック設定＆選択中マーカー編集（マーカー存在時または入力中・操作後）
         let marker_count = session
             .project
             .active_scene()
@@ -515,11 +569,69 @@ impl TimelineState {
                 for (idx, (name, _)) in MARKER_PALETTE.iter().enumerate() {
                     ui.selectable_value(&mut self.marker_color_idx, idx, *name);
                 }
-                ui.weak("（ルーラー上の旗: 左クリック=移動 / 右クリック=削除）");
+                ui.weak("（ルーラー上の旗: 左クリック=移動＆編集 / 右クリック=削除）");
                 if !self.marker_status.is_empty() {
                     ui.colored_label(Color32::LIGHT_GREEN, &self.marker_status);
                 }
             });
+
+            if let Some(edit_id) = self.editing_marker_id {
+                let marker_snap = session
+                    .project
+                    .active_scene()
+                    .and_then(|s| s.markers.iter().find(|m| m.id == edit_id).cloned());
+                if let Some(mut m) = marker_snap {
+                    let prev_label = m.label.clone();
+                    let prev_color = m.color;
+                    let mut remove_now = false;
+                    let mut close_now = false;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(format!("✏ マーカー編集 ({:.2}s):", m.time.as_seconds()));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut m.label)
+                                .desired_width(160.0)
+                                .hint_text("チャプター名"),
+                        );
+                        for (name, c) in MARKER_PALETTE {
+                            if ui.selectable_label(m.color == *c, *name).clicked() {
+                                m.color = *c;
+                            }
+                        }
+                        if ui.small_button("🗑 削除").clicked() {
+                            remove_now = true;
+                        }
+                        if ui.small_button("閉じる").clicked() {
+                            close_now = true;
+                        }
+                    });
+                    if remove_now {
+                        let _ = session.bus.execute(
+                            &mut session.project,
+                            EditCommand::RemoveMarker { marker_id: edit_id },
+                            CommandSource::Gui,
+                            None,
+                        );
+                        self.editing_marker_id = None;
+                        self.marker_status = "マーカーを削除しました".into();
+                    } else if m.label != prev_label || m.color != prev_color {
+                        let _ = session.bus.execute(
+                            &mut session.project,
+                            EditCommand::UpdateMarker {
+                                marker_id: edit_id,
+                                label: m.label,
+                                color: m.color,
+                            },
+                            CommandSource::Gui,
+                            Some("marker_edit"),
+                        );
+                    }
+                    if close_now {
+                        self.editing_marker_id = None;
+                    }
+                } else {
+                    self.editing_marker_id = None;
+                }
+            }
         }
 
         // ===== 2. アイテム整列・隙間詰め・長さフィットバー（アルティメットプラグイン相当） =====
@@ -1018,8 +1130,8 @@ impl TimelineState {
             }
         }
 
-        // ルーラー上のタイムラインマーカー描画＆クリック操作（左クリック=ジャンプ、右クリック=削除）
-        let mut jump_to_marker: Option<RationalTime> = None;
+        // ルーラー上のタイムラインマーカー描画＆クリック操作（左クリック=ジャンプ＆編集、右クリック=削除）
+        let mut jump_to_marker: Option<(Uuid, RationalTime)> = None;
         let mut remove_marker_id: Option<Uuid> = None;
         if let Some(scene) = session.project.active_scene() {
             for marker in &scene.markers {
@@ -1066,7 +1178,7 @@ impl TimelineState {
                     && let Some(pos) = response.interact_pointer_pos()
                     && flag_rect.contains(pos)
                 {
-                    jump_to_marker = Some(marker.time);
+                    jump_to_marker = Some((marker.id, marker.time));
                 } else if response.secondary_clicked()
                     && let Some(pos) = response.interact_pointer_pos()
                     && flag_rect.contains(pos)
@@ -1352,9 +1464,13 @@ impl TimelineState {
                 CommandSource::Gui,
                 None,
             );
+            if self.editing_marker_id == Some(mid) {
+                self.editing_marker_id = None;
+            }
             self.marker_status = "マーカーを削除しました".into();
-        } else if let Some(mtime) = jump_to_marker {
+        } else if let Some((mid, mtime)) = jump_to_marker {
             session.playhead = mtime;
+            self.editing_marker_id = Some(mid);
             return playback_action;
         }
 
@@ -1855,6 +1971,143 @@ impl TimelineState {
         }
     }
 
+    fn select_all_in_scene(&self, session: &mut EditorSession) {
+        if let Some(scene) = session.project.active_scene() {
+            session.selected_items = scene
+                .layers
+                .iter()
+                .flat_map(|l| l.items.iter().map(|i| i.id))
+                .collect();
+        }
+    }
+
+    fn copy_selected(&mut self, session: &EditorSession) {
+        if session.selected_items.is_empty() {
+            return;
+        }
+        let sel: BTreeSet<ItemId> = session.selected_items.iter().copied().collect();
+        let mut copied = Vec::new();
+        if let Some(scene) = session.project.active_scene() {
+            for (l_idx, layer) in scene.layers.iter().enumerate() {
+                for item in &layer.items {
+                    if sel.contains(&item.id) {
+                        copied.push((l_idx, item.clone()));
+                    }
+                }
+            }
+        }
+        if !copied.is_empty() {
+            self.clipboard_items = copied;
+        }
+    }
+
+    fn paste_clipboard_at_playhead(&self, session: &mut EditorSession) {
+        if self.clipboard_items.is_empty() {
+            return;
+        }
+        let Some(layer_count) = session.project.active_scene().map(|s| s.layers.len()) else {
+            return;
+        };
+        if layer_count == 0 {
+            return;
+        }
+        let min_start = self
+            .clipboard_items
+            .iter()
+            .map(|(_, it)| it.start)
+            .min()
+            .unwrap_or(RationalTime::ZERO);
+        let target_base = session.playhead.max(RationalTime::ZERO);
+
+        let mut cmds = Vec::with_capacity(self.clipboard_items.len());
+        let mut new_ids = Vec::with_capacity(self.clipboard_items.len());
+        for (l_idx, src) in &self.clipboard_items {
+            let rel = (src.start - min_start).max(RationalTime::ZERO);
+            let item = clone_item_with_fresh_ids(src, target_base + rel);
+            new_ids.push(item.id);
+            cmds.push(EditCommand::AddObject {
+                layer_index: (*l_idx).min(layer_count - 1),
+                item,
+            });
+        }
+        if session
+            .bus
+            .execute(
+                &mut session.project,
+                EditCommand::Batch {
+                    label: "paste_clips".into(),
+                    commands: cmds,
+                },
+                CommandSource::Gui,
+                None,
+            )
+            .is_ok()
+        {
+            session.selected_items = new_ids;
+        }
+    }
+
+    fn duplicate_selected(&self, session: &mut EditorSession) {
+        if session.selected_items.is_empty() {
+            return;
+        }
+        let sel: BTreeSet<ItemId> = session.selected_items.iter().copied().collect();
+        let mut selected_pairs: Vec<(usize, TimelineItem)> = Vec::new();
+        let layer_count = if let Some(scene) = session.project.active_scene() {
+            for (l_idx, layer) in scene.layers.iter().enumerate() {
+                for item in &layer.items {
+                    if sel.contains(&item.id) {
+                        selected_pairs.push((l_idx, item.clone()));
+                    }
+                }
+            }
+            scene.layers.len()
+        } else {
+            return;
+        };
+        if selected_pairs.is_empty() || layer_count == 0 {
+            return;
+        }
+
+        let min_start = selected_pairs
+            .iter()
+            .map(|(_, it)| it.start)
+            .min()
+            .unwrap_or(RationalTime::ZERO);
+        let max_end = selected_pairs
+            .iter()
+            .map(|(_, it)| it.end())
+            .max()
+            .unwrap_or(min_start + RationalTime::from_seconds(1.0));
+        let span = (max_end - min_start).max(RationalTime::from_seconds(0.1));
+
+        let mut cmds = Vec::with_capacity(selected_pairs.len());
+        let mut new_ids = Vec::with_capacity(selected_pairs.len());
+        for (l_idx, src) in &selected_pairs {
+            let item = clone_item_with_fresh_ids(src, src.start + span);
+            new_ids.push(item.id);
+            cmds.push(EditCommand::AddObject {
+                layer_index: (*l_idx).min(layer_count - 1),
+                item,
+            });
+        }
+        if session
+            .bus
+            .execute(
+                &mut session.project,
+                EditCommand::Batch {
+                    label: "duplicate_clips".into(),
+                    commands: cmds,
+                },
+                CommandSource::Gui,
+                None,
+            )
+            .is_ok()
+        {
+            session.selected_items = new_ids;
+        }
+    }
+
     fn add_marker_at_playhead(&mut self, session: &mut EditorSession) {
         let next_idx = session
             .project
@@ -2089,6 +2342,92 @@ fn draw_waveform(painter: &egui::Painter, rect: Rect, wf: &WaveformPeaks) {
         painter.line_segment(
             [Pos2::new(x, y0), Pos2::new(x, y1)],
             Stroke::new(1.0, Color32::from_rgba_unmultiplied(220, 255, 230, 180)),
+        );
+    }
+}
+
+fn clone_item_with_fresh_ids(src: &TimelineItem, new_start: RationalTime) -> TimelineItem {
+    let mut item = src.clone();
+    item.id = Uuid::new_v4();
+    item.start = new_start.max(RationalTime::ZERO);
+    for eff in &mut item.effect_chain {
+        eff.id = Uuid::new_v4();
+    }
+    for eff in &mut item.audio_effects {
+        eff.id = Uuid::new_v4();
+    }
+    for mask in &mut item.masks {
+        mask.id = Uuid::new_v4();
+    }
+    item
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ve_core::{Project, ProjectSettings, ShapeKind};
+
+    #[test]
+    fn copy_paste_duplicate_and_select_all_preserve_offsets_and_undo() {
+        let mut proj = Project::new("TlShortcutTest", ProjectSettings::default());
+        let a = TimelineItem::new(
+            "ClipA",
+            RationalTime::from_seconds(1.0),
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 100.0,
+                height: 60.0,
+                color: RgbaColor::WHITE,
+            },
+        );
+        let b = TimelineItem::new(
+            "ClipB",
+            RationalTime::from_seconds(2.5),
+            RationalTime::from_seconds(1.0),
+            ItemKind::Text {
+                content: "字幕".into(),
+                font_family: "sans-serif".into(),
+                font_size: 40.0,
+                color: RgbaColor::WHITE,
+                animator: TextAnimator::default(),
+            },
+        );
+        proj.active_scene_mut().unwrap().layers[0].items.push(a);
+        proj.active_scene_mut().unwrap().layers[1].items.push(b);
+
+        let mut sess = EditorSession::new(proj);
+        let mut tl = TimelineState::default();
+
+        tl.select_all_in_scene(&mut sess);
+        assert_eq!(sess.selected_items.len(), 2);
+
+        tl.copy_selected(&sess);
+        assert_eq!(tl.clipboard_items.len(), 2);
+
+        sess.playhead = RationalTime::from_seconds(10.0);
+        tl.paste_clipboard_at_playhead(&mut sess);
+        {
+            let sc = sess.project.active_scene().unwrap();
+            assert_eq!(sc.layers[0].items.len(), 2);
+            assert_eq!(sc.layers[1].items.len(), 2);
+            assert!((sc.layers[0].items[1].start.as_seconds() - 10.0).abs() < 1e-6);
+            assert!((sc.layers[1].items[1].start.as_seconds() - 11.5).abs() < 1e-6);
+            assert_ne!(sc.layers[0].items[0].id, sc.layers[0].items[1].id);
+        }
+
+        // Ctrl+D on newly pasted items duplicates them right after their combined end (12.5s)
+        tl.duplicate_selected(&mut sess);
+        {
+            let sc = sess.project.active_scene().unwrap();
+            assert_eq!(sc.layers[0].items.len(), 3);
+            assert!((sc.layers[0].items[2].start.as_seconds() - 12.5).abs() < 1e-6);
+        }
+
+        assert!(sess.bus.undo(&mut sess.project));
+        assert_eq!(
+            sess.project.active_scene().unwrap().layers[0].items.len(),
+            2
         );
     }
 }

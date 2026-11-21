@@ -5,8 +5,8 @@ use crate::lipsync::CharacterSpriteConfig;
 use crate::preset::ColorPalette;
 use crate::project::{
     AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BezierMask, BlendMode, EffectId,
-    EffectNode, ItemId, ItemKind, Layer, Project, RgbaColor, Scene, SceneId, TextAnimator,
-    TextStyle, TimelineItem, TimelineMarker, TrackMatte, Transform2D, TransitionKind,
+    EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, Project, RgbaColor, Scene, SceneId,
+    TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, Transform2D, TransitionKind,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -252,6 +252,36 @@ pub enum EditCommand {
         scene: Scene,
         switch_to: bool,
     },
+    /// v0.7.1: フィルタオブジェクトの種別・適用範囲・パラメータを更新する
+    SetFilterObject {
+        item_id: ItemId,
+        effect_type: String,
+        scope: FilterTargetScope,
+        params: BTreeMap<String, f32>,
+    },
+    /// v0.7.1: グループ制御の対象レイヤー数を更新する
+    SetGroupControl {
+        item_id: ItemId,
+        target_layer_count: usize,
+    },
+    /// v0.7.1: オーディオスペクトラムの設定を更新する
+    #[allow(clippy::too_many_arguments)]
+    SetAudioSpectrum {
+        item_id: ItemId,
+        linked_audio_layer: usize,
+        width: f32,
+        height: f32,
+        bar_count: usize,
+        color: RgbaColor,
+        peak_color: RgbaColor,
+        sensitivity: f32,
+    },
+    /// v0.7.1: 既存タイムラインマーカーのラベル・色を更新する
+    UpdateMarker {
+        marker_id: uuid::Uuid,
+        label: String,
+        color: RgbaColor,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -305,6 +335,10 @@ impl EditCommand {
             Self::SetAudioReactive { .. } => "set_audio_reactive",
             Self::SetMasks { .. } => "set_masks",
             Self::CreateScene { .. } => "create_scene",
+            Self::SetFilterObject { .. } => "set_filter_object",
+            Self::SetGroupControl { .. } => "set_group_control",
+            Self::SetAudioSpectrum { .. } => "set_audio_spectrum",
+            Self::UpdateMarker { .. } => "update_marker",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1146,6 +1180,83 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             }
             Ok(())
         }
+        EditCommand::SetFilterObject {
+            item_id,
+            effect_type,
+            scope,
+            params,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::FilterObject {
+                effect_type: et,
+                scope: sc,
+                params: pm,
+            } = &mut item.kind
+            {
+                *et = effect_type.clone();
+                *sc = *scope;
+                *pm = params.clone();
+            }
+            Ok(())
+        }
+        EditCommand::SetGroupControl {
+            item_id,
+            target_layer_count,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::GroupControl {
+                target_layer_count: cnt,
+            } = &mut item.kind
+            {
+                *cnt = (*target_layer_count).clamp(1, 64);
+            }
+            Ok(())
+        }
+        EditCommand::SetAudioSpectrum {
+            item_id,
+            linked_audio_layer,
+            width,
+            height,
+            bar_count,
+            color,
+            peak_color,
+            sensitivity,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::AudioSpectrum {
+                linked_audio_layer: l,
+                width: w,
+                height: h,
+                bar_count: bc,
+                color: c,
+                peak_color: pc,
+                sensitivity: sens,
+            } = &mut item.kind
+            {
+                *l = *linked_audio_layer;
+                *w = width.clamp(16.0, 8192.0);
+                *h = height.clamp(16.0, 8192.0);
+                *bc = (*bar_count).clamp(4, 64);
+                *c = *color;
+                *pc = *peak_color;
+                *sens = sensitivity.clamp(0.1, 10.0);
+            }
+            Ok(())
+        }
+        EditCommand::UpdateMarker {
+            marker_id,
+            label,
+            color,
+        } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            if let Some(m) = scene.markers.iter_mut().find(|m| m.id == *marker_id) {
+                m.label = label.clone();
+                m.color = *color;
+            }
+            Ok(())
+        }
         EditCommand::Batch { commands, .. } => {
             for cmd in commands {
                 apply_command(project, cmd)?;
@@ -1550,5 +1661,166 @@ mod tests {
         assert_eq!((sc.width, sc.height), (1280, 720));
         assert_eq!(sc.fps, FrameRate::FPS_60);
         assert!((sc.layers[0].items[0].transform.x - 640.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn filter_group_spectrum_and_marker_update_commands_are_undoable() {
+        let mut project = Project::new("V071CmdTest", ProjectSettings::default());
+        let mut bus = CommandBus::new();
+
+        let filter_item = TimelineItem::new(
+            "Filter",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::FilterObject {
+                effect_type: "brightness".into(),
+                scope: FilterTargetScope::ImmediateLayer,
+                params: BTreeMap::from([("gain".into(), 1.2)]),
+            },
+        );
+        let group_item = TimelineItem::new(
+            "Group",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::GroupControl {
+                target_layer_count: 1,
+            },
+        );
+        let spec_item = TimelineItem::new(
+            "Spectrum",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::AudioSpectrum {
+                linked_audio_layer: 3,
+                width: 400.0,
+                height: 120.0,
+                bar_count: 16,
+                color: RgbaColor::WHITE,
+                peak_color: RgbaColor::BLACK,
+                sensitivity: 1.0,
+            },
+        );
+        let marker = TimelineMarker::new(RationalTime::from_seconds(5.0), "旧タイトル");
+        let (fid, gid, sid, mid) = (filter_item.id, group_item.id, spec_item.id, marker.id);
+
+        bus.execute(
+            &mut project,
+            EditCommand::Batch {
+                label: "seed".into(),
+                commands: vec![
+                    EditCommand::AddObject {
+                        layer_index: 2,
+                        item: filter_item,
+                    },
+                    EditCommand::AddObject {
+                        layer_index: 2,
+                        item: group_item,
+                    },
+                    EditCommand::AddObject {
+                        layer_index: 1,
+                        item: spec_item,
+                    },
+                    EditCommand::AddMarker { marker },
+                ],
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        bus.execute(
+            &mut project,
+            EditCommand::SetFilterObject {
+                item_id: fid,
+                effect_type: "blur".into(),
+                scope: FilterTargetScope::LayerRange { count: 2 },
+                params: BTreeMap::from([("radius".into(), 6.0)]),
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+        bus.execute(
+            &mut project,
+            EditCommand::SetGroupControl {
+                item_id: gid,
+                target_layer_count: 3,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+        let cyan = RgbaColor {
+            r: 0.1,
+            g: 0.8,
+            b: 1.0,
+            a: 1.0,
+        };
+        bus.execute(
+            &mut project,
+            EditCommand::SetAudioSpectrum {
+                item_id: sid,
+                linked_audio_layer: 2,
+                width: 640.0,
+                height: 180.0,
+                bar_count: 32,
+                color: cyan,
+                peak_color: RgbaColor::WHITE,
+                sensitivity: 2.5,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+        bus.execute(
+            &mut project,
+            EditCommand::UpdateMarker {
+                marker_id: mid,
+                label: "本編ハイライト".into(),
+                color: cyan,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        let sc = project.active_scene().unwrap();
+        assert_eq!(sc.markers[0].label, "本編ハイライト");
+        assert_eq!(sc.markers[0].color, cyan);
+        assert!(matches!(
+            &sc.layers[2].items[0].kind,
+            ItemKind::FilterObject {
+                effect_type,
+                scope: FilterTargetScope::LayerRange { count: 2 },
+                ..
+            } if effect_type == "blur"
+        ));
+        assert!(matches!(
+            sc.layers[2].items[1].kind,
+            ItemKind::GroupControl {
+                target_layer_count: 3
+            }
+        ));
+        assert!(matches!(
+            sc.layers[1].items[0].kind,
+            ItemKind::AudioSpectrum {
+                linked_audio_layer: 2,
+                bar_count: 32,
+                ..
+            }
+        ));
+
+        // Undo 4 回で元の状態へ戻る
+        for _ in 0..4 {
+            assert!(bus.undo(&mut project));
+        }
+        let sc = project.active_scene().unwrap();
+        assert_eq!(sc.markers[0].label, "旧タイトル");
+        assert!(matches!(
+            sc.layers[2].items[1].kind,
+            ItemKind::GroupControl {
+                target_layer_count: 1
+            }
+        ));
     }
 }

@@ -170,7 +170,7 @@ impl EditorApp {
             ..Default::default()
         };
 
-        let mut project = Project::new("Phase 2 Hybrid Motion Project", settings.clone());
+        let mut project = Project::new("Hybrid Motion Project", settings.clone());
         let mut initial_selected = Vec::new();
         if let Some(scene) = project.active_scene_mut() {
             let mut bg = TimelineItem::new(
@@ -201,7 +201,7 @@ impl EditorApp {
                 RationalTime::ZERO,
                 RationalTime::from_seconds(5.0),
                 ItemKind::Text {
-                    content: "次世代ハイブリッド動画編集ソフト\nPhase 2 AE融合＆ワンクリック結合"
+                    content: "次世代ハイブリッド動画編集ソフト\nハイブリッド編集＆AI連携"
                         .to_string(),
                     font_family: "sans-serif".to_string(),
                     font_size: 52.0,
@@ -1002,6 +1002,60 @@ impl TabViewer for EditorTabViewer<'_> {
                             );
                         }
 
+                        // v0.7.1: フィルタオブジェクト・グループ制御・オーディオスペクトラム専用インスペクタ
+                        match item.kind.clone() {
+                            ItemKind::FilterObject {
+                                effect_type,
+                                scope,
+                                params,
+                            } => {
+                                let manifests = self.app.render_graph.plugins.list_manifests();
+                                let mut g = self.app.session.lock().unwrap();
+                                inspector_extras::show_filter_object_ui(
+                                    ui,
+                                    &mut g,
+                                    item.id,
+                                    effect_type,
+                                    scope,
+                                    params,
+                                    &manifests,
+                                );
+                            }
+                            ItemKind::GroupControl { target_layer_count } => {
+                                let mut g = self.app.session.lock().unwrap();
+                                inspector_extras::show_group_control_ui(
+                                    ui,
+                                    &mut g,
+                                    item.id,
+                                    target_layer_count,
+                                );
+                            }
+                            ItemKind::AudioSpectrum {
+                                linked_audio_layer,
+                                width,
+                                height,
+                                bar_count,
+                                color,
+                                peak_color,
+                                sensitivity,
+                            } => {
+                                let mut g = self.app.session.lock().unwrap();
+                                inspector_extras::show_audio_spectrum_ui(
+                                    ui,
+                                    &mut g,
+                                    item.id,
+                                    linked_audio_layer,
+                                    width,
+                                    height,
+                                    bar_count,
+                                    color,
+                                    peak_color,
+                                    sensitivity,
+                                );
+                            }
+                            _ => {}
+                        }
+
                         // A-5: 動画・音声の再生速度・逆再生・ループ・時間制御
                         {
                             let mut g = self.app.session.lock().unwrap();
@@ -1054,8 +1108,8 @@ impl TabViewer for EditorTabViewer<'_> {
                             mut content,
                             font_family,
                             mut font_size,
+                            color,
                             mut animator,
-                            ..
                         } = item.kind.clone()
                         {
                             ui.separator();
@@ -1097,13 +1151,17 @@ impl TabViewer for EditorTabViewer<'_> {
                                 },
                             );
 
-                            // 字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景）
+                            // 字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景・スタイルプリセット）
                             {
                                 let mut g = self.app.session.lock().unwrap();
                                 inspector_extras::show_text_style_ui(
                                     ui,
+                                    &mut self.app.inspector_extras,
                                     &mut g,
                                     item.id,
+                                    &font_family,
+                                    font_size,
+                                    color,
                                     item.text_style,
                                 );
                             }
@@ -1254,9 +1312,8 @@ impl TabViewer for EditorTabViewer<'_> {
                                 None,
                             );
                         }
-                        let mut dummy =
-                            String::from("（タイムラインでオブジェクトを選択してください）");
-                        self.app.ime_panel.ui(ui, &mut dummy);
+                        ui.separator();
+                        ui.weak("タイムラインまたはプレビューでオブジェクトを選択すると、変形・装飾・エフェクト等を編集できます。");
                     }
 
                     ui.separator();

@@ -4,18 +4,21 @@ use uuid::Uuid;
 use ve_audio::{AudioGraph, AudioMeterSnapshot, linear_to_db, measure_integrated_lufs};
 use ve_core::{
     AudioEffectNode, AudioReactiveBand, BezierMask, CommandSource, CubicBezier, EditCommand,
-    EffectNode, Interpolation, ItemId, ItemKind, Keyframe, MaskMode, MaskVertex, MotionPreset,
-    MotionTrackConfig, RationalTime, RgbaColor, TextStyle, TimelineItem, TransitionKind,
-    build_motion_preset_commands,
+    EffectNode, EffectPreset, FilterTargetScope, Interpolation, ItemId, ItemKind, Keyframe,
+    MaskMode, MaskVertex, MotionPreset, MotionTrackConfig, RationalTime, RgbaColor, TextStyle,
+    TextStylePreset, TimelineItem, TransitionKind, build_motion_preset_commands,
 };
 use ve_mcp::EditorSession;
-use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
+use ve_plugin_api::{PluginManifest, PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
 
-/// インスペクタ拡張機能の状態（エフェクトクリップボード・カラーパレット追加欄・制御文字補完・LUFS・トラッカー）
+/// インスペクタ拡張機能の状態（エフェクトクリップボード・プリセット・カラーパレット・制御文字補完・LUFS・トラッカー）
 pub struct InspectorExtrasState {
     pub copied_effects: Vec<EffectNode>,
     pub new_palette_name: String,
     pub new_palette_rgb: [f32; 3],
+    pub new_text_preset_name: String,
+    pub new_effect_preset_name: String,
+    pub preset_status: String,
     pub show_tag_completion: bool,
     pub measured_lufs: Option<f32>,
     // v0.7 #8: モーショントラッカー設定
@@ -36,6 +39,9 @@ impl Default for InspectorExtrasState {
             copied_effects: Vec::new(),
             new_palette_name: "カスタム色".to_string(),
             new_palette_rgb: [1.0, 0.45, 0.15],
+            new_text_preset_name: "マイ字幕スタイル".to_string(),
+            new_effect_preset_name: "マイエフェクト".to_string(),
+            preset_status: String::new(),
             show_tag_completion: false,
             measured_lufs: None,
             track_anchor_x: 640.0,
@@ -262,17 +268,93 @@ pub fn show_inline_tag_helper(
     }
 }
 
-/// 字幕リッチ装飾スタイル（縁取り・ドロップシャドウ・座布団背景）
+/// 字幕リッチ装飾スタイル（縁取り・ドロップシャドウ・座布団背景・スタイルプリセット管理）
+#[allow(clippy::too_many_arguments)]
 pub fn show_text_style_ui(
     ui: &mut Ui,
+    extras: &mut InspectorExtrasState,
     session: &mut EditorSession,
     item_id: ItemId,
+    font_family: &str,
+    font_size: f32,
+    text_color: RgbaColor,
     mut style: TextStyle,
 ) {
     let prev = style;
+    let mut apply_preset: Option<TextStylePreset> = None;
+    let mut delete_saved_name: Option<String> = None;
+
     ui.collapsing(
-        "✨ 字幕装飾（縁取り・シャドウ・座布団）",
+        "✨ 字幕装飾＆スタイルプリセット（縁取り・シャドウ・座布団）",
         |ui| {
+            // 1. 組み込み＋プロジェクト保存済み字幕スタイルプリセット (presets/text_styles/*.json)
+            ui.weak("スタイルプリセット（1クリック適用 / 保存済みは右クリック削除）:");
+            let saved_presets = session
+                .folder
+                .as_ref()
+                .map(|f| f.load_text_style_presets())
+                .unwrap_or_default();
+            ui.horizontal_wrapped(|ui| {
+                for preset in TextStylePreset::default_presets() {
+                    if ui
+                        .small_button(format!("★ {}", preset.name))
+                        .on_hover_text("標準スタイルを適用 (Undo可)")
+                        .clicked()
+                    {
+                        apply_preset = Some(preset);
+                    }
+                }
+                for preset in saved_presets {
+                    let resp = ui
+                        .small_button(format!("💾 {}", preset.name))
+                        .on_hover_text("保存済みスタイルを適用（右クリックで削除）");
+                    if resp.clicked() {
+                        apply_preset = Some(preset.clone());
+                    }
+                    if resp.secondary_clicked() {
+                        delete_saved_name = Some(preset.name);
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut extras.new_text_preset_name)
+                        .desired_width(120.0)
+                        .hint_text("プリセット名"),
+                );
+                if ui.small_button("💾 現在スタイルを保存").clicked() {
+                    let name = extras.new_text_preset_name.trim().to_string();
+                    if name.is_empty() {
+                        extras.preset_status = "プリセット名を入力してください".into();
+                    } else if let Some(folder) = session.folder.as_ref() {
+                        let preset = TextStylePreset {
+                            name: name.clone(),
+                            font_family: font_family.to_string(),
+                            font_size,
+                            color: text_color,
+                            text_style: style,
+                        };
+                        match folder.save_text_style_preset(&preset) {
+                            Ok(_) => {
+                                extras.preset_status =
+                                    format!("字幕スタイル「{name}」を presets/ へ保存しました");
+                            }
+                            Err(e) => {
+                                extras.preset_status = format!("プリセット保存エラー: {e}");
+                            }
+                        }
+                    } else {
+                        extras.preset_status =
+                            "先に上部バーからプロジェクトフォルダを作成/保存してください".into();
+                    }
+                }
+            });
+            if !extras.preset_status.is_empty() {
+                ui.weak(&extras.preset_status);
+            }
+            ui.separator();
+
+            // 2. 縁取り
             ui.add(egui::Slider::new(&mut style.outline_width, 0.0..=12.0).text("縁取り幅(px)"));
             if style.outline_width > 0.0 {
                 let mut rgb = [
@@ -289,16 +371,50 @@ pub fn show_text_style_ui(
                     }
                 });
             }
+
+            // 3. ドロップシャドウ（オフセット・ぼかし・影色RGBA）
             ui.horizontal(|ui| {
                 ui.label("影オフセット X/Y:");
                 ui.add(egui::DragValue::new(&mut style.shadow_offset[0]).speed(0.5));
                 ui.add(egui::DragValue::new(&mut style.shadow_offset[1]).speed(0.5));
+                ui.label("影色:");
+                let mut srgba = [
+                    style.shadow_color.r,
+                    style.shadow_color.g,
+                    style.shadow_color.b,
+                    style.shadow_color.a,
+                ];
+                if ui.color_edit_button_rgba_unmultiplied(&mut srgba).changed() {
+                    style.shadow_color = RgbaColor {
+                        r: srgba[0],
+                        g: srgba[1],
+                        b: srgba[2],
+                        a: srgba[3],
+                    };
+                }
             });
             ui.add(egui::Slider::new(&mut style.shadow_blur, 0.0..=10.0).text("影ぼかし"));
+
+            // 4. 座布団背景（色RGBA・余白・角丸）
             ui.checkbox(&mut style.box_enabled, "座布団背景を有効化");
             if style.box_enabled {
-                ui.horizontal(|ui| {
-                    ui.label("座布団余白 X/Y:");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("座布団色:");
+                    let mut brgba = [
+                        style.box_color.r,
+                        style.box_color.g,
+                        style.box_color.b,
+                        style.box_color.a,
+                    ];
+                    if ui.color_edit_button_rgba_unmultiplied(&mut brgba).changed() {
+                        style.box_color = RgbaColor {
+                            r: brgba[0],
+                            g: brgba[1],
+                            b: brgba[2],
+                            a: brgba[3],
+                        };
+                    }
+                    ui.label("余白 X/Y:");
                     ui.add(egui::DragValue::new(&mut style.box_padding[0]).range(0.0..=80.0));
                     ui.add(egui::DragValue::new(&mut style.box_padding[1]).range(0.0..=60.0));
                     ui.label("角丸:");
@@ -307,7 +423,41 @@ pub fn show_text_style_ui(
             }
         },
     );
-    if style != prev {
+
+    if let Some(name) = delete_saved_name
+        && let Some(folder) = session.folder.as_ref()
+        && folder.delete_text_style_preset(&name).is_ok()
+    {
+        extras.preset_status = format!("字幕スタイル「{name}」を削除しました");
+    }
+
+    if let Some(preset) = apply_preset {
+        let batch = EditCommand::Batch {
+            label: format!("apply_text_style:{}", preset.name),
+            commands: vec![
+                EditCommand::SetTextFont {
+                    item_id,
+                    font_family: preset.font_family,
+                    font_size: preset.font_size,
+                },
+                EditCommand::SetItemColor {
+                    item_id,
+                    color: preset.color,
+                },
+                EditCommand::SetTextStyle {
+                    item_id,
+                    style: preset.text_style,
+                },
+            ],
+        };
+        if session
+            .bus
+            .execute(&mut session.project, batch, CommandSource::Gui, None)
+            .is_ok()
+        {
+            extras.preset_status = format!("字幕スタイル「{}」を適用しました", preset.name);
+        }
+    } else if style != prev {
         let _ = session.bus.execute(
             &mut session.project,
             EditCommand::SetTextStyle { item_id, style },
@@ -346,6 +496,284 @@ pub fn show_transition_ui(
             },
             CommandSource::Gui,
             Some("transition_edit"),
+        );
+    }
+}
+
+/// v0.7.1: AviUtl2方式フィルタオブジェクト専用インスペクタ（種別・適用レイヤー範囲・パラメータ編集）
+pub fn show_filter_object_ui(
+    ui: &mut Ui,
+    session: &mut EditorSession,
+    item_id: ItemId,
+    mut effect_type: String,
+    mut scope: FilterTargetScope,
+    mut params: BTreeMap<String, f32>,
+    plugin_manifests: &[PluginManifest],
+) {
+    let prev_type = effect_type.clone();
+    let prev_scope = scope;
+    let prev_params = params.clone();
+
+    ui.separator();
+    ui.strong("🧪 フィルタオブジェクト設定 (AviUtl2方式)");
+
+    type BuiltinFilterDef = (&'static str, &'static str, &'static [(&'static str, f32)]);
+    let builtins: &[BuiltinFilterDef] = &[
+        ("明るさ", "brightness", &[("gain", 1.25)]),
+        ("ブラー", "blur", &[("radius", 4.0)]),
+        ("グロー", "glow", &[("intensity", 1.2), ("threshold", 0.5)]),
+        (
+            "色調補正",
+            "color_grade",
+            &[("exposure", 0.2), ("contrast", 1.1), ("saturation", 1.15)],
+        ),
+        ("モザイク", "mosaic", &[("block_size", 14.0)]),
+        (
+            "振動",
+            "shake",
+            &[("amp_x", 12.0), ("amp_y", 8.0), ("freq", 22.0)],
+        ),
+        (
+            "角丸クリップ",
+            "rounded_clip",
+            &[("radius", 32.0), ("margin", 0.0)],
+        ),
+        ("クリップ", "clip_rect", &[("left", 0.1), ("right", 0.1)]),
+    ];
+
+    let mut type_changed = false;
+    egui::ComboBox::from_label("フィルタ種別")
+        .selected_text(&effect_type)
+        .show_ui(ui, |ui| {
+            for (label, id, defaults) in builtins {
+                if ui
+                    .selectable_label(effect_type == *id, format!("{label} ({id})"))
+                    .clicked()
+                {
+                    effect_type = (*id).to_string();
+                    params = defaults
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), *v))
+                        .collect();
+                    type_changed = true;
+                }
+            }
+            for m in plugin_manifests {
+                if ui
+                    .selectable_label(effect_type == m.id, format!("🧩 {} ({})", m.name, m.id))
+                    .clicked()
+                {
+                    effect_type = m.id.clone();
+                    params = m
+                        .params
+                        .iter()
+                        .map(|p| (p.key.clone(), p.default_value))
+                        .collect();
+                    type_changed = true;
+                }
+            }
+        });
+
+    let mut scope_mode = match scope {
+        FilterTargetScope::ImmediateLayer => 0usize,
+        FilterTargetScope::LayerRange { .. } => 1,
+        FilterTargetScope::AllRemaining => 2,
+    };
+    let mut range_count = match scope {
+        FilterTargetScope::LayerRange { count } => count.max(1),
+        _ => 2,
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label("適用範囲:");
+        ui.selectable_value(&mut scope_mode, 0, "直上1レイヤー");
+        ui.selectable_value(&mut scope_mode, 1, "指定レイヤー数");
+        ui.selectable_value(&mut scope_mode, 2, "以降の全レイヤー");
+    });
+    if scope_mode == 1 {
+        ui.horizontal(|ui| {
+            ui.label("対象レイヤー数:");
+            ui.add(egui::DragValue::new(&mut range_count).range(1..=16));
+        });
+    }
+    scope = match scope_mode {
+        0 => FilterTargetScope::ImmediateLayer,
+        1 => FilterTargetScope::LayerRange {
+            count: range_count.clamp(1, 16),
+        },
+        _ => FilterTargetScope::AllRemaining,
+    };
+
+    if !params.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (k, v) in &mut params {
+                ui.label(format!("{k}:"));
+                ui.add(egui::DragValue::new(v).speed(0.05));
+            }
+        });
+    }
+
+    if type_changed || effect_type != prev_type || scope != prev_scope || params != prev_params {
+        let _ = session.bus.execute(
+            &mut session.project,
+            EditCommand::SetFilterObject {
+                item_id,
+                effect_type,
+                scope,
+                params,
+            },
+            CommandSource::Gui,
+            Some("filter_object_edit"),
+        );
+    }
+}
+
+/// v0.7.1: AviUtl2方式グループ制御オブジェクト専用インスペクタ
+pub fn show_group_control_ui(
+    ui: &mut Ui,
+    session: &mut EditorSession,
+    item_id: ItemId,
+    mut target_layer_count: usize,
+) {
+    let prev = target_layer_count;
+    ui.separator();
+    ui.strong("🗂 グループ制御設定 (AviUtl2方式)");
+    ui.weak("上の「Transform2D（X/Y/拡大率/回転/不透明度）」で対象レイヤー群を一括制御します。");
+    ui.horizontal_wrapped(|ui| {
+        ui.label("対象レイヤー数:");
+        ui.add(egui::DragValue::new(&mut target_layer_count).range(1..=16));
+        for n in [1usize, 2, 3, 5] {
+            if ui.small_button(format!("{n}層")).clicked() {
+                target_layer_count = n;
+            }
+        }
+    });
+    if target_layer_count != prev {
+        let _ = session.bus.execute(
+            &mut session.project,
+            EditCommand::SetGroupControl {
+                item_id,
+                target_layer_count,
+            },
+            CommandSource::Gui,
+            Some("group_control_edit"),
+        );
+    }
+}
+
+/// v0.7.1: オーディオスペクトラム ビジュアライザー専用インスペクタ
+#[allow(clippy::too_many_arguments)]
+pub fn show_audio_spectrum_ui(
+    ui: &mut Ui,
+    session: &mut EditorSession,
+    item_id: ItemId,
+    mut linked_audio_layer: usize,
+    mut width: f32,
+    mut height: f32,
+    mut bar_count: usize,
+    mut color: RgbaColor,
+    mut peak_color: RgbaColor,
+    mut sensitivity: f32,
+) {
+    let prev = (
+        linked_audio_layer,
+        width,
+        height,
+        bar_count,
+        color,
+        peak_color,
+        sensitivity,
+    );
+    ui.separator();
+    ui.strong("📊 オーディオスペクトラム設定");
+
+    let layer_names: Vec<String> = session
+        .project
+        .active_scene()
+        .map(|s| {
+            s.layers
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("L{i}: {}", l.name))
+                .collect()
+        })
+        .unwrap_or_default();
+    let cur_layer = layer_names
+        .get(linked_audio_layer)
+        .cloned()
+        .unwrap_or_else(|| format!("L{linked_audio_layer}"));
+    egui::ComboBox::from_label("連動音声レイヤー")
+        .selected_text(cur_layer)
+        .show_ui(ui, |ui| {
+            for (i, name) in layer_names.iter().enumerate() {
+                ui.selectable_value(&mut linked_audio_layer, i, name);
+            }
+        });
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("幅:");
+        ui.add(
+            egui::DragValue::new(&mut width)
+                .speed(4.0)
+                .range(64.0..=3840.0),
+        );
+        ui.label("高さ:");
+        ui.add(
+            egui::DragValue::new(&mut height)
+                .speed(4.0)
+                .range(32.0..=2160.0),
+        );
+        ui.label("バー本数:");
+        ui.add(egui::DragValue::new(&mut bar_count).range(4..=64));
+    });
+    ui.add(egui::Slider::new(&mut sensitivity, 0.2..=6.0).text("反応感度"));
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("基本色:");
+        let mut c_arr = [color.r, color.g, color.b, color.a];
+        if ui.color_edit_button_rgba_unmultiplied(&mut c_arr).changed() {
+            color = RgbaColor {
+                r: c_arr[0],
+                g: c_arr[1],
+                b: c_arr[2],
+                a: c_arr[3],
+            };
+        }
+        ui.label("ピーク色:");
+        let mut p_arr = [peak_color.r, peak_color.g, peak_color.b, peak_color.a];
+        if ui.color_edit_button_rgba_unmultiplied(&mut p_arr).changed() {
+            peak_color = RgbaColor {
+                r: p_arr[0],
+                g: p_arr[1],
+                b: p_arr[2],
+                a: p_arr[3],
+            };
+        }
+    });
+
+    if (
+        linked_audio_layer,
+        width,
+        height,
+        bar_count,
+        color,
+        peak_color,
+        sensitivity,
+    ) != prev
+    {
+        let _ = session.bus.execute(
+            &mut session.project,
+            EditCommand::SetAudioSpectrum {
+                item_id,
+                linked_audio_layer,
+                width,
+                height,
+                bar_count,
+                color,
+                peak_color,
+                sensitivity,
+            },
+            CommandSource::Gui,
+            Some("audio_spectrum_edit"),
         );
     }
 }
@@ -544,6 +972,108 @@ pub fn show_video_effects_and_presets_ui(
             );
         }
     });
+
+    // v0.7.1: エフェクトチェーンプリセット管理 (presets/effects/*.json ＋ 標準チェーン)
+    ui.collapsing(
+        "📦 エフェクトチェーンプリセット (保存・1クリック適用)",
+        |ui| {
+            let mut apply_fx: Option<EffectPreset> = None;
+            let mut delete_fx_name: Option<String> = None;
+            let saved_fx = session
+                .folder
+                .as_ref()
+                .map(|f| f.load_effect_presets())
+                .unwrap_or_default();
+
+            ui.horizontal_wrapped(|ui| {
+                for preset in EffectPreset::default_presets() {
+                    if ui
+                        .small_button(format!("★ {}", preset.name))
+                        .on_hover_text("標準エフェクトチェーンを適用 (Undo可)")
+                        .clicked()
+                    {
+                        apply_fx = Some(preset);
+                    }
+                }
+                for preset in saved_fx {
+                    let resp = ui
+                        .small_button(format!("💾 {}", preset.name))
+                        .on_hover_text("保存済みエフェクトチェーンを適用（右クリックで削除）");
+                    if resp.clicked() {
+                        apply_fx = Some(preset.clone());
+                    }
+                    if resp.secondary_clicked() {
+                        delete_fx_name = Some(preset.name);
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut extras.new_effect_preset_name)
+                        .desired_width(120.0)
+                        .hint_text("チェーン名"),
+                );
+                if ui
+                    .add_enabled(
+                        !item.effect_chain.is_empty(),
+                        egui::Button::new("💾 現チェーンを保存").small(),
+                    )
+                    .clicked()
+                {
+                    let name = extras.new_effect_preset_name.trim().to_string();
+                    if name.is_empty() {
+                        extras.preset_status = "プリセット名を入力してください".into();
+                    } else if let Some(folder) = session.folder.as_ref() {
+                        let preset = EffectPreset {
+                            name: name.clone(),
+                            effects: item.effect_chain.clone(),
+                        };
+                        match folder.save_effect_preset(&preset) {
+                            Ok(_) => {
+                                extras.preset_status = format!(
+                                    "エフェクトプリセット「{name}」を presets/ へ保存しました"
+                                );
+                            }
+                            Err(e) => {
+                                extras.preset_status = format!("プリセット保存エラー: {e}");
+                            }
+                        }
+                    } else {
+                        extras.preset_status =
+                            "先に上部バーからプロジェクトフォルダを作成/保存してください".into();
+                    }
+                }
+            });
+            if !extras.preset_status.is_empty() {
+                ui.weak(&extras.preset_status);
+            }
+
+            if let Some(name) = delete_fx_name
+                && let Some(folder) = session.folder.as_ref()
+                && folder.delete_effect_preset(&name).is_ok()
+            {
+                extras.preset_status = format!("エフェクトプリセット「{name}」を削除しました");
+            }
+            if let Some(preset) = apply_fx {
+                let effects = preset.instantiate();
+                if session
+                    .bus
+                    .execute(
+                        &mut session.project,
+                        EditCommand::PasteEffects {
+                            item_id: item.id,
+                            effects,
+                        },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    extras.preset_status = format!("エフェクト「{}」を適用しました", preset.name);
+                }
+            }
+        },
+    );
 
     // 適用済みエフェクトチェーン（↑↓並び替え・ON/OFF・パラメータ編集・単体コピー・削除）
     let chain_len = item.effect_chain.len();
