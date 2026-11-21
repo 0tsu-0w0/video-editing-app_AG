@@ -104,7 +104,14 @@ mod tests {
     #[test]
     fn renders_text_to_linear_premultiplied_buffer() {
         let mut renderer = TextRenderer::new();
-        let img = renderer.render_text("Hello 次世代動画編集", "sans-serif", 32.0, RgbaColor::WHITE, 400, 100);
+        let img = renderer.render_text(
+            "Hello 次世代動画編集",
+            "sans-serif",
+            32.0,
+            RgbaColor::WHITE,
+            400,
+            100,
+        );
         assert_eq!(img.width, 400);
         assert_eq!(img.height, 100);
         // システムにフォントが1つ以上あればグリフピクセルが描画される

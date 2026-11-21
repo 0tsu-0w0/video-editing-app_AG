@@ -1,0 +1,625 @@
+use crate::session::SharedEditorSession;
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use uuid::Uuid;
+use ve_core::{
+    CommandSource, EditCommand, EffectNode, FrameRate, ItemKind, RationalTime, RgbaColor,
+    ShapeKind, TimelineItem, Transform2D,
+};
+use ve_render::RenderGraph;
+
+pub fn tool_definitions() -> Value {
+    json!([
+        {
+            "name": "get_project_summary",
+            "description": "プロジェクトの解像度・FPS・尺・シーン・レイヤー概要を取得する",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_timeline_range",
+            "description": "指定範囲（フレームまたは秒）に存在するタイムラインオブジェクト一覧を取得する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start_frame": { "type": "integer" },
+                    "end_frame": { "type": "integer" },
+                    "start_sec": { "type": "number" },
+                    "end_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "get_object_detail",
+            "description": "指定IDのタイムラインオブジェクト詳細を取得する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": { "id": { "type": "string" } }
+            }
+        },
+        {
+            "name": "get_selection",
+            "description": "現在GUIで選択中のオブジェクトID一覧を取得する",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_playhead",
+            "description": "現在の再生ヘッド位置（ticks / seconds / frame）を取得する",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "render_frame_preview",
+            "description": "指定時刻のレンダリング結果をPNG画像(base64)として返却し、視覚確認を可能にする",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "frame": { "type": "integer" },
+                    "seconds": { "type": "number" },
+                    "scale": { "type": "number", "default": 0.5 }
+                }
+            }
+        },
+        {
+            "name": "add_object",
+            "description": "タイムラインへテキストまたは図形オブジェクトを追加する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["layer_index", "name", "kind"],
+                "properties": {
+                    "layer_index": { "type": "integer" },
+                    "name": { "type": "string" },
+                    "start_sec": { "type": "number" },
+                    "duration_sec": { "type": "number" },
+                    "kind": { "type": "string", "enum": ["text", "shape"] },
+                    "content": { "type": "string" },
+                    "font_size": { "type": "number" },
+                    "width": { "type": "number" },
+                    "height": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "delete_object",
+            "description": "指定IDのオブジェクトを削除する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": { "id": { "type": "string" } }
+            }
+        },
+        {
+            "name": "move_object",
+            "description": "オブジェクトのレイヤーまたは開始位置を変更する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "target_layer_index"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "target_layer_index": { "type": "integer" },
+                    "new_start_sec": { "type": "number" },
+                    "new_start_frame": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "split_object",
+            "description": "指定時刻でオブジェクトを2つに分割する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "split_at_sec": { "type": "number" },
+                    "split_at_frame": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "set_property",
+            "description": "オブジェクトの Transform またはテキスト内容を更新する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "opacity": { "type": "number" },
+                    "content": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "add_effect",
+            "description": "オブジェクトの個別エフェクトチェーンへエフェクトを追加する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "effect_type"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "effect_type": { "type": "string" },
+                    "params": { "type": "object" }
+                }
+            }
+        },
+        {
+            "name": "update_effect_params",
+            "description": "オブジェクト上の既存エフェクトのパラメータを更新する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "effect_id", "params"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "effect_id": { "type": "string" },
+                    "params": { "type": "object" }
+                }
+            }
+        },
+        {
+            "name": "batch_execute",
+            "description": "複数の EditCommand を1つの Undo 単位として原子的に実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["commands"],
+                "properties": {
+                    "label": { "type": "string" },
+                    "commands": { "type": "array" }
+                }
+            }
+        }
+    ])
+}
+
+fn parse_time_arg(
+    args: &Value,
+    frame_key: &str,
+    sec_key: &str,
+    fps: FrameRate,
+    default: RationalTime,
+) -> RationalTime {
+    if let Some(f) = args.get(frame_key).and_then(Value::as_i64) {
+        RationalTime::from_frame(f, fps)
+    } else if let Some(s) = args.get(sec_key).and_then(Value::as_f64) {
+        RationalTime::from_seconds(s)
+    } else {
+        default
+    }
+}
+
+fn parse_uuid(args: &Value, key: &str) -> Result<Uuid, String> {
+    let raw = args
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing string argument '{key}'"))?;
+    Uuid::parse_str(raw).map_err(|e| format!("invalid uuid for '{key}': {e}"))
+}
+
+fn parse_params_map(val: Option<&Value>) -> BTreeMap<String, f32> {
+    let mut map = BTreeMap::new();
+    if let Some(obj) = val.and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(n) = v.as_f64() {
+                map.insert(k.clone(), n as f32);
+            }
+        }
+    }
+    map
+}
+
+pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Result<Value, String> {
+    let mut guard = session
+        .lock()
+        .map_err(|_| "session lock poisoned".to_string())?;
+    let fps = guard.project.settings.fps;
+
+    match name {
+        "get_project_summary" => {
+            let scene_summaries: Vec<Value> = guard
+                .project
+                .scenes
+                .iter()
+                .map(|s| {
+                    json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "width": s.width,
+                        "height": s.height,
+                        "fps": s.fps.as_f64(),
+                        "layer_count": s.layers.len(),
+                        "duration_sec": s.total_duration().as_seconds(),
+                    })
+                })
+                .collect();
+            let text = serde_json::to_string_pretty(&json!({
+                "name": guard.project.name,
+                "active_scene_id": guard.project.active_scene_id,
+                "undo_depth": guard.bus.undo_len(),
+                "scenes": scene_summaries,
+            }))
+            .unwrap_or_default();
+            Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+        }
+        "get_timeline_range" => {
+            let start = parse_time_arg(args, "start_frame", "start_sec", fps, RationalTime::ZERO);
+            let end = parse_time_arg(
+                args,
+                "end_frame",
+                "end_sec",
+                fps,
+                RationalTime::from_seconds(3600.0),
+            );
+            let scene = guard
+                .project
+                .active_scene()
+                .ok_or_else(|| "no active scene".to_string())?;
+            let mut items = Vec::new();
+            for (layer_idx, layer) in scene.layers.iter().enumerate() {
+                for item in &layer.items {
+                    if item.end() > start && item.start < end {
+                        items.push(json!({
+                            "layer_index": layer_idx,
+                            "id": item.id,
+                            "name": item.name,
+                            "start_sec": item.start.as_seconds(),
+                            "end_sec": item.end().as_seconds(),
+                            "start_frame": item.start.to_frame_round(fps),
+                            "end_frame": item.end().to_frame_round(fps),
+                        }));
+                    }
+                }
+            }
+            let text = serde_json::to_string_pretty(&items).unwrap_or_default();
+            Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+        }
+        "get_object_detail" => {
+            let id = parse_uuid(args, "id")?;
+            let scene = guard
+                .project
+                .active_scene()
+                .ok_or_else(|| "no active scene".to_string())?;
+            for (layer_idx, layer) in scene.layers.iter().enumerate() {
+                if let Some(item) = layer.items.iter().find(|i| i.id == id) {
+                    let text = serde_json::to_string_pretty(&json!({
+                        "layer_index": layer_idx,
+                        "item": item,
+                    }))
+                    .unwrap_or_default();
+                    return Ok(json!({ "content": [{ "type": "text", "text": text }] }));
+                }
+            }
+            Err(format!("object not found: {id}"))
+        }
+        "get_selection" => {
+            let text = serde_json::to_string_pretty(&guard.selected_items).unwrap_or_default();
+            Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+        }
+        "get_playhead" => {
+            let t = guard.playhead;
+            let text = serde_json::to_string_pretty(&json!({
+                "ticks": t.ticks,
+                "seconds": t.as_seconds(),
+                "frame": t.to_frame_floor(fps),
+            }))
+            .unwrap_or_default();
+            Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+        }
+        "render_frame_preview" => {
+            let t = parse_time_arg(args, "frame", "seconds", fps, guard.playhead);
+            let scale = args
+                .get("scale")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.5)
+                .clamp(0.1, 1.0);
+            let mut scene = guard
+                .project
+                .active_scene()
+                .cloned()
+                .ok_or_else(|| "no active scene".to_string())?;
+            scene.width = ((scene.width as f64) * scale).round().max(16.0) as u32;
+            scene.height = ((scene.height as f64) * scale).round().max(16.0) as u32;
+            drop(guard);
+
+            let mut rg = RenderGraph::new();
+            let linear = rg.render_scene(&scene, t);
+            let rgba8 = linear.to_rgba8_srgb();
+            let png_bytes = encode_rgba8_to_png(scene.width, scene.height, &rgba8)?;
+            let b64 = base64_encode(&png_bytes);
+            Ok(json!({
+                "content": [
+                    {
+                        "type": "image",
+                        "data": b64,
+                        "mimeType": "image/png"
+                    }
+                ]
+            }))
+        }
+        "add_object" => {
+            let layer_index = args
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .ok_or("missing layer_index")? as usize;
+            let item_name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("AI Object")
+                .to_string();
+            let start = RationalTime::from_seconds(
+                args.get("start_sec").and_then(Value::as_f64).unwrap_or(0.0),
+            );
+            let duration = RationalTime::from_seconds(
+                args.get("duration_sec")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(2.0),
+            );
+            let kind_str = args.get("kind").and_then(Value::as_str).unwrap_or("text");
+            let kind = match kind_str {
+                "shape" => ItemKind::Shape {
+                    shape: ShapeKind::Rectangle,
+                    width: args.get("width").and_then(Value::as_f64).unwrap_or(200.0) as f32,
+                    height: args.get("height").and_then(Value::as_f64).unwrap_or(100.0) as f32,
+                    color: RgbaColor::WHITE,
+                },
+                _ => ItemKind::Text {
+                    content: args
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("テキスト")
+                        .to_string(),
+                    font_family: "sans-serif".to_string(),
+                    font_size: args
+                        .get("font_size")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(48.0) as f32,
+                    color: RgbaColor::WHITE,
+                },
+            };
+            let id = Uuid::new_v4();
+            let item = TimelineItem {
+                id,
+                name: item_name,
+                start,
+                duration,
+                transform: Transform2D::default(),
+                effect_chain: vec![],
+                kind,
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::AddObject { layer_index, item },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"created_id": id}).to_string() }] }),
+            )
+        }
+        "delete_object" => {
+            let id = parse_uuid(args, "id")?;
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::DeleteObject { item_id: id },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "deleted" }] }))
+        }
+        "move_object" => {
+            let id = parse_uuid(args, "id")?;
+            let target_layer_index = args
+                .get("target_layer_index")
+                .and_then(Value::as_u64)
+                .ok_or("missing target_layer_index")? as usize;
+            let new_start = parse_time_arg(
+                args,
+                "new_start_frame",
+                "new_start_sec",
+                fps,
+                RationalTime::ZERO,
+            );
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::MoveObject {
+                        item_id: id,
+                        target_layer_index,
+                        new_start,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "moved" }] }))
+        }
+        "split_object" => {
+            let id = parse_uuid(args, "id")?;
+            let split_at =
+                parse_time_arg(args, "split_at_frame", "split_at_sec", fps, guard.playhead);
+            let right_id = Uuid::new_v4();
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SplitObject {
+                        item_id: id,
+                        split_at,
+                        new_right_id: right_id,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"right_id": right_id}).to_string() }] }),
+            )
+        }
+        "set_property" => {
+            let id = parse_uuid(args, "id")?;
+            let mut cmds = Vec::new();
+            if let Some(content) = args.get("content").and_then(Value::as_str) {
+                cmds.push(EditCommand::SetTextContent {
+                    item_id: id,
+                    content: content.to_string(),
+                });
+            }
+            if args.get("x").is_some() || args.get("y").is_some() || args.get("opacity").is_some() {
+                let mut tf = guard
+                    .project
+                    .active_scene()
+                    .and_then(|s| {
+                        s.layers
+                            .iter()
+                            .flat_map(|l| l.items.iter())
+                            .find(|i| i.id == id)
+                            .map(|i| i.transform)
+                    })
+                    .ok_or_else(|| format!("object not found: {id}"))?;
+                if let Some(x) = args.get("x").and_then(Value::as_f64) {
+                    tf.x = x as f32;
+                }
+                if let Some(y) = args.get("y").and_then(Value::as_f64) {
+                    tf.y = y as f32;
+                }
+                if let Some(o) = args.get("opacity").and_then(Value::as_f64) {
+                    tf.opacity = o as f32;
+                }
+                cmds.push(EditCommand::SetTransform {
+                    item_id: id,
+                    transform: tf,
+                });
+            }
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::Batch {
+                        label: "set_property".into(),
+                        commands: cmds,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "updated" }] }))
+        }
+        "add_effect" => {
+            let id = parse_uuid(args, "id")?;
+            let effect_type = args
+                .get("effect_type")
+                .and_then(Value::as_str)
+                .ok_or("missing effect_type")?
+                .to_string();
+            let effect_id = Uuid::new_v4();
+            let effect = EffectNode {
+                id: effect_id,
+                effect_type,
+                enabled: true,
+                params: parse_params_map(args.get("params")),
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::AddEffect {
+                        item_id: id,
+                        effect,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"effect_id": effect_id}).to_string() }] }),
+            )
+        }
+        "update_effect_params" => {
+            let id = parse_uuid(args, "id")?;
+            let effect_id = parse_uuid(args, "effect_id")?;
+            let params = parse_params_map(args.get("params"));
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::UpdateEffectParams {
+                        item_id: id,
+                        effect_id,
+                        params,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "updated" }] }))
+        }
+        "batch_execute" => {
+            let label = args
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("mcp_batch")
+                .to_string();
+            let raw_cmds = args
+                .get("commands")
+                .ok_or("missing commands array")?
+                .clone();
+            let commands: Vec<EditCommand> =
+                serde_json::from_value(raw_cmds).map_err(|e| format!("invalid commands: {e}"))?;
+            let count = commands.len();
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::Batch { label, commands },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"executed": count}).to_string() }] }),
+            )
+        }
+        other => Err(format!("unknown tool: {other}")),
+    }
+}
+
+fn encode_rgba8_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+    }
+    Ok(buf)
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(n & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}

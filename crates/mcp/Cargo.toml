@@ -1,0 +1,15 @@
+[package]
+name = "ve-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ve-core.workspace = true
+ve-render.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+png.workspace = true
+thiserror.workspace = true

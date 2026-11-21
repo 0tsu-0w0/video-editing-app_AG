@@ -68,7 +68,8 @@ impl AudioMasterClock {
         }
         if let Some(epoch) = self.fallback_epoch {
             let elapsed = epoch.elapsed().as_secs_f64();
-            let target = self.fallback_start_samples + (elapsed * self.sample_rate as f64).round() as i64;
+            let target =
+                self.fallback_start_samples + (elapsed * self.sample_rate as f64).round() as i64;
             self.played_samples.store(target, Ordering::Release);
         }
     }

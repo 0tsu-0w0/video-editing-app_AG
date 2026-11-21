@@ -8,15 +8,16 @@ After Effects の表現力、AviUtl2 の軽快なタイムライン編集、そ�
 本リポジトリのソースコードは **MIT OR Apache-2.0** のデュアルライセンスです。
 FFmpeg は外部 CLI（サイドカー）または LGPL 動的リンクとして本体から分離しています。
 
-## ワークスペース構成（Phase 1a: コアエンジン PoC）
+## ワークスペース構成（Phase 1a + 1b: コアエンジン・実用NLE・内蔵MCP）
 
 | クレート | 役割 |
 | :--- | :--- |
-| `crates/core` (`ve-core`) | 有理数タイムベース（`RationalTime`, 705,600,000 ticks/sec）、プロジェクトモデル（`Project` / `Scene` / `Layer` / `TimelineItem` / AviUtl2風 `FilterObject`）、1フォルダ管理（`project.json`・`history.jsonl`・アセット参照＆収集） |
+| `crates/core` (`ve-core`) | 有理数タイムベース（`RationalTime`, 705,600,000 ticks/sec）、プロジェクトモデル（`Project` / `Scene` / `Layer` / `TimelineItem` / AviUtl2風 `FilterObject`）、1フォルダ管理（`project.json`・`history.jsonl`・アセット参照＆収集）、`CommandBus`（Undo/Redo・Command Coalescing・GUIドラッグ排他・クラッシュ復旧） |
 | `crates/media` (`ve-media`) | FFmpeg / FFprobe 外部CLIラッパー（プローブ・デコード・MP4/WebM透過/PNG連番書き出し）、`symphonia` 音声デコード |
-| `crates/audio` (`ve-audio`) | プレビュー／書き出し共通 `AudioGraph`（異サンプルレート変換・ステレオミキサー）、`AudioMasterClock`（A/V同期）、Windows WASAPI（`cpal`）出力 |
+| `crates/audio` (`ve-audio`) | プレビュー／書き出し共通 `AudioGraph`（異サンプルレート変換・ステレオミキサー）、`AudioMasterClock`（A/V同期）、`WaveformPeaks`（波形＆RMS解析）、Windows WASAPI（`cpal`）出力 |
 | `crates/render` (`ve-render`) | Linear sRGB（`Rgba16Float`）+ Premultiplied Alpha 合成、`cosmic-text`+`swash` 日本語テキスト描画、Render Graph（個別エフェクトチェーン → レイヤー合成 → AviUtl2フィルタオブジェクト）、`wgpu` + WGSL プレビューパイプライン |
-| `crates/app` (`ve-app`) | `eframe`（`wgpu`）+ `egui_dock` デスクトップアプリ、Phase 1a 日本語IME PoC 検証パネル |
+| `crates/mcp` (`ve-mcp`) | 内蔵 MCP サーバー（ローカル Streamable HTTP `127.0.0.1` + 起動時ベアラートークン認証、`render_frame_preview`・`batch_execute` 等14ツール、`CommandBus` 共有） |
+| `crates/app` (`ve-app`) | `eframe`（`wgpu`）+ `egui_dock` デスクトップアプリ、AviUtl2風タイムライン（移動・伸縮・スナップ・分割・複数選択・波形表示）、アセット再リンク UI、日本語IME PoC パネル |
 
 ## ビルド・テスト
 

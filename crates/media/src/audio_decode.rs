@@ -2,8 +2,8 @@ use crate::ffmpeg::MediaError;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
@@ -20,11 +20,7 @@ pub struct AudioBuffer {
 
 impl AudioBuffer {
     pub fn frame_count(&self) -> usize {
-        if self.channels == 0 {
-            0
-        } else {
-            self.samples.len() / self.channels
-        }
+        self.samples.len().checked_div(self.channels).unwrap_or(0)
     }
 
     pub fn duration_sec(&self) -> f64 {
@@ -62,7 +58,11 @@ pub fn decode_audio_file(path: &Path) -> Result<AudioBuffer, MediaError> {
 
     let audio_params = match &track.codec_params {
         Some(CodecParameters::Audio(p)) => p.clone(),
-        _ => return Err(MediaError::AudioDecode("missing audio codec parameters".into())),
+        _ => {
+            return Err(MediaError::AudioDecode(
+                "missing audio codec parameters".into(),
+            ));
+        }
     };
 
     let mut decoder = symphonia::default::get_codecs()

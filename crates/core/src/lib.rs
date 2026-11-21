@@ -1,7 +1,9 @@
+pub mod command;
 pub mod folder;
 pub mod project;
 pub mod time;
 
+pub use command::{CommandBus, CommandError, CommandSource, EditCommand};
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
 pub use project::{
     AssetId, AssetRef, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, LayerId,

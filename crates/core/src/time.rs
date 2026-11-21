@@ -31,7 +31,10 @@ impl FrameRate {
     pub const FPS_60: Self = Self { num: 60, den: 1 };
 
     pub const fn new(num: u32, den: u32) -> Self {
-        assert!(num > 0 && den > 0, "FrameRate numerator and denominator must be > 0");
+        assert!(
+            num > 0 && den > 0,
+            "FrameRate numerator and denominator must be > 0"
+        );
         Self { num, den }
     }
 
@@ -48,7 +51,9 @@ impl FrameRate {
 }
 
 /// 内部時間表現（有理数タイムベース: `ticks / TICKS_PER_SECOND` 秒）
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct RationalTime {
     pub ticks: i64,
 }
@@ -102,7 +107,8 @@ impl RationalTime {
     }
 
     pub fn to_audio_samples(self, sample_rate: u32) -> i64 {
-        let samples = (i128::from(self.ticks) * i128::from(sample_rate)) / i128::from(TICKS_PER_SECOND);
+        let samples =
+            (i128::from(self.ticks) * i128::from(sample_rate)) / i128::from(TICKS_PER_SECOND);
         samples as i64
     }
 
@@ -184,7 +190,11 @@ mod tests {
         for sr in [44_100u32, 48_000, 96_000] {
             for samples in [0i64, 1, 441, 480, sr as i64, sr as i64 * 10] {
                 let t = RationalTime::from_audio_samples(samples, sr);
-                assert_eq!(t.to_audio_samples(sr), samples, "sr={sr}, samples={samples}");
+                assert_eq!(
+                    t.to_audio_samples(sr),
+                    samples,
+                    "sr={sr}, samples={samples}"
+                );
             }
         }
     }

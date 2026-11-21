@@ -4193,6 +4193,7 @@ dependencies = [
  "uuid",
  "ve-audio",
  "ve-core",
+ "ve-mcp",
  "ve-media",
  "ve-render",
  "wgpu",
@@ -4217,6 +4218,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "ve-mcp"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+ "ve-core",
+ "ve-render",
 ]
 
 [[package]]

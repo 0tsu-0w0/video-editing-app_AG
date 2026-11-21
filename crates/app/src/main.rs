@@ -1,17 +1,20 @@
 mod ime_poc;
+mod timeline;
 
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
 use ime_poc::ImePocPanel;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use timeline::TimelineState;
 use uuid::Uuid;
-use ve_audio::AudioEngineState;
+use ve_audio::{AudioEngineState, WaveformPeaks};
 use ve_core::{
-    FilterTargetScope, FrameRate, ItemKind, Project, ProjectSettings, RationalTime, RgbaColor,
-    ShapeKind, TimelineItem, Transform2D,
+    AssetResolution, CommandSource, EditCommand, FilterTargetScope, FrameRate, ItemKind, Project,
+    ProjectSettings, RationalTime, RgbaColor, ShapeKind, TimelineItem, Transform2D,
 };
+use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, FfmpegCli};
 use ve_render::{RenderGraph, WgpuPreviewPipeline};
 
@@ -23,7 +26,10 @@ enum Pane {
 }
 
 struct EditorApp {
-    project: Project,
+    session: SharedEditorSession,
+    mcp_server: Option<EmbeddedMcpServer>,
+    timeline_state: TimelineState,
+    waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
     preview_pipeline: Option<WgpuPreviewPipeline>,
     preview_tex_id: Option<egui::TextureId>,
@@ -32,21 +38,23 @@ struct EditorApp {
     _live_audio: Option<ve_audio::output::live::LiveAudioStream>,
     dock_state: DockState<Pane>,
     ime_panel: ImePocPanel,
-    filter_enabled: bool,
+    relink_inputs: BTreeMap<Uuid, String>,
     export_status: String,
     preview_scale: u32,
 }
 
 impl EditorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut settings = ProjectSettings::default();
-        settings.width = 1280;
-        settings.height = 720;
-        settings.fps = FrameRate::FPS_60;
+        let settings = ProjectSettings {
+            width: 1280,
+            height: 720,
+            fps: FrameRate::FPS_60,
+            ..Default::default()
+        };
 
-        let mut project = Project::new("Phase 1a PoC Project", settings.clone());
+        let mut project = Project::new("Phase 1b NLE + MCP Project", settings.clone());
+        let mut initial_selected = Vec::new();
         if let Some(scene) = project.active_scene_mut() {
-            // Layer 0: 背景シェイプ
             scene.layers[0].items.push(TimelineItem {
                 id: Uuid::new_v4(),
                 name: "背景パネル".to_string(),
@@ -71,9 +79,10 @@ impl EditorApp {
                 },
             });
 
-            // Layer 1: 日本語テキストオブジェクト（cosmic-text + swash）
+            let title_id = Uuid::new_v4();
+            initial_selected.push(title_id);
             scene.layers[1].items.push(TimelineItem {
-                id: Uuid::new_v4(),
+                id: title_id,
                 name: "タイトル字幕".to_string(),
                 start: RationalTime::ZERO,
                 duration: RationalTime::from_seconds(5.0),
@@ -84,14 +93,13 @@ impl EditorApp {
                 },
                 effect_chain: vec![],
                 kind: ItemKind::Text {
-                    content: "次世代ハイブリッド動画編集ソフト\nPhase 1a コアエンジン PoC".to_string(),
+                    content: "次世代ハイブリッド動画編集ソフト\nPhase 1b NLE + 内蔵MCP".to_string(),
                     font_family: "sans-serif".to_string(),
                     font_size: 56.0,
                     color: RgbaColor::WHITE,
                 },
             });
 
-            // Layer 2: AviUtl2風フィルタオブジェクト（直上レイヤーへ適用）
             let mut params = BTreeMap::new();
             params.insert("gain".to_string(), 1.25);
             scene.layers[2].items.push(TimelineItem {
@@ -108,6 +116,11 @@ impl EditorApp {
                 },
             });
         }
+
+        let mut editor_session = EditorSession::new(project);
+        editor_session.selected_items = initial_selected;
+        let session = Arc::new(Mutex::new(editor_session));
+        let mcp_server = EmbeddedMcpServer::start(Arc::clone(&session)).ok();
 
         let audio_state = AudioEngineState::new(settings.audio_sample_rate);
         #[cfg(windows)]
@@ -128,11 +141,15 @@ impl EditorApp {
 
         let mut dock_state = DockState::new(vec![Pane::Preview]);
         let surface = dock_state.main_surface_mut();
-        let [top, _bottom] = surface.split_below(egui_dock::NodeIndex::root(), 0.65, vec![Pane::Timeline]);
-        let [_left, _right] = surface.split_right(top, 0.68, vec![Pane::InspectorIme]);
+        let [top, _bottom] =
+            surface.split_below(egui_dock::NodeIndex::root(), 0.58, vec![Pane::Timeline]);
+        let [_left, _right] = surface.split_right(top, 0.66, vec![Pane::InspectorIme]);
 
         Self {
-            project,
+            session,
+            mcp_server,
+            timeline_state: TimelineState::default(),
+            waveforms: BTreeMap::new(),
             render_graph: RenderGraph::new(),
             preview_pipeline,
             preview_tex_id,
@@ -141,17 +158,21 @@ impl EditorApp {
             _live_audio: live_audio,
             dock_state,
             ime_panel: ImePocPanel::new(),
-            filter_enabled: true,
+            relink_inputs: BTreeMap::new(),
             export_status: "待機中".to_string(),
             preview_scale: 2,
         }
     }
 
     fn export_mp4_poc(&mut self) {
-        let Some(scene) = self.project.active_scene().cloned() else {
+        let scene = {
+            let guard = self.session.lock().unwrap();
+            guard.project.active_scene().cloned()
+        };
+        let Some(mut scaled_scene) = scene else {
             return;
         };
-        let out_path = PathBuf::from("phase1a_poc_export.mp4");
+        let out_path = PathBuf::from("phase1b_export.mp4");
         let cli = FfmpegCli::default();
         let config = ExportConfig {
             width: 640,
@@ -160,8 +181,6 @@ impl EditorApp {
             format: ExportFormat::Mp4H264,
             crf: 20,
         };
-
-        let mut scaled_scene = scene;
         scaled_scene.width = config.width;
         scaled_scene.height = config.height;
 
@@ -170,31 +189,23 @@ impl EditorApp {
                 for frame_idx in 0..60 {
                     let t = RationalTime::from_frame(frame_idx, config.fps);
                     let linear = self.render_graph.render_scene(&scaled_scene, t);
-                    let rgba8 = linear.to_rgba8_srgb();
-                    if let Err(e) = session.write_rgba8_frame(&rgba8) {
+                    if let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb()) {
                         self.export_status = format!("書き出しエラー: {e}");
                         return;
                     }
                 }
                 match session.finish() {
-                    Ok(()) => {
-                        self.export_status = format!("書き出し完了: {}", out_path.display());
-                    }
-                    Err(e) => {
-                        self.export_status = format!("FFmpeg終了エラー: {e}");
-                    }
+                    Ok(()) => self.export_status = format!("書き出し完了: {}", out_path.display()),
+                    Err(e) => self.export_status = format!("FFmpeg終了エラー: {e}"),
                 }
             }
-            Err(e) => {
-                self.export_status = format!("FFmpeg起動失敗: {e}");
-            }
+            Err(e) => self.export_status = format!("FFmpeg起動失敗: {e}"),
         }
     }
 }
 
 struct EditorTabViewer<'a> {
     app: &'a mut EditorApp,
-    current_time: RationalTime,
 }
 
 impl TabViewer for EditorTabViewer<'_> {
@@ -207,8 +218,8 @@ impl TabViewer for EditorTabViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             Pane::Preview => "プレビュー (wgpu Linear f16)".into(),
-            Pane::Timeline => "タイムライン (AviUtl2領域)".into(),
-            Pane::InspectorIme => "インスペクタ / 日本語IME PoC".into(),
+            Pane::Timeline => "タイムライン (AviUtl2 NLE)".into(),
+            Pane::InspectorIme => "インスペクタ / MCP / 日本語IME".into(),
         }
     }
 
@@ -228,77 +239,173 @@ impl TabViewer for EditorTabViewer<'_> {
                 }
             }
             Pane::Timeline => {
-                let fps = self.app.project.settings.fps;
-                let frame = self.current_time.to_frame_floor(fps);
-                let mut secs = self.current_time.as_seconds() as f32;
-
-                ui.horizontal(|ui| {
-                    let is_playing = self.app.audio_state.clock.read().unwrap().is_playing();
-                    if ui.button(if is_playing { "⏸ 一時停止" } else { "▶ 再生" }).clicked() {
-                        let mut clock = self.app.audio_state.clock.write().unwrap();
-                        if is_playing {
-                            clock.pause();
-                        } else {
-                            clock.play();
-                        }
-                    }
-                    if ui.button("⏮ 先頭").clicked() {
-                        self.app.audio_state.clock.write().unwrap().seek(RationalTime::ZERO);
-                    }
-                    ui.label(format!("Time: {secs:.3}s | Frame: {frame} ({:.2}fps)", fps.as_f64()));
-                    ui.separator();
-                    if ui.button("MP4 書き出し (2秒PoC)").clicked() {
-                        self.app.export_mp4_poc();
-                    }
-                    ui.label(&self.app.export_status);
-                });
-
-                if ui
-                    .add(egui::Slider::new(&mut secs, 0.0..=5.0).text("再生位置 (秒)"))
-                    .changed()
+                let mut export_clicked = false;
                 {
-                    self.app
-                        .audio_state
-                        .clock
-                        .write()
-                        .unwrap()
-                        .seek(RationalTime::from_seconds(f64::from(secs)));
-                }
+                    let mut sess = self.app.session.lock().unwrap();
+                    let fps = sess.project.settings.fps;
+                    let frame = sess.playhead.to_frame_floor(fps);
+                    let secs = sess.playhead.as_seconds();
 
-                ui.separator();
-                if let Some(scene) = self.app.project.active_scene() {
-                    for (idx, layer) in scene.layers.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.monospace(format!("L{idx} [{}]", layer.name));
-                            for item in &layer.items {
-                                let label = format!(
-                                    "{} ({:.1}s..{:.1}s)",
-                                    item.name,
-                                    item.start.as_seconds(),
-                                    item.end().as_seconds()
-                                );
-                                let _ = ui.selectable_label(item.contains(self.current_time), label);
+                    ui.horizontal(|ui| {
+                        let is_playing = self.app.audio_state.clock.read().unwrap().is_playing();
+                        if ui
+                            .button(if is_playing {
+                                "⏸ 一時停止"
+                            } else {
+                                "▶ 再生"
+                            })
+                            .clicked()
+                        {
+                            let mut clock = self.app.audio_state.clock.write().unwrap();
+                            if is_playing {
+                                clock.pause();
+                            } else {
+                                clock.seek(sess.playhead);
+                                clock.play();
                             }
-                        });
+                        }
+                        if ui.button("⏮ 先頭").clicked() {
+                            sess.playhead = RationalTime::ZERO;
+                            self.app
+                                .audio_state
+                                .clock
+                                .write()
+                                .unwrap()
+                                .seek(RationalTime::ZERO);
+                        }
+                        ui.monospace(format!(
+                            "{secs:.3}s | Frame {frame} ({:.2}fps)",
+                            fps.as_f64()
+                        ));
+                        ui.separator();
+                        if ui.button("MP4 書き出し").clicked() {
+                            export_clicked = true;
+                        }
+                        ui.label(&self.app.export_status);
+                    });
+
+                    ui.separator();
+                    self.app
+                        .timeline_state
+                        .show(ui, &mut sess, &self.app.waveforms);
+
+                    // タイムライン上の手動シークをクロックへ同期
+                    if !self.app.audio_state.clock.read().unwrap().is_playing() {
+                        self.app
+                            .audio_state
+                            .clock
+                            .write()
+                            .unwrap()
+                            .seek(sess.playhead);
                     }
+                }
+                if export_clicked {
+                    self.app.export_mp4_poc();
                 }
             }
             Pane::InspectorIme => {
-                ui.checkbox(&mut self.app.filter_enabled, "Layer 2 フィルタオブジェクト有効");
-                if let Some(scene) = self.app.project.active_scene_mut() {
-                    if let Some(layer2) = scene.layers.get_mut(2) {
-                        layer2.visible = self.app.filter_enabled;
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // 内蔵 MCP サーバーステータス
+                    ui.heading("内蔵 MCP サーバー (Streamable HTTP)");
+                    if let Some(mcp) = &self.app.mcp_server {
+                        let url = mcp.endpoint_url();
+                        ui.horizontal(|ui| {
+                            ui.monospace(&url);
+                            if ui.button("URLコピー").clicked() {
+                                ui.ctx().copy_text(url);
+                            }
+                            if ui.button("トークンコピー").clicked() {
+                                ui.ctx().copy_text(mcp.bearer_token().to_string());
+                            }
+                        });
+                    } else {
+                        ui.colored_label(egui::Color32::RED, "MCPサーバー起動失敗");
                     }
-                    if let Some(text_item) = scene
-                        .layers
-                        .get_mut(1)
-                        .and_then(|l| l.items.first_mut())
+                    ui.separator();
+
+                    // 選択中テキストオブジェクトの CommandBus 経由編集 + 日本語IME PoC
+                    let mut text_edit_state: Option<(Uuid, String)> = None;
                     {
-                        if let ItemKind::Text { content, .. } = &mut text_item.kind {
-                            self.app.ime_panel.ui(ui, content);
+                        let sess = self.app.session.lock().unwrap();
+                        if let Some(&sel_id) = sess.selected_items.first()
+                            && let Some(scene) = sess.project.active_scene()
+                        {
+                            for layer in &scene.layers {
+                                if let Some(item) = layer.items.iter().find(|i| i.id == sel_id)
+                                    && let ItemKind::Text { content, .. } = &item.kind
+                                {
+                                    text_edit_state = Some((sel_id, content.clone()));
+                                }
+                            }
                         }
                     }
-                }
+
+                    if let Some((item_id, mut content)) = text_edit_state {
+                        let before = content.clone();
+                        self.app.ime_panel.ui(ui, &mut content);
+                        if content != before {
+                            let mut sess_guard = self.app.session.lock().unwrap();
+                            let sess = &mut *sess_guard;
+                            let _ = sess.bus.execute(
+                                &mut sess.project,
+                                EditCommand::SetTextContent { item_id, content },
+                                CommandSource::Gui,
+                                Some("inspector_text_edit"),
+                            );
+                        }
+                    } else {
+                        let mut dummy = String::from(
+                            "（タイムラインでテキストオブジェクトを選択してください）",
+                        );
+                        self.app.ime_panel.ui(ui, &mut dummy);
+                    }
+
+                    ui.separator();
+                    ui.heading("アセット管理・オフライン再リンク");
+                    let mut sess = self.app.session.lock().unwrap();
+                    if sess.project.assets.is_empty() {
+                        ui.weak("外部参照アセットはまだありません。");
+                    } else {
+                        let folder = sess.folder.clone();
+                        for asset in &mut sess.project.assets {
+                            let status = folder
+                                .as_ref()
+                                .map(|f| f.resolve_asset(asset))
+                                .unwrap_or_else(|| {
+                                    if asset
+                                        .fallback_absolute_path
+                                        .as_ref()
+                                        .is_some_and(|p| p.exists())
+                                    {
+                                        AssetResolution::Found(
+                                            asset.fallback_absolute_path.clone().unwrap(),
+                                        )
+                                    } else {
+                                        AssetResolution::Offline
+                                    }
+                                });
+                            ui.horizontal(|ui| {
+                                ui.label(&asset.name);
+                                match status {
+                                    AssetResolution::Found(_) => {
+                                        ui.colored_label(egui::Color32::GREEN, "OK");
+                                    }
+                                    AssetResolution::Offline => {
+                                        ui.colored_label(egui::Color32::RED, "OFFLINE");
+                                        let entry =
+                                            self.app.relink_inputs.entry(asset.id).or_default();
+                                        ui.text_edit_singleline(entry);
+                                        if ui.button("再リンク").clicked() && !entry.is_empty()
+                                        {
+                                            asset.fallback_absolute_path =
+                                                Some(PathBuf::from(entry.trim()));
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
             }
         }
     }
@@ -309,34 +416,40 @@ impl eframe::App for EditorApp {
         let ctx = ui.ctx().clone();
         self.ime_panel.capture_events(&ctx);
 
-        // 音声マスタークロック更新（フォールバック時）
+        // 再生中の場合は音声マスタークロックから playhead を更新
         let current_time = {
             let clock = self.audio_state.clock.read().unwrap();
-            clock.tick_fallback_clock();
             if clock.is_playing() {
+                clock.tick_fallback_clock();
                 ctx.request_repaint();
+                let t = clock.current_time();
+                if let Ok(mut sess) = self.session.lock() {
+                    sess.playhead = t;
+                }
+                t
+            } else {
+                self.session.lock().unwrap().playhead
             }
-            clock.current_time()
         };
 
         // Render Graph 評価 → wgpu Linear f16 テクスチャへアップロード
-        if let (Some(wgpu_state), Some(pipe), Some(scene)) = (
-            frame.wgpu_render_state(),
-            self.preview_pipeline.as_ref(),
-            self.project.active_scene(),
-        ) {
-            let mut preview_scene = scene.clone();
-            preview_scene.width = self.project.settings.width / self.preview_scale.max(1);
-            preview_scene.height = self.project.settings.height / self.preview_scale.max(1);
-            let linear_img = self.render_graph.render_scene(&preview_scene, current_time);
-            pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
+        if let (Some(wgpu_state), Some(pipe)) =
+            (frame.wgpu_render_state(), self.preview_pipeline.as_ref())
+        {
+            let scene_opt = {
+                let sess = self.session.lock().unwrap();
+                sess.project.active_scene().cloned()
+            };
+            if let Some(mut preview_scene) = scene_opt {
+                preview_scene.width /= self.preview_scale.max(1);
+                preview_scene.height /= self.preview_scale.max(1);
+                let linear_img = self.render_graph.render_scene(&preview_scene, current_time);
+                pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
+            }
         }
 
         let mut dock_state = std::mem::replace(&mut self.dock_state, DockState::new(vec![]));
-        let mut viewer = EditorTabViewer {
-            app: self,
-            current_time,
-        };
+        let mut viewer = EditorTabViewer { app: self };
         DockArea::new(&mut dock_state)
             .style(Style::from_egui(ctx.global_style().as_ref()))
             .show_inside(ui, &mut viewer);
@@ -351,8 +464,8 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 860.0])
-            .with_title("Next-Gen Hybrid Video Editor — Phase 1a PoC"),
+            .with_inner_size([1440.0, 880.0])
+            .with_title("Next-Gen Hybrid Video Editor — Phase 1b (NLE + Command Bus + MCP)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

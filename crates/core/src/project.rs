@@ -212,7 +212,11 @@ impl Scene {
             width,
             height,
             fps,
-            layers: vec![Layer::new("Layer 1"), Layer::new("Layer 2"), Layer::new("Layer 3")],
+            layers: vec![
+                Layer::new("Layer 1"),
+                Layer::new("Layer 2"),
+                Layer::new("Layer 3"),
+            ],
         }
     }
 
@@ -279,6 +283,8 @@ impl Project {
     }
 
     pub fn active_scene_mut(&mut self) -> Option<&mut Scene> {
-        self.scenes.iter_mut().find(|s| s.id == self.active_scene_id)
+        self.scenes
+            .iter_mut()
+            .find(|s| s.id == self.active_scene_id)
     }
 }
