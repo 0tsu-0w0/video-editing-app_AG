@@ -142,6 +142,13 @@ impl ProjectFolder {
         Ok(entries)
     }
 
+    /// 正常な `project.json` スナップショット保存後に `history.jsonl` を空にリセットする
+    pub fn clear_history(&self) -> Result<(), FolderError> {
+        let file = fs::File::create(self.history_jsonl_path())?;
+        file.sync_all()?;
+        Ok(())
+    }
+
     /// アセット参照を解決する（安全なプロジェクト内相対パス優先 → 絶対パスフォールバック → オフライン判定）
     pub fn resolve_asset(&self, asset: &AssetRef) -> AssetResolution {
         if let Some(rel) = &asset.relative_path

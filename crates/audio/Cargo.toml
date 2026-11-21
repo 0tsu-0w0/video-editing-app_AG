@@ -17,3 +17,7 @@ cpal = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 cpal.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+uuid.workspace = true

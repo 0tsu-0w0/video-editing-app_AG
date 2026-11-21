@@ -443,4 +443,8 @@ impl Project {
             .iter_mut()
             .find(|s| s.id == self.active_scene_id)
     }
+
+    pub fn asset(&self, id: AssetId) -> Option<&AssetRef> {
+        self.assets.iter().find(|a| a.id == id)
+    }
 }

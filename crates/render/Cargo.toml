@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 ve-core.workspace = true
+ve-media.workspace = true
 ve-audio.workspace = true
 ve-plugin-api.workspace = true
 wgpu.workspace = true
