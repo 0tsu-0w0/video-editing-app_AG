@@ -5,7 +5,10 @@ mod font_picker;
 mod graph_editor;
 mod ime_poc;
 mod inspector_extras;
+mod native_dialog;
+mod preview_canvas;
 mod project_io;
+mod ram_preview;
 mod timeline;
 mod watch_folder;
 
@@ -18,6 +21,8 @@ use font_picker::FontPickerState;
 use graph_editor::GraphEditorState;
 use ime_poc::ImePocPanel;
 use inspector_extras::InspectorExtrasState;
+use preview_canvas::PreviewCanvasState;
+use ram_preview::{RamFrameKey, RamPreviewManager};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -27,8 +32,8 @@ use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand, EffectNode,
     FilterTargetScope, FrameRate, HistoryEntry, Interpolation, ItemKind, Keyframe, Project,
-    ProjectSettings, RationalTime, RgbaColor, ShapeKind, TextAnimator, TimelineItem, TrackMatte,
-    TrackMatteMode, Transform2D,
+    ProjectSettings, RationalTime, RgbaColor, ScenePreset, ShapeKind, TextAnimator, TimelineItem,
+    TrackMatte, TrackMatteMode, Transform2D,
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
@@ -89,6 +94,9 @@ struct EditorApp {
     session: SharedEditorSession,
     mcp_server: Option<EmbeddedMcpServer>,
     mcp_copy_status: String,
+    preview_canvas: PreviewCanvasState,
+    ram_preview: RamPreviewManager,
+    last_ram_cached_hit: bool,
     timeline_state: TimelineState,
     graph_editor: GraphEditorState,
     asset_browser: AssetBrowserPanel,
@@ -118,6 +126,16 @@ struct EditorApp {
     gpu_saturation: f32,
     gpu_blur_radius: f32,
     gpu_glow_intensity: f32,
+    // v0.5 #3: シーン設定モーダル＆自動保存 (backups/ ローテーション)
+    show_scene_settings: bool,
+    scene_edit_width: u32,
+    scene_edit_height: u32,
+    scene_edit_fps: FrameRate,
+    scene_edit_rescale: bool,
+    autosave_enabled: bool,
+    autosave_interval_sec: u64,
+    last_autosave_rev: u64,
+    last_autosave_time: std::time::Instant,
     project_dir_input: String,
     project_status: String,
     pending_recovery: Vec<HistoryEntry>,
@@ -129,7 +147,7 @@ struct EditorApp {
     last_export_snapshot: Option<ExportProgressSnapshot>,
     export_status: String,
     preview_scale: u32,
-    last_rendered_key: Option<(u64, i64, u32, usize, Uuid)>,
+    last_rendered_key: Option<(u64, i64, u32, u32, usize, Uuid)>,
     preview_dirty: bool,
     last_shader_poll: std::time::Instant,
 }
@@ -259,6 +277,9 @@ impl EditorApp {
             session,
             mcp_server,
             mcp_copy_status: String::new(),
+            preview_canvas: PreviewCanvasState::default(),
+            ram_preview: RamPreviewManager::new(),
+            last_ram_cached_hit: false,
             timeline_state: TimelineState::default(),
             graph_editor: GraphEditorState::default(),
             asset_browser: AssetBrowserPanel::new(),
@@ -287,6 +308,15 @@ impl EditorApp {
             gpu_saturation: 1.0,
             gpu_blur_radius: 0.0,
             gpu_glow_intensity: 0.0,
+            show_scene_settings: false,
+            scene_edit_width: 1280,
+            scene_edit_height: 720,
+            scene_edit_fps: FrameRate::FPS_60,
+            scene_edit_rescale: true,
+            autosave_enabled: true,
+            autosave_interval_sec: 60,
+            last_autosave_rev: 0,
+            last_autosave_time: std::time::Instant::now(),
             project_dir_input: "./MyVideoProject".to_string(),
             project_status: "未保存プロジェクト（D&Dで素材読込可）".to_string(),
             pending_recovery: Vec::new(),
@@ -302,6 +332,20 @@ impl EditorApp {
             preview_dirty: true,
             last_shader_poll: std::time::Instant::now(),
         }
+    }
+
+    /// シーン解像度とプレビュー縮小率から、アスペクト比を維持しつつ最大 960px に収まるプレビュー解像度を算出する
+    fn compute_preview_dims(&self, scene_w: u32, scene_h: u32) -> (u32, u32) {
+        let div = self.preview_scale.max(1);
+        let mut pw = (scene_w / div).max(16);
+        let mut ph = (scene_h / div).max(16);
+        let max_side = pw.max(ph);
+        if max_side > 960 {
+            let s = 960.0 / max_side as f64;
+            pw = ((pw as f64 * s).round() as u32).max(16);
+            ph = ((ph as f64 * s).round() as u32).max(16);
+        }
+        (pw, ph)
     }
 
     /// 現在有効な wgpu Ping-Pong ポストプロセス＆カスタム WGSL パス列を構築する
@@ -532,16 +576,14 @@ impl TabViewer for EditorTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             Pane::Preview => {
-                if let Some(tex_id) = self.app.preview_tex_id {
-                    let avail = ui.available_size();
-                    let aspect = 16.0 / 9.0;
-                    let w = avail.x.min(avail.y * aspect).max(160.0);
-                    let h = w / aspect;
-                    ui.centered_and_justified(|ui| {
-                        ui.image(egui::load::SizedTexture::new(tex_id, egui::vec2(w, h)));
-                    });
-                } else {
-                    ui.label("wgpu プレビューテクスチャを初期化できませんでした。");
+                let mut sess = self.app.session.lock().unwrap();
+                if self.app.preview_canvas.show(
+                    ui,
+                    self.app.preview_tex_id,
+                    &mut sess,
+                    self.app.last_ram_cached_hit,
+                ) {
+                    self.app.preview_dirty = true;
                 }
             }
             Pane::Timeline => {
@@ -561,6 +603,17 @@ impl TabViewer for EditorTabViewer<'_> {
                     let fps = sess.project.settings.fps;
                     let frame = sess.playhead.to_frame_floor(fps);
                     let secs = sess.playhead.as_seconds();
+                    let (pw, ph) = sess
+                        .project
+                        .active_scene()
+                        .map(|s| self.app.compute_preview_dims(s.width, s.height))
+                        .unwrap_or((640, 360));
+                    let ram_ranges = self.app.ram_preview.cached_frame_ranges(
+                        sess.bus.revision(),
+                        sess.project.active_scene_id,
+                        pw,
+                        ph,
+                    );
 
                     ui.horizontal_wrapped(|ui| {
                         let (is_playing, cur_rate) = {
@@ -694,10 +747,12 @@ impl TabViewer for EditorTabViewer<'_> {
                     });
 
                     ui.separator();
-                    let pb_action =
-                        self.app
-                            .timeline_state
-                            .show(ui, &mut sess, &self.app.waveforms);
+                    let pb_action = self.app.timeline_state.show(
+                        ui,
+                        &mut sess,
+                        &self.app.waveforms,
+                        &ram_ranges,
+                    );
 
                     match pb_action {
                         TimelinePlaybackAction::ShuttleReverse => {
@@ -1145,6 +1200,14 @@ impl TabViewer for EditorTabViewer<'_> {
                                         let entry =
                                             self.app.relink_inputs.entry(asset.id).or_default();
                                         ui.text_edit_singleline(entry);
+                                        if ui.button("📂").clicked()
+                                            && let Some(p) = native_dialog::pick_file(
+                                                "再リンク先ファイルを選択",
+                                                &[],
+                                            )
+                                        {
+                                            *entry = p.display().to_string();
+                                        }
                                         if ui.button("再リンク").clicked() && !entry.is_empty()
                                         {
                                             asset.fallback_absolute_path =
@@ -1265,6 +1328,12 @@ impl TabViewer for EditorTabViewer<'_> {
 
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.app.custom_wgsl_path_input);
+                        if ui.button("📂").clicked()
+                            && let Some(p) =
+                                native_dialog::pick_file("カスタム WGSL を選択", &["wgsl"])
+                        {
+                            self.app.custom_wgsl_path_input = p.display().to_string();
+                        }
                         if ui.button("監視登録").clicked()
                             && !self.app.custom_wgsl_path_input.trim().is_empty()
                         {
@@ -1434,8 +1503,69 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // 上部バー: Dual-Workspace UX 切替 + プロジェクト開閉・保存・収集 + シーン切替
+        // 定期自動保存（backups/ ローテーション保護）
+        if self.autosave_enabled
+            && self.last_autosave_time.elapsed()
+                >= std::time::Duration::from_secs(self.autosave_interval_sec.max(10))
+        {
+            let maybe_save = {
+                let sess = self.session.lock().unwrap();
+                let rev = sess.bus.revision();
+                if rev != self.last_autosave_rev
+                    && let Some(folder) = sess.folder.clone()
+                {
+                    Some((folder, sess.project.clone(), rev))
+                } else {
+                    None
+                }
+            };
+            self.last_autosave_time = std::time::Instant::now();
+            if let Some((folder, proj, rev)) = maybe_save {
+                match folder.save_auto_backup(&proj, 10) {
+                    Ok(_) => {
+                        self.last_autosave_rev = rev;
+                        self.project_status = "自動バックアップを backups/ へ保存しました".into();
+                    }
+                    Err(e) => {
+                        self.project_status = format!("自動保存エラー: {e}");
+                    }
+                }
+            }
+        }
+
+        // 上部バー: Dual-Workspace UX 切替 + シーン切替 + シーン設定 + RAM先読み + プロジェクト/自動保存
         egui::Panel::top("workspace_switcher_bar").show(ui, |ui| {
+            let (scenes, active_id, cur_w, cur_h, cur_fps, cur_rev, backup_list) = {
+                let s = self.session.lock().unwrap();
+                let list: Vec<(Uuid, String)> = s
+                    .project
+                    .scenes
+                    .iter()
+                    .map(|sc| (sc.id, sc.name.clone()))
+                    .collect();
+                let (w, h, f) = s
+                    .project
+                    .active_scene()
+                    .map(|sc| (sc.width, sc.height, sc.fps))
+                    .unwrap_or((1280, 720, FrameRate::FPS_60));
+                let backups = s
+                    .folder
+                    .as_ref()
+                    .map(|fl| fl.list_backups())
+                    .unwrap_or_default();
+                (
+                    list,
+                    s.project.active_scene_id,
+                    w,
+                    h,
+                    f,
+                    s.bus.revision(),
+                    backups,
+                )
+            };
+            let (pw, ph) = self.compute_preview_dims(cur_w, cur_h);
+            let ram_cnt = self.ram_preview.cached_count(cur_rev, active_id, pw, ph);
+
             ui.horizontal_wrapped(|ui| {
                 ui.strong("空間切替:");
                 if ui
@@ -1459,16 +1589,6 @@ impl eframe::App for EditorApp {
 
                 ui.separator();
                 ui.label("シーン:");
-                let (scenes, active_id) = {
-                    let s = self.session.lock().unwrap();
-                    let list: Vec<(Uuid, String)> = s
-                        .project
-                        .scenes
-                        .iter()
-                        .map(|sc| (sc.id, sc.name.clone()))
-                        .collect();
-                    (list, s.project.active_scene_id)
-                };
                 for (sid, sname) in scenes {
                     if ui.selectable_label(sid == active_id, sname).clicked() && sid != active_id {
                         let mut g = self.session.lock().unwrap();
@@ -1480,18 +1600,47 @@ impl eframe::App for EditorApp {
                             None,
                         );
                         s.selected_items.clear();
+                        self.preview_dirty = true;
                     }
+                }
+                if ui
+                    .button(format!("⚙ {}×{} {:.0}fps", cur_w, cur_h, cur_fps.as_f64()))
+                    .on_hover_text("シーン解像度・FPS・縦動画(9:16)プリセット設定を開く")
+                    .clicked()
+                {
+                    self.scene_edit_width = cur_w;
+                    self.scene_edit_height = cur_h;
+                    self.scene_edit_fps = cur_fps;
+                    self.show_scene_settings = !self.show_scene_settings;
                 }
 
                 ui.separator();
                 if ui
-                    .checkbox(&mut self.render_graph.use_proxies, "軽量プロキシ優先")
+                    .checkbox(&mut self.render_graph.use_proxies, "軽量プロキシ")
                     .changed()
                 {
+                    self.ram_preview.clear();
+                    self.preview_dirty = true;
+                }
+                if ui
+                    .checkbox(
+                        &mut self.ram_preview.enabled,
+                        format!("⚡ RAM先読み ({ram_cnt}枚)"),
+                    )
+                    .changed()
+                {
+                    self.ram_preview.clear();
+                }
+                if ui
+                    .small_button("🧹")
+                    .on_hover_text("RAM プレビューキャッシュをクリア")
+                    .clicked()
+                {
+                    self.ram_preview.clear();
                     self.preview_dirty = true;
                 }
                 ui.weak(format!(
-                    "Cache: hit={} / miss={} | Proxy={}",
+                    "Precomp: {}/{} | Proxy={}",
                     self.render_graph.cache_hits,
                     self.render_graph.cache_misses,
                     self.render_graph.proxy_count()
@@ -1501,8 +1650,16 @@ impl eframe::App for EditorApp {
             ui.horizontal_wrapped(|ui| {
                 ui.label("📁 プロジェクト:");
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.project_dir_input).desired_width(220.0),
+                    egui::TextEdit::singleline(&mut self.project_dir_input).desired_width(200.0),
                 );
+                if ui
+                    .button("📂")
+                    .on_hover_text("OSフォルダ選択ダイアログを開く")
+                    .clicked()
+                    && let Some(dir) = native_dialog::pick_folder("プロジェクトフォルダを選択")
+                {
+                    self.project_dir_input = dir.display().to_string();
+                }
                 if ui.button("新規").clicked() {
                     self.handle_new_project_folder();
                 }
@@ -1514,6 +1671,46 @@ impl eframe::App for EditorApp {
                 }
                 if ui.button("📦 素材収集").clicked() {
                     self.handle_collect_assets();
+                }
+                ui.checkbox(&mut self.autosave_enabled, "自動保存");
+                if !backup_list.is_empty() {
+                    ui.menu_button(
+                        format!("🕰 バックアップ({})", backup_list.len()),
+                        |ui| {
+                            let mut restore_path: Option<PathBuf> = None;
+                            for bp in &backup_list {
+                                let label = bp
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| bp.display().to_string());
+                                if ui.button(label).clicked() {
+                                    restore_path = Some(bp.clone());
+                                    ui.close();
+                                }
+                            }
+                            if let Some(path) = restore_path {
+                                let mut sess = self.session.lock().unwrap();
+                                if let Some(folder) = sess.folder.clone() {
+                                    match folder.load_backup(&path) {
+                                        Ok(restored) => {
+                                            sess.project = restored;
+                                            sess.selected_items.clear();
+                                            self.ram_preview.clear();
+                                            self.preview_dirty = true;
+                                            self.project_status = format!(
+                                                "バックアップから復元しました: {}",
+                                                path.display()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            self.project_status =
+                                                format!("バックアップ復元失敗: {e}");
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
                 }
                 ui.separator();
                 ui.weak(&self.project_status);
@@ -1536,6 +1733,7 @@ impl eframe::App for EditorApp {
                         let mut sess = self.session.lock().unwrap();
                         match CommandBus::replay_history(&mut sess.project, &entries) {
                             Ok(n) => {
+                                self.ram_preview.clear();
                                 self.preview_dirty = true;
                                 self.project_status =
                                     format!("クラッシュ復旧完了: {n} 件の操作を再適用しました");
@@ -1602,50 +1800,135 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // Render Graph 評価＋wgpu Ping-Pong GPU オフロード（アイドル時は完全スキップ）
+        // バックグラウンド RAM プレビュー先読み更新 + wgpu Ping-Pong GPU 描画（動的リサイズ対応）
         let active_gpu_passes = self.build_active_gpu_passes();
-        if let (Some(wgpu_state), Some(pipe)) =
-            (frame.wgpu_render_state(), self.preview_pipeline.as_mut())
-        {
-            if pipe.sync_hot_shaders(&wgpu_state.device, &self.render_graph.hot_shaders) > 0 {
+        let (revision, active_id, scene_w, scene_h, scene_fps, folder_snap) = {
+            let sess = self.session.lock().unwrap();
+            let (sw, sh, sfps) = sess
+                .project
+                .active_scene()
+                .map(|s| (s.width, s.height, s.fps))
+                .unwrap_or((1280, 720, FrameRate::FPS_60));
+            (
+                sess.bus.revision(),
+                sess.project.active_scene_id,
+                sw,
+                sh,
+                sfps,
+                sess.folder.clone(),
+            )
+        };
+        let (pw, ph) = self.compute_preview_dims(scene_w, scene_h);
+        let cur_frame_idx = current_time.to_frame_floor(scene_fps).max(0);
+
+        if self.ram_preview.enabled {
+            let proj_for_ram = self.session.lock().unwrap().project.clone();
+            let proxies = self.render_graph.proxy_paths_snapshot();
+            self.ram_preview.update_target(
+                &proj_for_ram,
+                folder_snap.as_ref(),
+                &proxies,
+                &self.waveforms,
+                self.render_graph.use_proxies,
+                revision,
+                active_id,
+                cur_frame_idx,
+                pw,
+                ph,
+            );
+        }
+
+        if let Some(wgpu_state) = frame.wgpu_render_state() {
+            // シーン解像度・アスペクト比変更時は WgpuPreviewPipeline と egui テクスチャを自動再構築
+            let needs_resize = self
+                .preview_pipeline
+                .as_ref()
+                .is_none_or(|p| p.width != pw || p.height != ph);
+            if needs_resize {
+                let new_pipe = WgpuPreviewPipeline::new(&wgpu_state.device, pw, ph);
+                if let Some(tex_id) = self.preview_tex_id {
+                    wgpu_state
+                        .renderer
+                        .write()
+                        .update_egui_texture_from_wgpu_texture(
+                            &wgpu_state.device,
+                            &new_pipe.output_view,
+                            wgpu::FilterMode::Linear,
+                            tex_id,
+                        );
+                } else {
+                    let tex_id = wgpu_state.renderer.write().register_native_texture(
+                        &wgpu_state.device,
+                        &new_pipe.output_view,
+                        wgpu::FilterMode::Linear,
+                    );
+                    self.preview_tex_id = Some(tex_id);
+                }
+                self.preview_pipeline = Some(new_pipe);
                 self.preview_dirty = true;
             }
-            let (revision, active_id) = {
-                let sess = self.session.lock().unwrap();
-                (sess.bus.revision(), sess.project.active_scene_id)
-            };
-            let render_key = (
-                revision,
-                current_time.ticks,
-                self.preview_scale,
-                self.waveforms.len(),
-                active_id,
-            );
 
-            if self.preview_dirty || self.last_rendered_key != Some(render_key) {
-                let mut proj_clone = {
-                    let sess = self.session.lock().unwrap();
-                    sess.project.clone()
-                };
-                if let Some(s) = proj_clone.active_scene_mut() {
-                    s.width = (s.width / self.preview_scale.max(1)).max(1);
-                    s.height = (s.height / self.preview_scale.max(1)).max(1);
+            if let Some(pipe) = self.preview_pipeline.as_mut() {
+                if pipe.sync_hot_shaders(&wgpu_state.device, &self.render_graph.hot_shaders) > 0 {
+                    self.preview_dirty = true;
                 }
-                if let Some(linear_img) = self.render_graph.render_project_scene(
-                    &proj_clone,
+                let render_key = (
+                    revision,
+                    current_time.ticks,
+                    pw,
+                    ph,
+                    self.waveforms.len(),
                     active_id,
-                    current_time,
-                    false,
-                ) {
-                    pipe.upload_process_and_present(
-                        &wgpu_state.device,
-                        &wgpu_state.queue,
-                        &linear_img,
-                        &active_gpu_passes,
-                        current_time.as_seconds() as f32,
-                    );
-                    self.last_rendered_key = Some(render_key);
-                    self.preview_dirty = false;
+                );
+
+                if self.preview_dirty || self.last_rendered_key != Some(render_key) {
+                    let ram_key = RamFrameKey {
+                        revision,
+                        scene_id: active_id,
+                        frame_idx: cur_frame_idx,
+                        width: pw,
+                        height: ph,
+                    };
+                    let cached_img = if self.ram_preview.enabled {
+                        self.ram_preview.get_frame(ram_key)
+                    } else {
+                        None
+                    };
+                    let rendered = if let Some(hit) = cached_img {
+                        self.last_ram_cached_hit = true;
+                        Some(hit)
+                    } else {
+                        self.last_ram_cached_hit = false;
+                        let proj_clone = self.session.lock().unwrap().project.clone();
+                        self.render_graph
+                            .render_project_scene_scaled(
+                                &proj_clone,
+                                active_id,
+                                current_time,
+                                pw,
+                                ph,
+                                false,
+                            )
+                            .map(|img| {
+                                let arc = Arc::new(img);
+                                if self.ram_preview.enabled {
+                                    self.ram_preview.insert_frame(ram_key, Arc::clone(&arc));
+                                }
+                                arc
+                            })
+                    };
+
+                    if let Some(linear_img) = rendered {
+                        pipe.upload_process_and_present(
+                            &wgpu_state.device,
+                            &wgpu_state.queue,
+                            &linear_img,
+                            &active_gpu_passes,
+                            current_time.as_seconds() as f32,
+                        );
+                        self.last_rendered_key = Some(render_key);
+                        self.preview_dirty = false;
+                    }
                 }
             }
         }
@@ -1656,6 +1939,108 @@ impl eframe::App for EditorApp {
             .style(Style::from_egui(ctx.global_style().as_ref()))
             .show_inside(ui, &mut viewer);
         self.dock_state = dock_state;
+
+        // v0.5 #3: シーン設定モーダル（1080p / 4K / 9:16 Shorts / 1:1 プリセット＋スマートリフレーム）
+        if self.show_scene_settings {
+            let mut open = true;
+            let mut apply_now = false;
+            egui::Window::new("⚙ シーン設定・縦動画プリセット")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    ui.label("ワンクリック プリセット:");
+                    for &preset in ScenePreset::ALL {
+                        let (pw, ph) = preset.dimensions();
+                        let selected = self.scene_edit_width == pw && self.scene_edit_height == ph;
+                        if ui
+                            .selectable_label(selected, preset.display_name())
+                            .clicked()
+                        {
+                            self.scene_edit_width = pw;
+                            self.scene_edit_height = ph;
+                            self.scene_edit_fps = preset.default_fps();
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("幅:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.scene_edit_width)
+                                .range(16..=8192)
+                                .suffix("px"),
+                        );
+                        ui.label("高さ:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.scene_edit_height)
+                                .range(16..=8192)
+                                .suffix("px"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("フレームレート:");
+                        let fps_choices = [
+                            ("23.976 fps", FrameRate::FPS_23_976),
+                            ("24 fps", FrameRate::FPS_24),
+                            ("29.97 fps", FrameRate::FPS_29_97),
+                            ("30 fps", FrameRate::FPS_30),
+                            ("60 fps", FrameRate::FPS_60),
+                        ];
+                        let cur_label = format!("{:.3} fps", self.scene_edit_fps.as_f64());
+                        egui::ComboBox::from_id_salt("scene_settings_fps_combo")
+                            .selected_text(cur_label)
+                            .show_ui(ui, |ui| {
+                                for (lbl, f) in fps_choices {
+                                    ui.selectable_value(&mut self.scene_edit_fps, f, lbl);
+                                }
+                            });
+                    });
+                    ui.checkbox(
+                        &mut self.scene_edit_rescale,
+                        "既存アイテムの座標・サイズを自動リフレーム（比率追従）",
+                    );
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("✅ 適用 (Ctrl+Z で元に戻せます)").clicked() {
+                            apply_now = true;
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            self.show_scene_settings = false;
+                        }
+                    });
+                });
+            if !open {
+                self.show_scene_settings = false;
+            }
+            if apply_now {
+                let mut g = self.session.lock().unwrap();
+                let s = &mut *g;
+                if s.bus
+                    .execute(
+                        &mut s.project,
+                        EditCommand::SetSceneSettings {
+                            width: self.scene_edit_width,
+                            height: self.scene_edit_height,
+                            fps: self.scene_edit_fps,
+                            rescale_items: self.scene_edit_rescale,
+                        },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    self.ram_preview.clear();
+                    self.preview_dirty = true;
+                    self.project_status = format!(
+                        "シーン設定を変更しました: {}×{} ({:.2}fps)",
+                        self.scene_edit_width,
+                        self.scene_edit_height,
+                        self.scene_edit_fps.as_f64()
+                    );
+                    self.show_scene_settings = false;
+                }
+            }
+        }
 
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
@@ -1683,7 +2068,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v0.4.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v0.5.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

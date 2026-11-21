@@ -1,53 +1,85 @@
-# 今後の機能追加ロードマップ（Future Features Backlog）
+# 機能追加ロードマップ（Future Features Roadmap）
 
-> 更新日: 2026-11-20  
-> Phase 1〜4・最適化/セキュリティ強化（PR #5）・実メディア描画＆非同期書き出し（PR #6）・v0.3（AviUtl2 本体実用機能 A-1〜A-6 ＋ 人気プラグイン相当機能 B-1〜B-7 ＋ #4 字幕リッチ装飾、PR #7）に続き、**v0.4 で残バックログ（#3・#5・#6・#7・#8）をすべて実装完了しました。**
-
----
-
-## 3. ~~無音区間自動カット（ジェットカット / Jump Cut）~~ ✅ 実装済み（v0.4）
-
-- `ve-core`: `JumpCutConfig`, `SpeechInterval`, `detect_speech_intervals_from_rms`, `build_jump_cut_commands`（音声レイヤー＋連動する映像・字幕・立ち絵レイヤーを一括カット＆左詰め、1回の `Ctrl+Z` で復元可能な `EditCommand::Batch` 生成）。
-- `ve-app`: タイムラインツールバーに「⚡ 無音カット」展開パネルを実装（解析対象レイヤー・RMS閾値・最小無音長・語頭/語尾マージン・連動リップルレイヤー指定、`AudioGraph` 実波形および `WaveformPeaks` フォールバック対応）。
-- `ve-mcp`: 内蔵 MCP ツール `auto_jump_cut` を追加。
+> 更新日: 2026-11-21  
+> **v0.1〜v0.4 完了済み**: コアエンジン・AE融合・音声AI/立ち絵/3D・PSD/WGSL/プラグイン・最適化/セキュリティ・実メディア描画＆非同期書き出し・AviUtl2実用機能群・無音自動カット・`wgpu` GPUオフロード・Claude差分UI＆MCP強化・キーボードショートカット完全化・GitHub Releases 自動配布パイプライン。  
+> 以下に **v0.5〜v0.7+ の全 10 実装案** を優先度順に整理しています。
 
 ---
 
-## 4. ~~字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景）＆ プリセット管理~~ ✅ 実装済み（v0.3）
+## 🥇 v0.5（✅ 実装済み）：日常編集のボトルネック解消・直感操作
 
-- `TextStyle`（縁取り・ドロップシャドウ・角丸座布団背景）、AviUtl2 インライン制御文字（`<#RRGGBB>`, `<@パレット名>`, `<s64>`, `<fFont>`, `<b1>`, `</>`）、名前付きカラーパレット、および `aliases/*.json` エイリアス棚として実装完了。
+### 1. ~~プレビュー画面上の直接操作（Transform Gizmo ＆ ガイド線）~~ ✅ 実装済み（v0.5）
+- **目的**: 位置・拡大縮小・回転を数値入力に頼らずプレビューキャンバス上で直感操作できるようにする。
+- **実装内容**:
+  - プレビュー上の直接クリックによるアイテム選択（ヒットテスト）
+  - 選択中アイテムのバウンディングボックス・四隅スケールハンドル（`Shift` で縦横比維持）・回転ハンドル（`Shift` で 15° スナップ）・中心アンカー表示
+  - 中央スナップ＆セーフマージン吸着ガイド線（シアン）、アクション/タイトルセーフ枠、3分割グリッド、縦動画（9:16）向け Shorts/TikTok UI 被り警告ガイド
+  - プレビューのズーム（ホイール / フィット / 50% / 100% / 150% / 200%）＆中ドラッグ／Altドラッグパン
+  - `ve-render`: `Transform2D::rotation_deg` の線形空間バイリニア回転描画と、`render_project_scene_scaled` によるシーン解像度→プレビュー解像度の 1:1 座標スケーリング
+  - すべてのドラッグ編集を `EditCommand::SetTransform`（Coalescing 1ステップ Undo）で実行
 
----
+### 2. ~~動画デコード高速化 ＆ RAM プレビュー（バックグラウンド先読みキャッシュ）~~ ✅ 実装済み（v0.5）
+- **目的**: 1080p / 4K 60fps 動画の連続再生・スクラブ時のフレーム落ちを劇的に軽減する。
+- **実装内容**:
+  - `ve-media`: 常駐 FFmpeg パイプによる連続デコーダ `VideoStreamDecoder` を追加し、連続フレーム再生時の毎フレームプロセス起動を排除
+  - `ve-render`: `RenderGraph` に常駐動画ストリームキャッシュを統合
+  - `ve-app`: 専用ワーカースレッドによるバックグラウンド先読みリングキャッシュ `RamPreviewManager`（AE 風の緑色キャッシュ済みバーをタイムラインルーラー下へリアルタイム表示、編集リビジョン変更時は即座に破棄・再先読み）
 
-## 5. ~~カスタム WGSL シェーダー＆エフェクトの `wgpu` GPU オフロード~~ ✅ 実装済み（v0.4）
-
-- `ve-render`: `WgpuPreviewPipeline` に `Rgba16Float` の Ping-Pong テクスチャ 2 枚と共通 48-byte `GpuEffectUniform`（`params[8]`, `resolution`, `time_sec`、先頭 16 バイトが既存 WGSL と完全互換）を追加。
-- `ShaderHotReloader`: `naga` によるフラグメントエントリポイント自動抽出し、ホットリロード時に `wgpu::RenderPipeline` を自動再構築（構文エラー時は直前の正常パイプラインを保持）。
-- `HeadlessGpuOffloader`: オフスクリーン書き出し時のヘッドレス `wgpu::Device` GPU ポストプロセス＆リードバックを実装（GPU 非搭載環境では CPU `RenderGraph` へシームレスに自動フォールバック）。
-- `ve-app`: インスペクタに GPU オフロード有効化・アクティブ WGSL 選択・強度/色調/2-Passブラー/グロー調整 UI を実装し、プレビューとバックグラウンド書き出しの両方へ接続。
-
----
-
-## 6. ~~Claude 字幕文脈補正 UI（差分確認）＆ MCP ワークフロー強化~~ ✅ 実装済み（v0.4）
-
-- `ve-app` (`AudioAi3DPanel`): 「✨ Claude で字幕を文脈補正」（`CloudUploadGuard` 確認ガード付き）およびオフライン「📝 自動改行プレビュー」を追加。Before / After 差分テーブルで各行を個別編集・チェック選択でき、`EditCommand::Batch` による 1 ステップ Undo で一括適用可能。
-- `ve-app` (`Inspector`): 「📋 MCPクライアント設定JSONをコピー」ボタンを追加（`EmbeddedMcpServer::client_config_json()` で現在の `127.0.0.1:<port>/mcp` と Bearer トークンを整形コピー）。
-- `ve-mcp`: 新ツール `auto_jump_cut`, `refine_subtitles`（オフライン日本語改行／Claude文脈補正対応）, `import_media`, `manage_markers`（追加・削除・一覧・YouTubeチャプター出力）, `start_export`（`user_confirmed: true` 必須確認ガード＋出力ファイル名サニタイズ付き）を実装。
-
----
-
-## 7. ~~キーボードショートカット完全化＆タイムライン操作性向上~~ ✅ 実装済み（v0.4）
-
-- `Space`: 再生 / 一時停止トグル（シャトル速度 1x リセット）
-- `←` / `→`（`Shift` で 10 フレーム）: フレーム単位ステップ移動
-- `J` / `K` / `L`: 逆再生・停止・倍速シャトル再生（`-4x / -2x / -1x / 0 / 1x / 2x / 4x`、`AudioMasterClock` ロックフリー原子レート対応）
-- `Ctrl + マウスホイール`: 再生ヘッド中心のタイムラインズーム（スクロールオフセット自動補正）
-- `M`: ラベル・色付きタイムラインマーカー追加（ルーラー上の旗クリックでジャンプ／右クリックで削除、ミニマップ表示、「📋 YouTubeチャプター」一括コピー対応）
-- 空トラックドラッグによる複数クリップ矩形選択（ラバーバンド選択）、複数選択クリップ同時ドラッグ移動（1 ステップ Undo 結合）、およびリップル削除（`Shift+Delete` / ツールバーボタン）。
+### 3. ~~シーン設定 UI（1080p / 4K / 9:16 縦動画プリセット）・OS ネイティブファイル選択・自動保存~~ ✅ 実装済み（v0.5）
+- **目的**: YouTube 本編・Shorts/TikTok 縦動画・正方形 SNS 動画への即座の切替、パス手入力からの脱却、および長時間編集時の自動バックアップ保護を実現する。
+- **実装内容**:
+  - `ve-core`: `ScenePreset`（720p / 1080p / 4K / 9:16 Shorts / 1:1 Square）および `EditCommand::SetSceneSettings`（比率変更時のアイテム座標・サイズ自動リフレーム＋1 ステップ Undo 対応）
+  - `ve-app`: シーン設定モーダル、`WgpuPreviewPipeline` の解像度動的リサイズ＆実アスペクト比描画、純 Rust ゼロ依存 OS ネイティブファイル／フォルダ選択ダイアログ（Windows 11 PowerShell WinForms / Linux `zenity`・`kdialog`）、および `backups/` ローテーション付き自動保存（Auto-Save）＆復元メニュー
+  - `ve-mcp`: AI エージェントからも解像度・縦動画リフレーム可能な `set_scene_settings` ツールを追加
 
 ---
 
-## 8. ~~GitHub Releases 自動配布パイプライン（Windows 11 / Linux）~~ ✅ 実装済み（v0.4）
+## 🥈 v0.6（中期）：解説・実況・ショート動画の生産性を跳ね上げる機能
 
-- `.github/workflows/release.yml` を追加（`push: tags: ['v*']` および手動 `workflow_dispatch` で起動）。
-- `windows-latest` で `ve-app-windows-x64.zip` + `.sha256`、`ubuntu-latest` で `ve-app-linux-x64.tar.gz` + `.sha256` を自動パッケージングし、`SHA256SUMS.txt` とともに GitHub Release へ自動公開。
+### 4. BGM 自動ダッキング（サイドチェイン音量減衰）＆ オーディオリアクティブ
+- **既存フック**: `crates/audio/src/mixer.rs`, `crates/audio/src/dsp.rs`, `crates/audio/src/waveform.rs`
+- **設計メモ**:
+  - 発話レイヤー（声）の RMS エンベロープをサイドチェイン入力とし、アタック／リリース付きで BGM レイヤーの音量を自動減衰するダッカー DSP
+  - FFT 帯域解析（Low / Mid / High）によるオーディオスペクトラムオブジェクト描画と、音量・ビート連動のパラメータエクスプレッション（`wiggle`, `audio_band("low")`）
+
+### 5. 台本（Markdown / CSV）→ タイムライン一括自動生成（ゆっくり・解説動画量産モード）
+- **既存フック**: `crates/ai/src/tts.rs`, `crates/render/src/psd_sprite.rs`, `crates/mcp/src/tools.rs`
+- **設計メモ**:
+  - `話者, セリフ, 表情, 背景画像` 形式の CSV / Markdown 台本を読み込み、TTS 音声生成・字幕配置・話者別スタイル適用・PSD 表情差分切替・セリフ間ポーズ調整を 1 アクション（GUI＋MCP）で一括組み立て
+
+### 6. SRT / ASS 字幕入出力 ＆ 他ソフト互換（AviUtl `.exo` / OpenTimelineIO）
+- **既存フック**: `crates/ai/src/transcribe.rs` (`parse_srt_segments`), `crates/core/src/project.rs`
+- **設計メモ**:
+  - YouTube 字幕アップロード直結の `.srt` / `.ass` インポート＆エクスポート
+  - AviUtl `.exo`（テキスト・音声・基本図形・座標・文字色）の簡易変換インポートおよび OpenTimelineIO / FCPXML 基礎出力
+
+### 7. レンダーキュー（バッチ連続書き出し）
+- **既存フック**: `crates/app/src/exporter.rs` (`ExportJobHandle`)
+- **設計メモ**:
+  - 複数シーン・複数フォーマット（例: 本編 16:9 MP4 ＋ 切り抜き 9:16 MP4 ＋ 音声 WAV ＋ SRT 字幕）をキューへ積み、順次バックグラウンド書き出し＆完了通知
+
+---
+
+## 🥉 v0.7+（長期・差別化）：上級映像表現 ＆ エコシステム拡張
+
+### 8. 自由ベジェマスク ＆ 自動モーショントラッキング（顔モザイク・テロップ追従）
+- **設計メモ**:
+  - プレビュー上で頂点・ベジェハンドルを編集できる多角形／曲線マスク（フェザー・反転・加算減算対応）
+  - テンプレートマッチング／オプティカルフロー（純 Rust）による 1 ポイント自動追従。結果を通常の `x`/`y` キーフレームとして焼き込み、後から手動微調整も可能にする
+
+### 9. WASM（WebAssembly）動的プラグインロード
+- **既存フック**: `crates/plugin-api/src/lib.rs`
+- **設計メモ**:
+  - ネイティブ DLL の `unsafe`・OS 依存・クラッシュ波及を排除し、`plugins/*.wasm` を置くだけで安全にサードパーティ製エフェクト／タイムラインジェネレータを動的ロード＆ホットリロードできるサンドボックス基盤
+
+### 10. AI ハイライト自動抽出 ＆ ショート動画自動切り抜き
+- **既存フック**: `crates/core/src/timeline_ops.rs`, `crates/ai/src/transcribe.rs`, `crates/mcp/src/tools.rs`
+- **設計メモ**:
+  - 音声ピーク（盛り上がり）・発話密度・字幕文脈・マーカーを複合評価して見どころ区間を自動提案し、9:16 縦動画シーンへ自動カット＆字幕リレイアウトする GUI＋MCP ワークフロー（`extract_highlights`）
+
+---
+
+## ✅ 実装完了アーカイブ（v0.3〜v0.4）
+
+- **v0.3**: AviUtl2 本体実用機能 A-1〜A-6（カラーパレット・インライン制御文字・レイヤー常駐設定・シーンチェンジ・再生速度/逆再生/ループ・実務頻出フィルタ）、人気プラグイン相当機能 B-1〜B-7（整列/隙間詰め/ミニマップ・フォントピッカー・音声DSP/LUFS・エイリアス棚・検索置換・フォルダ監視・演出プリセット）、字幕リッチ装飾（#4）
+- **v0.4**: 無音区間自動カット（#3）、`wgpu` Ping-Pong GPU オフロード＆ヘッドレス書き出し（#5）、Claude 字幕差分 UI＆MCP ツール拡張（#6）、キーボードショートカット＆マーカー＆ラバーバンド選択＆一括移動＆リップル削除（#7）、GitHub Releases 自動配布パイプライン（#8）

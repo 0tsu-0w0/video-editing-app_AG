@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0] - 2026-11-21
+
+プレビュー直感操作・動画デコード高速化＆RAM先読み・縦動画プリセット／OSネイティブファイル選択／自動保存を実装しました。
+
+### #1 プレビュー画面上の直接操作（Transform Gizmo ＆ ガイド線）
+* `PreviewCanvasState`: プレビュー上の直接クリック選択、バウンディングボックス・4隅スケールハンドル（`Shift` で比率維持）・回転ハンドル（`Shift` で 15° スナップ）・中央＆セーフマージン吸着ガイド線・3分割グリッド・9:16 Shorts/TikTok UI 被り警告エリア・ホイールズーム＆中ドラッグパンを実装（すべて `EditCommand::SetTransform` Coalescing 1ステップ Undo 対応）
+* `ve-render`: `Transform2D::rotation_deg` の線形空間バイリニア回転描画と `render_project_scene_scaled`（シーン座標とプレビュー描画の 1:1 一致）を実装
+
+### #2 動画デコード高速化 ＆ RAM プレビュー（バックグラウンド先読みキャッシュ）
+* `ve-media` / `ve-render`: 常駐 FFmpeg パイプによる連続フレームデコーダ `VideoStreamDecoder` を `RenderGraph` へ統合し、毎フレームプロセス起動を排除
+* `ve-app`: 専用ワーカースレッド先読みキャッシュ `RamPreviewManager`（最大 96 フレーム LRU・リビジョン更新時自動破棄）と、タイムラインルーラー下への AE 風緑色キャッシュ済みバー描画を実装
+
+### #3 シーン設定 UI（1080p / 4K / 9:16 縦動画）・OS ネイティブファイル選択・自動保存
+* `ve-core` / `ve-mcp`: `ScenePreset`（720p / 1080p / 4K / 9:16 Shorts / 1:1 Square）および `EditCommand::SetSceneSettings`（自動リフレーム＋Undo 対応）、MCP ツール `set_scene_settings` を追加
+* `ve-app`: シーン設定モーダルと `WgpuPreviewPipeline` の解像度動的リサイズ、ゼロ依存 OS ネイティブファイル／フォルダ選択ダイアログ（Windows PowerShell WinForms / Linux `zenity`・`kdialog`）、および `backups/` ローテーション付き定期自動保存＆復元メニューを実装
+
 ## [0.4.0] - 2026-11-21
 
 ロードマップ残バックログ（#3・#5・#6・#7・#8）をすべて実装完了しました。

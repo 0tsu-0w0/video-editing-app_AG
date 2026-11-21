@@ -196,6 +196,12 @@ impl AudioAi3DPanel {
                                 if ui.text_edit_singleline(&mut psd_str).changed() {
                                     psd.psd_path = PathBuf::from(psd_str.trim());
                                 }
+                                if ui.button("📂").clicked()
+                                    && let Some(p) =
+                                        crate::native_dialog::pick_file("PSD立ち絵を選択", &["psd"])
+                                {
+                                    psd.psd_path = p;
+                                }
                             });
                             let mut eye_open = psd.eye_open_layer.clone().unwrap_or_default();
                             ui.horizontal(|ui| {
@@ -347,6 +353,14 @@ impl AudioAi3DPanel {
             ui.label("A. ファイルペア自動取込 (voice.wav + 同名 .txt / .lab):");
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut self.tts_pair_wav_path);
+                if ui.button("📂").clicked()
+                    && let Some(p) = crate::native_dialog::pick_file(
+                        "TTS音声ファイルを選択",
+                        &["wav", "mp3", "flac"],
+                    )
+                {
+                    self.tts_pair_wav_path = p.display().to_string();
+                }
                 if ui.button("一括取込").clicked() && !self.tts_pair_wav_path.trim().is_empty()
                 {
                     self.import_pair(session, waveforms);
@@ -454,10 +468,26 @@ impl AudioAi3DPanel {
             ui.horizontal(|ui| {
                 ui.label("WAVパス:");
                 ui.text_edit_singleline(&mut self.transcribe_wav_path);
+                if ui.button("📂").clicked()
+                    && let Some(p) = crate::native_dialog::pick_file(
+                        "文字起こし音声を選択",
+                        &["wav", "mp3", "m4a", "flac"],
+                    )
+                {
+                    self.transcribe_wav_path = p.display().to_string();
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Whisperモデル:");
                 ui.text_edit_singleline(&mut self.whisper_model_path);
+                if ui.button("📂").clicked()
+                    && let Some(p) = crate::native_dialog::pick_file(
+                        "Whisperモデル (.bin) を選択",
+                        &["bin", "gguf"],
+                    )
+                {
+                    self.whisper_model_path = p.display().to_string();
+                }
             });
 
             let est = self

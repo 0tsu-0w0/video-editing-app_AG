@@ -763,6 +763,59 @@ pub struct ProjectSettings {
     pub cache_max_bytes: u64,
 }
 
+/// 動画サイズ・アスペクト比プリセット（横動画 / 4K / YouTube Shorts・TikTok 縦動画 / 正方形）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenePreset {
+    Hd720,
+    FullHd1080,
+    Uhd4k,
+    Shorts9x16,
+    Square1x1,
+}
+
+impl ScenePreset {
+    pub const ALL: &'static [Self] = &[
+        Self::Hd720,
+        Self::FullHd1080,
+        Self::Uhd4k,
+        Self::Shorts9x16,
+        Self::Square1x1,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Hd720 => "HD 720p (1280×720 / 16:9)",
+            Self::FullHd1080 => "Full HD 1080p (1920×1080 / 16:9)",
+            Self::Uhd4k => "4K UHD (3840×2160 / 16:9)",
+            Self::Shorts9x16 => "📱 Shorts / TikTok 縦 (1080×1920 / 9:16)",
+            Self::Square1x1 => "⬜ 正方形 SNS (1080×1080 / 1:1)",
+        }
+    }
+
+    pub fn dimensions(self) -> (u32, u32) {
+        match self {
+            Self::Hd720 => (1280, 720),
+            Self::FullHd1080 => (1920, 1080),
+            Self::Uhd4k => (3840, 2160),
+            Self::Shorts9x16 => (1080, 1920),
+            Self::Square1x1 => (1080, 1080),
+        }
+    }
+
+    pub fn default_fps(self) -> FrameRate {
+        match self {
+            Self::Uhd4k => FrameRate::FPS_30,
+            _ => FrameRate::FPS_60,
+        }
+    }
+
+    pub fn is_vertical(self) -> bool {
+        let (w, h) = self.dimensions();
+        h > w
+    }
+}
+
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {

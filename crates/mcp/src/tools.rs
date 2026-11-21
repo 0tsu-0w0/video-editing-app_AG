@@ -35,7 +35,7 @@ fn finite_clamped(val: Option<&Value>, default: f64, min: f64, max: f64) -> f64 
 }
 
 pub fn tool_definitions() -> Value {
-    json!([
+    let mut tools = match json!([
         {
             "name": "get_project_summary",
             "description": "プロジェクトの解像度・FPS・尺・シーン・レイヤー概要を取得する",
@@ -401,7 +401,12 @@ pub fn tool_definitions() -> Value {
                     "preset": { "type": "string", "enum": ["slide_in_left", "slide_in_bottom", "fade_in_out", "pop_bounce", "zoom_in", "impact_shake"] }
                 }
             }
-        },
+        }
+    ]) {
+        Value::Array(arr) => arr,
+        _ => Vec::new(),
+    };
+    if let Value::Array(extra) = json!([
         {
             "name": "auto_jump_cut",
             "description": "音声レイヤーの無音区間を自動検出し、連動レイヤーごと一括ジェットカット（1 Undo単位）を実行する",
@@ -468,8 +473,25 @@ pub fn tool_definitions() -> Value {
                     "file_name": { "type": "string", "default": "mcp_export" }
                 }
             }
+        },
+        {
+            "name": "set_scene_settings",
+            "description": "アクティブシーンの解像度・FPS・縦動画プリセット(9:16等)を変更し、任意でアイテム座標を自動リフレームする（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "preset": { "type": "string", "enum": ["hd720", "full_hd1080", "uhd4k", "shorts_9x16", "square_1x1"] },
+                    "width": { "type": "integer" },
+                    "height": { "type": "integer" },
+                    "fps": { "type": "number" },
+                    "rescale_items": { "type": "boolean", "default": true }
+                }
+            }
         }
-    ])
+    ]) {
+        tools.extend(extra);
+    }
+    Value::Array(tools)
 }
 
 fn parse_time_arg(
@@ -608,21 +630,22 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
         "render_frame_preview" => {
             let t = parse_time_arg(args, "frame", "seconds", fps, guard.playhead);
             let scale = finite_clamped(args.get("scale"), 0.5, 0.1, 1.0);
-            let mut proj_clone = guard.project.clone();
+            let proj_clone = guard.project.clone();
             let active_id = proj_clone.active_scene_id;
             let (out_w, out_h) = {
                 let s = proj_clone
-                    .active_scene_mut()
+                    .active_scene()
                     .ok_or_else(|| "no active scene".to_string())?;
-                s.width = ((s.width as f64) * scale).round().clamp(16.0, 4096.0) as u32;
-                s.height = ((s.height as f64) * scale).round().clamp(16.0, 4096.0) as u32;
-                (s.width, s.height)
+                (
+                    ((s.width as f64) * scale).round().clamp(16.0, 4096.0) as u32,
+                    ((s.height as f64) * scale).round().clamp(16.0, 4096.0) as u32,
+                )
             };
             drop(guard);
 
             let mut rg = RenderGraph::new();
             let linear = rg
-                .render_project_scene(&proj_clone, active_id, t, false)
+                .render_project_scene_scaled(&proj_clone, active_id, t, out_w, out_h, false)
                 .ok_or_else(|| "failed to render scene".to_string())?;
             let rgba8 = linear.to_rgba8_srgb();
             let png_bytes = encode_rgba8_to_png(out_w, out_h, &rgba8)?;
@@ -2013,6 +2036,75 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 "content": [{
                     "type": "text",
                     "text": json!({"exported": output_path.display().to_string(), "format": fmt_str}).to_string()
+                }]
+            }))
+        }
+        "set_scene_settings" => {
+            let cur = guard
+                .project
+                .active_scene()
+                .ok_or_else(|| "no active scene".to_string())?;
+            let (mut width, mut height, mut new_fps) = (cur.width, cur.height, cur.fps);
+            if let Some(preset_str) = args.get("preset").and_then(Value::as_str) {
+                let preset = match preset_str {
+                    "hd720" => ve_core::ScenePreset::Hd720,
+                    "full_hd1080" => ve_core::ScenePreset::FullHd1080,
+                    "uhd4k" => ve_core::ScenePreset::Uhd4k,
+                    "shorts_9x16" => ve_core::ScenePreset::Shorts9x16,
+                    "square_1x1" => ve_core::ScenePreset::Square1x1,
+                    other => return Err(format!("unknown preset: {other}")),
+                };
+                let (pw, ph) = preset.dimensions();
+                width = pw;
+                height = ph;
+                new_fps = preset.default_fps();
+            }
+            if let Some(w) = args.get("width").and_then(Value::as_u64) {
+                width = (w as u32).clamp(16, 8192);
+            }
+            if let Some(h) = args.get("height").and_then(Value::as_u64) {
+                height = (h as u32).clamp(16, 8192);
+            }
+            if let Some(f) = args.get("fps").and_then(Value::as_f64) {
+                new_fps = if (f - 23.976).abs() < 0.05 {
+                    FrameRate::FPS_23_976
+                } else if (f - 24.0).abs() < 0.1 {
+                    FrameRate::FPS_24
+                } else if (f - 29.97).abs() < 0.05 {
+                    FrameRate::FPS_29_97
+                } else if (f - 30.0).abs() < 0.1 {
+                    FrameRate::FPS_30
+                } else {
+                    FrameRate::FPS_60
+                };
+            }
+            let rescale_items = args
+                .get("rescale_items")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let s = &mut *guard;
+            s.bus
+                .execute(
+                    &mut s.project,
+                    EditCommand::SetSceneSettings {
+                        width,
+                        height,
+                        fps: new_fps,
+                        rescale_items,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "width": width,
+                        "height": height,
+                        "fps": new_fps.as_f64(),
+                        "rescale_items": rescale_items
+                    }).to_string()
                 }]
             }))
         }
