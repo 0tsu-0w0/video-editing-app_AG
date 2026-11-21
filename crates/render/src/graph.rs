@@ -1,22 +1,31 @@
 use crate::color::{LinearImage, LinearPremul};
+use crate::sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
 use crate::text::TextRenderer;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use uuid::Uuid;
+use ve_audio::WaveformPeaks;
 use ve_core::{
-    BlendMode, EffectNode, FilterTargetScope, ItemKind, PrecompCacheManager, Project, RationalTime,
-    RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D, content_hash_hex,
+    BlendMode, CharacterSpriteConfig, EffectNode, FilterTargetScope, ItemKind, LipSyncMode,
+    MouthShape, PrecompCacheManager, Project, RationalTime, RgbaColor, Scene, SceneId, ShapeKind,
+    TimelineItem, Transform2D, content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png,
+    rms_to_mouth,
 };
 
 /// 組み込み WGSL エフェクトチェーンシェーダーソース
 pub const EFFECTS_WGSL_SOURCE: &str = include_str!("shaders/effects.wgsl");
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
-/// 1. 各オブジェクトのキーフレーム評価・個別エフェクトチェーン適用（Precomp はハッシュキャッシュ利用）
-/// 2. グループ制御・トラックマット・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）適用
-/// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode）
+/// 1. 各オブジェクトのキーフレーム評価・立ち絵口パク・3Dカメラ透視投影/DoF・個別エフェクトチェーン適用
+/// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）適用
+/// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）
 pub struct RenderGraph {
     text_renderer: TextRenderer,
     mem_precomp_cache: HashMap<String, LinearImage>,
     disk_precomp_cache: Option<PrecompCacheManager>,
+    png_cache: HashMap<PathBuf, LinearImage>,
+    /// 音声アセットIDごとの事前解析波形（立ち絵の音量連動口パク参照用）
+    pub asset_waveforms: HashMap<Uuid, WaveformPeaks>,
     pub cache_hits: u64,
     pub cache_misses: u64,
 }
@@ -33,6 +42,8 @@ impl RenderGraph {
             text_renderer: TextRenderer::new(),
             mem_precomp_cache: HashMap::new(),
             disk_precomp_cache: None,
+            png_cache: HashMap::new(),
+            asset_waveforms: HashMap::new(),
             cache_hits: 0,
             cache_misses: 0,
         }
@@ -41,6 +52,10 @@ impl RenderGraph {
     pub fn with_disk_cache(mut self, manager: PrecompCacheManager) -> Self {
         self.disk_precomp_cache = Some(manager);
         self
+    }
+
+    pub fn register_waveform(&mut self, asset_id: Uuid, peaks: WaveformPeaks) {
+        self.asset_waveforms.insert(asset_id, peaks);
     }
 
     pub fn render_scene(&mut self, scene: &Scene, time: RationalTime) -> LinearImage {
@@ -74,25 +89,27 @@ impl RenderGraph {
     ) -> LinearImage {
         let w = scene.width.max(1);
         let h = scene.height.max(1);
-        let mut layer_outputs: Vec<Option<(LinearImage, BlendMode)>> =
+        let mut layer_outputs: Vec<Option<(LinearImage, BlendMode, f32)>> =
             vec![None; scene.layers.len()];
         let mut filter_passes: Vec<(usize, String, FilterTargetScope, BTreeMap<String, f32>)> =
             Vec::new();
         let mut group_passes: Vec<(usize, usize, Transform2D)> = Vec::new();
 
-        // Step 1: 各レイヤーのアクティブオブジェクトを描画し、オブジェクト個別エフェクトチェーンを適用
+        // Step 1: 各レイヤーのアクティブオブジェクトを描画し、個別エフェクト・3Dカメラ透視投影/DoFを適用
         for (layer_idx, layer) in scene.layers.iter().enumerate() {
             if !layer.visible {
                 continue;
             }
             let mut layer_buf: Option<LinearImage> = None;
             let mut layer_blend = BlendMode::Normal;
+            let mut layer_depth = 1000.0_f32;
 
             for item in &layer.items {
                 if !item.contains(time) {
                     continue;
                 }
                 let tf = item.eval_transform(time);
+                let tf3d = item.eval_transform_3d(time);
                 match &item.kind {
                     ItemKind::FilterObject {
                         effect_type,
@@ -111,16 +128,51 @@ impl RenderGraph {
                     }
                     _ => {
                         if let Some(mut item_img) =
-                            self.render_item(project, item, &tf, time, w, h, depth)
+                            self.render_item(project, scene, item, &tf, time, w, h, depth)
                         {
                             apply_effect_chain(&mut item_img, &item.effect_chain);
+
+                            let (mut draw_x, mut draw_y) = (tf.x, tf.y);
+                            if scene.camera.enabled && tf3d.enable_3d {
+                                let cx = w as f32 * 0.5;
+                                let cy = h as f32 * 0.5;
+                                let item_cx = tf.x + item_img.width as f32 * 0.5 - cx;
+                                let item_cy = tf.y + item_img.height as f32 * 0.5 - cy;
+                                let Some(proj) = scene.camera.project(item_cx, item_cy, tf3d.z, h)
+                                else {
+                                    continue;
+                                };
+                                layer_depth = proj.camera_depth;
+                                let yaw_scale =
+                                    tf3d.rotation_y_deg.to_radians().cos().abs().max(0.05);
+                                let pitch_scale =
+                                    tf3d.rotation_x_deg.to_radians().cos().abs().max(0.05);
+                                let scaled_w =
+                                    ((item_img.width as f32) * proj.perspective_scale * yaw_scale)
+                                        .round()
+                                        .clamp(1.0, (w * 4) as f32)
+                                        as u32;
+                                let scaled_h = ((item_img.height as f32)
+                                    * proj.perspective_scale
+                                    * pitch_scale)
+                                    .round()
+                                    .clamp(1.0, (h * 4) as f32)
+                                    as u32;
+                                item_img = scale_linear_image(&item_img, scaled_w, scaled_h);
+                                if proj.dof_blur_radius > 0 {
+                                    box_blur_separable(&mut item_img, proj.dof_blur_radius);
+                                }
+                                draw_x = cx + proj.screen_offset_x - item_img.width as f32 * 0.5;
+                                draw_y = cy + proj.screen_offset_y - item_img.height as f32 * 0.5;
+                            }
+
                             let dst = layer_buf.get_or_insert_with(|| {
                                 LinearImage::new(w, h, LinearPremul::TRANSPARENT)
                             });
                             dst.blend_with_mode(
                                 &item_img,
-                                tf.x.round() as i32,
-                                tf.y.round() as i32,
+                                draw_x.round() as i32,
+                                draw_y.round() as i32,
                                 tf.opacity,
                                 item.blend_mode,
                             );
@@ -131,11 +183,11 @@ impl RenderGraph {
             }
 
             if let Some(buf) = layer_buf {
-                layer_outputs[layer_idx] = Some((buf, layer_blend));
+                layer_outputs[layer_idx] = Some((buf, layer_blend, layer_depth));
             }
         }
 
-        // トラックマット適用（マット元レイヤーは合成対象から非表示化し、対象レイヤーを切り抜く）
+        // トラックマット適用
         let mut consumed_matte_layers = vec![false; scene.layers.len()];
         for (layer_idx, layer) in scene.layers.iter().enumerate() {
             if let Some(matte) = layer.track_matte
@@ -144,8 +196,8 @@ impl RenderGraph {
             {
                 let matte_img_opt = layer_outputs[matte.source_layer_index]
                     .as_ref()
-                    .map(|(img, _)| img.clone());
-                if let (Some(matte_img), Some((target_img, _))) =
+                    .map(|(img, _, _)| img.clone());
+                if let (Some(matte_img), Some((target_img, _, _))) =
                     (matte_img_opt, layer_outputs[layer_idx].as_mut())
                 {
                     target_img.apply_track_matte(&matte_img, matte.mode);
@@ -154,11 +206,11 @@ impl RenderGraph {
             }
         }
 
-        // グループ制御適用（指定レイヤー数分の位置・拡大率・不透明度を一括変換）
+        // グループ制御適用
         for (group_layer_idx, target_count, tf) in &group_passes {
             let start = group_layer_idx.saturating_sub(*target_count);
             for target in &mut layer_outputs[start..*group_layer_idx] {
-                if let Some((img, _)) = target.as_mut() {
+                if let Some((img, _, _)) = target.as_mut() {
                     let transformed = apply_group_transform(img, *tf);
                     *img = transformed;
                 }
@@ -183,26 +235,42 @@ impl RenderGraph {
             };
 
             for target_idx in target_indices {
-                if let Some((img, _)) = layer_outputs[target_idx].as_mut() {
+                if let Some((img, _, _)) = layer_outputs[target_idx].as_mut() {
                     apply_named_effect(img, effect_type, params);
                 }
             }
         }
 
-        // 最終レイヤー合成（Linear sRGB + Premultiplied Alpha）
+        // 最終レイヤー合成（3Dカメラ有効時は奥から手前へ Z ソート）
         let bg = if transparent_bg {
             LinearPremul::TRANSPARENT
         } else {
             LinearPremul::from_srgb_straight(RgbaColor::BLACK)
         };
         let mut canvas = LinearImage::new(w, h, bg);
-        for (idx, layer_out) in layer_outputs.into_iter().enumerate() {
-            if consumed_matte_layers[idx] {
-                continue;
-            }
-            if let Some((layer_img, blend_mode)) = layer_out {
-                canvas.blend_with_mode(&layer_img, 0, 0, 1.0, blend_mode);
-            }
+        let mut draw_list: Vec<(usize, LinearImage, BlendMode, f32)> = layer_outputs
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, opt)| {
+                if consumed_matte_layers[idx] {
+                    None
+                } else {
+                    opt.map(|(img, bm, d)| (idx, img, bm, d))
+                }
+            })
+            .collect();
+
+        if scene.camera.enabled {
+            // 奥（camera_depth が大きい）から手前（小さい）の順に描画
+            draw_list.sort_by(|a, b| {
+                b.3.partial_cmp(&a.3)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+        }
+
+        for (_, layer_img, blend_mode, _) in draw_list {
+            canvas.blend_with_mode(&layer_img, 0, 0, 1.0, blend_mode);
         }
 
         canvas
@@ -212,6 +280,7 @@ impl RenderGraph {
     fn render_item(
         &mut self,
         project: Option<&Project>,
+        scene: &Scene,
         item: &TimelineItem,
         tf: &Transform2D,
         global_time: RationalTime,
@@ -267,6 +336,26 @@ impl RenderGraph {
                 canvas_w,
                 canvas_h,
             )),
+            ItemKind::CharacterSprite {
+                config,
+                width,
+                height,
+            } => {
+                let mouth = self.evaluate_character_mouth(scene, config, global_time);
+                let sw = (*width * tf.scale_x).round().max(16.0) as u32;
+                let sh = (*height * tf.scale_y).round().max(16.0) as u32;
+                if let Some(png_path) = resolve_mouth_png(&config.png_paths, mouth) {
+                    if !self.png_cache.contains_key(png_path)
+                        && let Some(loaded) = load_png_linear(png_path)
+                    {
+                        self.png_cache.insert(png_path.clone(), loaded);
+                    }
+                    if let Some(cached) = self.png_cache.get(png_path) {
+                        return Some(scale_linear_image(cached, sw, sh));
+                    }
+                }
+                Some(render_placeholder_character(sw, sh, mouth))
+            }
             ItemKind::Precomp { scene_id } => {
                 if depth >= 4 {
                     return None;
@@ -277,7 +366,6 @@ impl RenderGraph {
                 scaled_nested.width = canvas_w;
                 scaled_nested.height = canvas_h;
 
-                // コンテンツハッシュキー生成（シーン定義＋解像度＋ローカルフレーム番号）
                 let local_frame = local_time.to_frame_floor(scaled_nested.fps);
                 let key_payload = format!(
                     "{}|{}x{}|f{}",
@@ -315,6 +403,77 @@ impl RenderGraph {
             | ItemKind::Image { .. }
             | ItemKind::FilterObject { .. }
             | ItemKind::GroupControl { .. } => None,
+        }
+    }
+
+    /// 立ち絵の口形状を連動音声レイヤー（音量RMS または 音素母音）から自動決定する
+    fn evaluate_character_mouth(
+        &self,
+        scene: &Scene,
+        config: &CharacterSpriteConfig,
+        global_time: RationalTime,
+    ) -> MouthShape {
+        match config.mode {
+            LipSyncMode::VolumeRms {
+                closed_threshold,
+                open_threshold,
+            } => {
+                let Some(layer_idx) = config.linked_audio_layer else {
+                    return MouthShape::Closed;
+                };
+                let Some(layer) = scene.layers.get(layer_idx) else {
+                    return MouthShape::Closed;
+                };
+                if layer.muted {
+                    return MouthShape::Closed;
+                }
+                let mut max_rms = 0.0f32;
+                for audio_item in &layer.items {
+                    if !audio_item.contains(global_time) {
+                        continue;
+                    }
+                    if let ItemKind::Audio {
+                        asset_id,
+                        source_offset,
+                        volume,
+                    }
+                    | ItemKind::Video {
+                        asset_id,
+                        source_offset,
+                        volume,
+                    } = &audio_item.kind
+                        && let Some(peaks) = self.asset_waveforms.get(asset_id)
+                        && !peaks.buckets.is_empty()
+                        && peaks.sample_rate > 0
+                    {
+                        let src_t = (global_time - audio_item.start) + *source_offset;
+                        let sample_idx = src_t.to_audio_samples(peaks.sample_rate).max(0) as usize;
+                        let bucket_idx = (sample_idx / peaks.samples_per_bucket.max(1))
+                            .min(peaks.buckets.len() - 1);
+                        let rms = peaks.buckets[bucket_idx].rms * volume.max(0.0);
+                        max_rms = max_rms.max(rms);
+                    }
+                }
+                rms_to_mouth(max_rms, closed_threshold, open_threshold)
+            }
+            LipSyncMode::VowelPhoneme => {
+                if !config.phoneme_override.is_empty() {
+                    return evaluate_vowel_mouth(&config.phoneme_override, global_time);
+                }
+                let Some(layer_idx) = config.linked_audio_layer else {
+                    return MouthShape::Closed;
+                };
+                let Some(layer) = scene.layers.get(layer_idx) else {
+                    return MouthShape::Closed;
+                };
+                for item in &layer.items {
+                    if item.contains(global_time) && !item.phoneme_segments.is_empty() {
+                        let local = global_time - item.start;
+                        return evaluate_vowel_mouth(&item.phoneme_segments, local);
+                    }
+                }
+                MouthShape::Closed
+            }
         }
     }
 }
@@ -460,7 +619,6 @@ fn box_blur_separable(image: &mut LinearImage, radius: i32) {
     let mut temp = vec![LinearPremul::TRANSPARENT; image.pixels.len()];
     let denom = (radius * 2 + 1) as f32;
 
-    // 水平パス
     for y in 0..h {
         for x in 0..w {
             let mut acc = LinearPremul::TRANSPARENT;
@@ -481,7 +639,6 @@ fn box_blur_separable(image: &mut LinearImage, radius: i32) {
         }
     }
 
-    // 垂直パス
     for y in 0..h {
         for x in 0..w {
             let mut acc = LinearPremul::TRANSPARENT;
@@ -506,12 +663,23 @@ fn box_blur_separable(image: &mut LinearImage, radius: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use tempfile::tempdir;
-    use uuid::Uuid;
+    use ve_audio::WaveformBucket;
     use ve_core::{
-        CommandBus, CommandSource, EditCommand, FrameRate, ProjectSettings, TrackMatte,
-        TrackMatteMode,
+        Camera3D, CommandBus, CommandSource, EditCommand, FrameRate, PhonemeSegment,
+        ProjectSettings, TrackMatte, TrackMatteMode, Transform3D,
     };
+
+    fn write_solid_png(path: &std::path::Path, rgba: [u8; 4]) {
+        let file = File::create(path).unwrap();
+        let mut enc = png::Encoder::new(file, 8, 8);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().unwrap();
+        let data: Vec<u8> = rgba.into_iter().cycle().take(8 * 8 * 4).collect();
+        w.write_image_data(&data).unwrap();
+    }
 
     #[test]
     fn filter_object_applies_to_immediate_layer_distinct_from_effect_chain() {
@@ -548,7 +716,6 @@ mod tests {
     #[test]
     fn track_matte_alpha_masks_target_layer() {
         let mut scene = Scene::new("MatteTest", 16, 16, FrameRate::FPS_60);
-        // Layer 0: 全面白
         scene.layers[0].items.push(TimelineItem::new(
             "FullWhite",
             RationalTime::ZERO,
@@ -560,7 +727,6 @@ mod tests {
                 color: RgbaColor::WHITE,
             },
         ));
-        // Layer 1: 左半分 (8x16) だけ不透明なマット
         scene.layers[1].items.push(TimelineItem::new(
             "LeftMatte",
             RationalTime::ZERO,
@@ -579,7 +745,6 @@ mod tests {
 
         let mut graph = RenderGraph::new();
         let frame = graph.render_scene(&scene, RationalTime::ZERO);
-        // 左半分 (x=2) は白、右半分 (x=12) はマットで切り抜かれて黒
         assert!(frame.pixels[2].r > 0.9);
         assert!(frame.pixels[12].r < 0.05);
     }
@@ -611,7 +776,6 @@ mod tests {
 
         let mut graph = RenderGraph::new();
         let frame = graph.render_scene(&scene, RationalTime::ZERO);
-        // 元の (0,0) は黒、グループ移動後の (8,0) は白
         assert!(frame.pixels[0].r < 0.05);
         assert!(frame.pixels[8].r > 0.9);
     }
@@ -620,12 +784,12 @@ mod tests {
     fn precomp_uses_hash_cache_and_invalidates_on_edit() {
         let tmp = tempdir().unwrap();
         let cache = PrecompCacheManager::new(tmp.path().join("precomp"), 1024 * 1024).unwrap();
-        let mut settings = ProjectSettings {
+        let settings = ProjectSettings {
             width: 16,
             height: 16,
+            fps: FrameRate::FPS_60,
             ..Default::default()
         };
-        settings.fps = FrameRate::FPS_60;
         let mut project = Project::new("CacheTest", settings);
         let mut bus = CommandBus::new();
 
@@ -671,7 +835,6 @@ mod tests {
         let main_id = project.active_scene_id;
         let mut graph = RenderGraph::new().with_disk_cache(cache);
 
-        // 1回目: キャッシュミス -> 計算して保存
         let f1 = graph
             .render_project_scene(&project, main_id, RationalTime::ZERO, false)
             .unwrap();
@@ -679,18 +842,177 @@ mod tests {
         assert_eq!(graph.cache_misses, 1);
         assert_eq!(graph.cache_hits, 0);
 
-        // 2回目: 同じフレーム -> ハッシュ一致でキャッシュヒット
         let _f2 = graph
             .render_project_scene(&project, main_id, RationalTime::ZERO, false)
             .unwrap();
         assert_eq!(graph.cache_hits, 1);
 
-        // Precomp 内アイテムの透明度を変更 -> ハッシュが変わり自動無効化（再計算）
         project.scenes[1].layers[0].items[0].transform.opacity = 0.5;
         let f3 = graph
             .render_project_scene(&project, main_id, RationalTime::ZERO, false)
             .unwrap();
         assert_eq!(graph.cache_misses, 2);
         assert!((f3.pixels[0].r - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn character_sprite_switches_png_by_volume_and_vowel_lipsync() {
+        let tmp = tempdir().unwrap();
+        let closed_png = tmp.path().join("closed.png");
+        let open_png = tmp.path().join("open.png");
+        let a_png = tmp.path().join("a.png");
+        // Closed = 青, Open = 赤, A = 緑
+        write_solid_png(&closed_png, [0, 0, 255, 255]);
+        write_solid_png(&open_png, [255, 0, 0, 255]);
+        write_solid_png(&a_png, [0, 255, 0, 255]);
+
+        let mut png_paths = BTreeMap::new();
+        png_paths.insert(MouthShape::Closed, closed_png);
+        png_paths.insert(MouthShape::Open, open_png);
+        png_paths.insert(MouthShape::A, a_png);
+
+        let audio_asset = Uuid::new_v4();
+        let mut scene = Scene::new("LipSync", 32, 32, FrameRate::FPS_60);
+        let mut audio_item = TimelineItem::new(
+            "Voice",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Audio {
+                asset_id: audio_asset,
+                source_offset: RationalTime::ZERO,
+                volume: 1.0,
+            },
+        );
+        audio_item.phoneme_segments = vec![PhonemeSegment {
+            start: RationalTime::from_seconds(0.5),
+            end: RationalTime::from_seconds(1.5),
+            phoneme: "a".into(),
+            mouth: MouthShape::A,
+        }];
+        scene.layers[3].items.push(audio_item);
+
+        // 1) VolumeRms モード検証: 0.0s..1.0s は無音 (rms=0.0)、1.0s..2.0s は発話 (rms=0.5)
+        let mut graph = RenderGraph::new();
+        graph.register_waveform(
+            audio_asset,
+            WaveformPeaks {
+                sample_rate: 48_000,
+                samples_per_bucket: 48_000,
+                buckets: vec![
+                    WaveformBucket {
+                        min: 0.0,
+                        max: 0.0,
+                        rms: 0.0,
+                    },
+                    WaveformBucket {
+                        min: -0.5,
+                        max: 0.5,
+                        rms: 0.5,
+                    },
+                ],
+            },
+        );
+
+        let sprite_rms = TimelineItem::new(
+            "Tachie",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::CharacterSprite {
+                config: CharacterSpriteConfig {
+                    linked_audio_layer: Some(3),
+                    mode: LipSyncMode::VolumeRms {
+                        closed_threshold: 0.05,
+                        open_threshold: 0.2,
+                    },
+                    png_paths: png_paths.clone(),
+                    phoneme_override: vec![],
+                },
+                width: 32.0,
+                height: 32.0,
+            },
+        );
+        scene.layers[0].items.push(sprite_rms);
+
+        let silent_frame = graph.render_scene(&scene, RationalTime::from_seconds(0.2));
+        assert!(silent_frame.pixels[0].b > 0.9); // Closed (青)
+        let loud_frame = graph.render_scene(&scene, RationalTime::from_seconds(1.2));
+        assert!(loud_frame.pixels[0].r > 0.9); // Open (赤)
+
+        // 2) VowelPhoneme モード検証: 1.0s は母音 "a" (緑)
+        if let ItemKind::CharacterSprite { config, .. } = &mut scene.layers[0].items[0].kind {
+            config.mode = LipSyncMode::VowelPhoneme;
+        }
+        let vowel_frame = graph.render_scene(&scene, RationalTime::from_seconds(1.0));
+        assert!(vowel_frame.pixels[0].g > 0.9); // A (緑)
+    }
+
+    #[test]
+    fn camera_3d_depth_sorts_closer_layer_in_front() {
+        let mut scene = Scene::new("Cam3D", 32, 32, FrameRate::FPS_60);
+        scene.camera = Camera3D {
+            enabled: true,
+            position: [0.0, 0.0, -1000.0],
+            target: [0.0, 0.0, 0.0],
+            fov_deg: 50.0,
+            dof_enabled: false,
+            focus_distance: 1000.0,
+            aperture: 0.0,
+        };
+
+        // Layer 0 (下レイヤー) だが 3D 空間では手前 (z = -200) にある赤い四角
+        let mut near_red = TimelineItem::new(
+            "NearRed",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(1.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 32.0,
+                height: 32.0,
+                color: RgbaColor {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            },
+        );
+        near_red.transform_3d = Transform3D {
+            enable_3d: true,
+            z: -200.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+        };
+        scene.layers[0].items.push(near_red);
+
+        // Layer 1 (上レイヤー) だが 3D 空間では奥 (z = +200) にある青い四角
+        let mut far_blue = TimelineItem::new(
+            "FarBlue",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(1.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 32.0,
+                height: 32.0,
+                color: RgbaColor {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            },
+        );
+        far_blue.transform_3d = Transform3D {
+            enable_3d: true,
+            z: 200.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+        };
+        scene.layers[1].items.push(far_blue);
+
+        let mut graph = RenderGraph::new();
+        let frame = graph.render_scene(&scene, RationalTime::ZERO);
+        let center = frame.pixels[16 * 32 + 16];
+        // Zソートにより手前の赤が奥の青より前に描画される
+        assert!(center.r > 0.9 && center.b < 0.1, "got {center:?}");
     }
 }

@@ -1,5 +1,7 @@
 use crate::animation::Keyframe;
+use crate::camera::{Camera3D, Transform3D};
 use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
+use crate::lipsync::CharacterSpriteConfig;
 use crate::project::{
     BlendMode, EffectId, EffectNode, ItemId, ItemKind, Layer, Project, Scene, SceneId,
     TextAnimator, TimelineItem, TrackMatte, Transform2D,
@@ -53,6 +55,7 @@ impl CommandSource {
 /// GUI操作と内蔵MCP操作のすべてが経由する統一編集コマンド
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum EditCommand {
     AddObject {
         layer_index: usize,
@@ -117,6 +120,21 @@ pub enum EditCommand {
     SwitchScene {
         scene_id: SceneId,
     },
+    SetCamera3D {
+        camera: Camera3D,
+    },
+    SetTransform3D {
+        item_id: ItemId,
+        transform_3d: Transform3D,
+    },
+    SetCharacterSprite {
+        item_id: ItemId,
+        config: CharacterSpriteConfig,
+    },
+    ImportSubtitles {
+        layer_index: usize,
+        items: Vec<TimelineItem>,
+    },
     AddEffect {
         item_id: ItemId,
         effect: EffectNode,
@@ -150,6 +168,10 @@ impl EditCommand {
             Self::SetTrackMatte { .. } => "set_track_matte",
             Self::PrecomposeSelection { .. } => "precompose_selection",
             Self::SwitchScene { .. } => "switch_scene",
+            Self::SetCamera3D { .. } => "set_camera_3d",
+            Self::SetTransform3D { .. } => "set_transform_3d",
+            Self::SetCharacterSprite { .. } => "set_character_sprite",
+            Self::ImportSubtitles { .. } => "import_subtitles",
             Self::AddEffect { .. } => "add_effect",
             Self::UpdateEffectParams { .. } => "update_effect_params",
             Self::Batch { .. } => "batch_execute",
@@ -562,6 +584,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 width,
                 height,
                 fps,
+                camera: Camera3D::default(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -587,6 +610,42 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 return Err(CommandError::SceneNotFound(*scene_id));
             }
             project.active_scene_id = *scene_id;
+            Ok(())
+        }
+        EditCommand::SetCamera3D { camera } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            scene.camera = *camera;
+            Ok(())
+        }
+        EditCommand::SetTransform3D {
+            item_id,
+            transform_3d,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.transform_3d = *transform_3d;
+            Ok(())
+        }
+        EditCommand::SetCharacterSprite { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::CharacterSprite {
+                config: existing, ..
+            } = &mut item.kind
+            {
+                *existing = config.clone();
+            }
+            Ok(())
+        }
+        EditCommand::ImportSubtitles { layer_index, items } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let layer = scene
+                .layers
+                .get_mut(*layer_index)
+                .ok_or(CommandError::InvalidLayer(*layer_index))?;
+            layer.items.extend(items.iter().cloned());
             Ok(())
         }
         EditCommand::AddEffect { item_id, effect } => {

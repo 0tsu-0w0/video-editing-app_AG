@@ -306,6 +306,7 @@ impl TimelineState {
                         ItemKind::Text { .. } => Color32::from_rgb(72, 130, 196),
                         ItemKind::FilterObject { .. } => Color32::from_rgb(165, 102, 185),
                         ItemKind::GroupControl { .. } => Color32::from_rgb(196, 140, 56),
+                        ItemKind::CharacterSprite { .. } => Color32::from_rgb(208, 102, 140),
                         ItemKind::Precomp { .. } => Color32::from_rgb(42, 152, 148),
                         ItemKind::Audio { .. } => Color32::from_rgb(64, 152, 108),
                         _ => Color32::from_rgb(88, 104, 138),

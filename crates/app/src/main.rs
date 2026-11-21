@@ -1,7 +1,9 @@
+mod audio_ai_panel;
 mod graph_editor;
 mod ime_poc;
 mod timeline;
 
+use audio_ai_panel::AudioAi3DPanel;
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
 use graph_editor::GraphEditorState;
@@ -36,6 +38,7 @@ enum Pane {
     Timeline,
     GraphEditor,
     Inspector,
+    AudioAi3D,
 }
 
 fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
@@ -45,7 +48,8 @@ fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
             let surface = dock.main_surface_mut();
             let [top, _bottom] =
                 surface.split_below(egui_dock::NodeIndex::root(), 0.58, vec![Pane::Timeline]);
-            let [_left, _right] = surface.split_right(top, 0.68, vec![Pane::Inspector]);
+            let [_left, _right] =
+                surface.split_right(top, 0.66, vec![Pane::Inspector, Pane::AudioAi3D]);
             dock
         }
         WorkspaceMode::MotionComposite => {
@@ -53,7 +57,8 @@ fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
             let surface = dock.main_surface_mut();
             let [top, bottom] =
                 surface.split_below(egui_dock::NodeIndex::root(), 0.50, vec![Pane::Timeline]);
-            let [_left, _right] = surface.split_right(top, 0.62, vec![Pane::Inspector]);
+            let [_left, _right] =
+                surface.split_right(top, 0.60, vec![Pane::Inspector, Pane::AudioAi3D]);
             let [_tl, _ge] = surface.split_right(bottom, 0.52, vec![Pane::GraphEditor]);
             dock
         }
@@ -66,6 +71,7 @@ struct EditorApp {
     mcp_server: Option<EmbeddedMcpServer>,
     timeline_state: TimelineState,
     graph_editor: GraphEditorState,
+    audio_ai_panel: AudioAi3DPanel,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
     preview_pipeline: Option<WgpuPreviewPipeline>,
@@ -200,6 +206,7 @@ impl EditorApp {
             mcp_server,
             timeline_state: TimelineState::default(),
             graph_editor: GraphEditorState::default(),
+            audio_ai_panel: AudioAi3DPanel::default(),
             waveforms: BTreeMap::new(),
             render_graph: RenderGraph::new(),
             preview_pipeline,
@@ -230,10 +237,10 @@ impl EditorApp {
         };
         let active_id = proj_clone.active_scene_id;
         let (out_path, transparent_bg) = match self.export_format {
-            ExportFormat::Mp4H264 => (PathBuf::from("phase2_export_h264.mp4"), false),
-            ExportFormat::Mp4H265 => (PathBuf::from("phase2_export_h265.mp4"), false),
-            ExportFormat::WebmVp9Alpha => (PathBuf::from("phase2_export_alpha.webm"), true),
-            ExportFormat::PngSequence => (PathBuf::from("phase2_frame_%04d.png"), true),
+            ExportFormat::Mp4H264 => (PathBuf::from("phase3_export_h264.mp4"), false),
+            ExportFormat::Mp4H265 => (PathBuf::from("phase3_export_h265.mp4"), false),
+            ExportFormat::WebmVp9Alpha => (PathBuf::from("phase3_export_alpha.webm"), true),
+            ExportFormat::PngSequence => (PathBuf::from("phase3_frame_%04d.png"), true),
         };
 
         let config = ExportConfig {
@@ -294,6 +301,7 @@ impl TabViewer for EditorTabViewer<'_> {
                 WorkspaceMode::MainEdit => "インスペクタ / MCP / 日本語IME".into(),
                 WorkspaceMode::MotionComposite => "AEモーション・エフェクト・マット".into(),
             },
+            Pane::AudioAi3D => "🎙 音声自動化・立ち絵・3D".into(),
         }
     }
 
@@ -662,6 +670,12 @@ impl TabViewer for EditorTabViewer<'_> {
                     }
                 });
             }
+            Pane::AudioAi3D => {
+                let mut sess = self.app.session.lock().unwrap();
+                self.app
+                    .audio_ai_panel
+                    .show(ui, &mut sess, &mut self.app.waveforms);
+            }
         }
     }
 }
@@ -744,7 +758,14 @@ impl eframe::App for EditorApp {
             }
         };
 
-        // Render Graph 評価（Precomp + ハッシュキャッシュ） → wgpu Linear f16 テクスチャへアップロード
+        // 立ち絵の音量連動口パク用に最新波形データを RenderGraph へ同期
+        for (aid, wf) in &self.waveforms {
+            if !self.render_graph.asset_waveforms.contains_key(aid) {
+                self.render_graph.register_waveform(*aid, wf.clone());
+            }
+        }
+
+        // Render Graph 評価（Precomp + 口パク + 3Dカメラ） → wgpu Linear f16 テクスチャへアップロード
         if let (Some(wgpu_state), Some(pipe)) =
             (frame.wgpu_render_state(), self.preview_pipeline.as_ref())
         {
@@ -782,7 +803,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor — Phase 2 (Dual-Workspace + AE Fusion)"),
+            .with_title("Next-Gen Hybrid Video Editor — Phase 3 (Audio AI + LipSync + 3D Camera)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };
