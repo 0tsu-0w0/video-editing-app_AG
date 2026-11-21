@@ -13,7 +13,7 @@ use ve_core::{
     RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D, TransitionKind,
     content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png, rms_to_mouth,
 };
-use ve_media::FfmpegCli;
+use ve_media::{FfmpegCli, VideoStreamDecoder};
 use ve_plugin_api::PluginRegistry;
 
 /// 組み込み WGSL エフェクトチェーンシェーダーソース
@@ -23,9 +23,11 @@ pub const EFFECTS_WGSL_SOURCE: &str = include_str!("shaders/effects.wgsl");
 pub const MAX_MEM_PRECOMP_FRAMES: usize = 32;
 const MAX_PNG_CACHE_ENTRIES: usize = 64;
 const MAX_PSD_CACHE_ENTRIES: usize = 16;
-const MAX_VIDEO_FRAME_CACHE: usize = 48;
+const MAX_VIDEO_FRAME_CACHE: usize = 64;
+const MAX_VIDEO_STREAMS: usize = 4;
 
 type VideoFrameCacheKey = (Uuid, i64, u32, u32, bool);
+type VideoStreamKey = (Uuid, u32, u32, bool);
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
 /// 1. 各オブジェクトのキーフレーム評価・実動画/画像デコード・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
@@ -43,6 +45,7 @@ pub struct RenderGraph {
     proxy_paths: HashMap<Uuid, PathBuf>,
     video_frame_cache: HashMap<VideoFrameCacheKey, (u64, LinearImage)>,
     video_frame_tick: u64,
+    video_streams: HashMap<VideoStreamKey, VideoStreamDecoder>,
     png_cache: HashMap<PathBuf, LinearImage>,
     psd_cache: HashMap<PathBuf, PsdCharacterAsset>,
     /// 音声アセットIDごとの事前解析波形（立ち絵の音量連動口パク参照用）
@@ -74,6 +77,7 @@ impl RenderGraph {
             proxy_paths: HashMap::new(),
             video_frame_cache: HashMap::new(),
             video_frame_tick: 0,
+            video_streams: HashMap::new(),
             png_cache: HashMap::new(),
             psd_cache: HashMap::new(),
             asset_waveforms: HashMap::new(),
@@ -98,18 +102,25 @@ impl RenderGraph {
 
     pub fn register_proxy(&mut self, asset_id: Uuid, proxy_path: PathBuf) {
         self.proxy_paths.insert(asset_id, proxy_path);
-        // プロキシ切替時に古いデコード済みフレームを破棄
+        // プロキシ切替時に古いデコード済みフレームと開いているストリームを破棄
         self.video_frame_cache
             .retain(|(aid, _, _, _, _), _| *aid != asset_id);
+        self.video_streams
+            .retain(|(aid, _, _, _), _| *aid != asset_id);
     }
 
     pub fn proxy_count(&self) -> usize {
         self.proxy_paths.len()
     }
 
+    pub fn proxy_paths_snapshot(&self) -> HashMap<Uuid, PathBuf> {
+        self.proxy_paths.clone()
+    }
+
     pub fn clear_media_caches(&mut self) {
         self.mem_precomp_cache.clear();
         self.video_frame_cache.clear();
+        self.video_streams.clear();
         self.png_cache.clear();
         self.psd_cache.clear();
         self.proxy_paths.clear();
@@ -214,6 +225,75 @@ impl RenderGraph {
         Some(self.render_scene_inner(Some(project), scene, time, transparent_bg, 0))
     }
 
+    /// プレビュー用の任意解像度 `(target_w, target_h)` へシーン全体の座標・文字サイズ・図形サイズを
+    /// 正確にスケーリングしてレンダリングする（ギズモ座標と描画ピクセルを 1:1 一致させる）。
+    pub fn render_project_scene_scaled(
+        &mut self,
+        project: &Project,
+        scene_id: SceneId,
+        time: RationalTime,
+        target_w: u32,
+        target_h: u32,
+        transparent_bg: bool,
+    ) -> Option<LinearImage> {
+        let orig_scene = project.scene(scene_id)?;
+        let tw = target_w.max(1);
+        let th = target_h.max(1);
+        if orig_scene.width == tw && orig_scene.height == th {
+            return Some(self.render_scene_inner(
+                Some(project),
+                orig_scene,
+                time,
+                transparent_bg,
+                0,
+            ));
+        }
+
+        let mut scaled = orig_scene.clone();
+        let sx = tw as f32 / orig_scene.width.max(1) as f32;
+        let sy = th as f32 / orig_scene.height.max(1) as f32;
+        let uniform = sx.min(sy);
+        scaled.width = tw;
+        scaled.height = th;
+        for layer in &mut scaled.layers {
+            layer.offset_x *= sx;
+            layer.offset_y *= sy;
+            for item in &mut layer.items {
+                item.transform.x *= sx;
+                item.transform.y *= sy;
+                if let Some(kfs) = item.keyframes.get_mut("x") {
+                    for kf in kfs {
+                        kf.value *= sx;
+                    }
+                }
+                if let Some(kfs) = item.keyframes.get_mut("y") {
+                    for kf in kfs {
+                        kf.value *= sy;
+                    }
+                }
+                match &mut item.kind {
+                    ItemKind::Shape { width, height, .. }
+                    | ItemKind::CharacterSprite { width, height, .. } => {
+                        *width = (*width * sx).max(1.0);
+                        *height = (*height * sy).max(1.0);
+                    }
+                    ItemKind::Text { font_size, .. } => {
+                        *font_size = (*font_size * uniform).max(4.0);
+                        item.text_style.outline_width *= uniform;
+                        item.text_style.shadow_offset[0] *= sx;
+                        item.text_style.shadow_offset[1] *= sy;
+                        item.text_style.shadow_blur *= uniform;
+                        item.text_style.box_padding[0] *= sx;
+                        item.text_style.box_padding[1] *= sy;
+                        item.text_style.box_radius *= uniform;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(self.render_scene_inner(Some(project), &scaled, time, transparent_bg, 0))
+    }
+
     fn render_scene_inner(
         &mut self,
         project: Option<&Project>,
@@ -292,6 +372,13 @@ impl RenderGraph {
 
                             let (mut draw_x, mut draw_y) =
                                 (tf.x + layer.offset_x, tf.y + layer.offset_y);
+                            if tf.rotation_deg.abs() > 0.05 {
+                                let old_w = item_img.width as f32;
+                                let old_h = item_img.height as f32;
+                                item_img = rotate_linear_image(&item_img, tf.rotation_deg);
+                                draw_x += (old_w - item_img.width as f32) * 0.5;
+                                draw_y += (old_h - item_img.height as f32) * 0.5;
+                            }
                             if scene.camera.enabled && tf3d.enable_3d {
                                 let cx = w as f32 * 0.5;
                                 let cy = h as f32 * 0.5;
@@ -674,10 +761,35 @@ impl RenderGraph {
                     return Some(cached.clone());
                 }
 
-                let rgba = self
-                    .ffmpeg
-                    .decode_frame_rgba8(&path, src_time.as_seconds(), tw, th)
-                    .ok()?;
+                // 常駐 FFmpeg ストリームデコーダ経由で高速連続フレーム取得（毎フレーム起動を回避）
+                let stream_key = (*asset_id, tw, th, is_proxy);
+                let mut rgba_opt = self
+                    .video_streams
+                    .get_mut(&stream_key)
+                    .filter(|dec| dec.path == path && dec.fps == scene.fps)
+                    .and_then(|dec| dec.read_frame_at(frame_idx));
+
+                if rgba_opt.is_none()
+                    && let Ok(mut new_stream) = self
+                        .ffmpeg
+                        .open_video_stream(&path, frame_idx, scene.fps, tw, th)
+                {
+                    rgba_opt = new_stream.read_frame_at(frame_idx);
+                    if rgba_opt.is_some() {
+                        if self.video_streams.len() >= MAX_VIDEO_STREAMS
+                            && !self.video_streams.contains_key(&stream_key)
+                        {
+                            self.video_streams.clear();
+                        }
+                        self.video_streams.insert(stream_key, new_stream);
+                    }
+                }
+
+                let rgba = rgba_opt.or_else(|| {
+                    self.ffmpeg
+                        .decode_frame_rgba8(&path, src_time.as_seconds(), tw, th)
+                        .ok()
+                })?;
                 let decoded = LinearImage::from_rgba8_srgb(tw, th, &rgba);
                 self.insert_video_frame(key, decoded.clone());
                 Some(decoded)
@@ -1455,6 +1567,65 @@ fn box_blur_separable(image: &mut LinearImage, radius: i32) {
     }
 }
 
+/// Linear Premultiplied 画像を中心軸まわりに指定角度（度）でバイリニア回転する
+fn rotate_linear_image(src: &LinearImage, angle_deg: f32) -> LinearImage {
+    let rad = angle_deg.to_radians();
+    let cos = rad.cos();
+    let sin = rad.sin();
+    let sw = src.width as f32;
+    let sh = src.height as f32;
+    let out_w = (sw * cos.abs() + sh * sin.abs()).ceil().clamp(1.0, 4096.0) as u32;
+    let out_h = (sw * sin.abs() + sh * cos.abs()).ceil().clamp(1.0, 4096.0) as u32;
+
+    let mut dst = LinearImage::new(out_w, out_h, LinearPremul::TRANSPARENT);
+    let src_cx = sw * 0.5;
+    let src_cy = sh * 0.5;
+    let dst_cx = out_w as f32 * 0.5;
+    let dst_cy = out_h as f32 * 0.5;
+    let iw = src.width as i32;
+    let ih = src.height as i32;
+
+    let sample = |x: i32, y: i32| -> LinearPremul {
+        if x < 0 || y < 0 || x >= iw || y >= ih {
+            LinearPremul::TRANSPARENT
+        } else {
+            src.pixels[(y as u32 * src.width + x as u32) as usize]
+        }
+    };
+
+    for y in 0..out_h {
+        let dy = y as f32 + 0.5 - dst_cy;
+        for x in 0..out_w {
+            let dx = x as f32 + 0.5 - dst_cx;
+            // 逆回転でソース座標を算出
+            let sx = dx * cos + dy * sin + src_cx - 0.5;
+            let sy = -dx * sin + dy * cos + src_cy - 0.5;
+            if sx < -1.0 || sy < -1.0 || sx >= sw || sy >= sh {
+                continue;
+            }
+            let x0 = sx.floor() as i32;
+            let y0 = sy.floor() as i32;
+            let fx = sx - x0 as f32;
+            let fy = sy - y0 as f32;
+            let p00 = sample(x0, y0);
+            let p10 = sample(x0 + 1, y0);
+            let p01 = sample(x0, y0 + 1);
+            let p11 = sample(x0 + 1, y0 + 1);
+            let w00 = (1.0 - fx) * (1.0 - fy);
+            let w10 = fx * (1.0 - fy);
+            let w01 = (1.0 - fx) * fy;
+            let w11 = fx * fy;
+            dst.pixels[(y * out_w + x) as usize] = LinearPremul {
+                r: p00.r * w00 + p10.r * w10 + p01.r * w01 + p11.r * w11,
+                g: p00.g * w00 + p10.g * w10 + p01.g * w01 + p11.g * w11,
+                b: p00.b * w00 + p10.b * w10 + p01.b * w01 + p11.b * w11,
+                a: p00.a * w00 + p10.a * w10 + p01.a * w01 + p11.a * w11,
+            };
+        }
+    }
+    dst
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2099,5 +2270,74 @@ mod tests {
         apply_named_effect(&mut img, "mosaic", &mparams, 0.0, &plugins);
         // All pixels inside top-left 4x4 block become identical
         assert_eq!(img.pixels[0], img.pixels[3 * 16 + 3]);
+    }
+
+    #[test]
+    fn rotate_linear_image_rotates_around_center_cleanly() {
+        let mut img = LinearImage::new(20, 10, LinearPremul::TRANSPARENT);
+        img.pixels.fill(LinearPremul::from_srgb_straight(RgbaColor {
+            r: 1.0,
+            g: 0.2,
+            b: 0.1,
+            a: 1.0,
+        }));
+        let rotated = rotate_linear_image(&img, 90.0);
+        assert!(rotated.width >= 10 && rotated.height >= 20);
+        let center =
+            rotated.pixels[((rotated.height / 2) * rotated.width + rotated.width / 2) as usize];
+        assert!(center.a > 0.9 && center.r > 0.9);
+    }
+
+    #[test]
+    fn scaled_project_scene_render_matches_full_composition_coords() {
+        let mut proj = Project::new(
+            "ScaledPreview",
+            ve_core::ProjectSettings {
+                width: 200,
+                height: 100,
+                ..Default::default()
+            },
+        );
+        // 右側領域 (x=140..180, y=40..80) に赤い矩形を配置
+        let mut box_item = TimelineItem::new(
+            "RightBox",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 40.0,
+                height: 40.0,
+                color: RgbaColor {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            },
+        );
+        box_item.transform.x = 140.0;
+        box_item.transform.y = 40.0;
+        proj.active_scene_mut().unwrap().layers[0]
+            .items
+            .push(box_item);
+
+        let mut rg = RenderGraph::new();
+        // 1/2 スケール (100x50) で描画しても右側ボックスが (70..90, 20..40) に正しく収まる
+        let scaled = rg
+            .render_project_scene_scaled(
+                &proj,
+                proj.active_scene_id,
+                RationalTime::ZERO,
+                100,
+                50,
+                false,
+            )
+            .unwrap();
+        assert_eq!((scaled.width, scaled.height), (100, 50));
+        let px = scaled.pixels[(30 * 100 + 80) as usize];
+        assert!(
+            px.r > 0.9,
+            "expected red pixel at scaled (80,30), got {px:?}"
+        );
     }
 }

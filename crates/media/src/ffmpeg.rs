@@ -1,7 +1,7 @@
 use serde::Deserialize;
-use std::io::Write;
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use thiserror::Error;
 use ve_core::FrameRate;
 
@@ -688,6 +688,131 @@ impl FfmpegExportSession {
     }
 }
 
+impl FfmpegCli {
+    /// 連続再生・RAM先読み・書き出し向けの常駐 FFmpeg デコードストリームを開く。
+    /// 1フレームごとのプロセス起動オーバーヘッドを排し、高速な連続 RGBA8 読み出しを実現する。
+    pub fn open_video_stream(
+        &self,
+        path: &Path,
+        start_frame: i64,
+        fps: FrameRate,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<VideoStreamDecoder, MediaError> {
+        let start_frame = start_frame.max(0);
+        let frame_bytes = checked_rgba_frame_bytes(target_width, target_height)?;
+        let safe_path = sanitize_ffmpeg_path(path);
+        let start_sec = start_frame as f64 / fps.as_f64().max(1.0);
+        let vf = format!(
+            "fps={}/{},scale={target_width}:{target_height}",
+            fps.num, fps.den
+        );
+
+        let mut child = Command::new(&self.ffmpeg_bin)
+            .args(["-v", "error", "-ss", &format!("{start_sec:.6}"), "-i"])
+            .arg(&safe_path)
+            .args([
+                "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "-an", "-sn", "pipe:1",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| MediaError::NonZeroExit("failed to capture ffmpeg stdout".into()))?;
+        Ok(VideoStreamDecoder::new_from_parts(
+            path.to_path_buf(),
+            target_width,
+            target_height,
+            fps,
+            frame_bytes,
+            start_frame,
+            stdout,
+            child,
+        ))
+    }
+}
+
+/// 常駐 FFmpeg プロセスから連続して RGBA8 フレームを読み出す高速デコーダ
+pub struct VideoStreamDecoder {
+    pub path: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub fps: FrameRate,
+    frame_bytes: usize,
+    next_frame: i64,
+    eof: bool,
+    reader: BufReader<ChildStdout>,
+    skip_buf: Vec<u8>,
+    child: Child,
+}
+
+impl VideoStreamDecoder {
+    #[allow(clippy::too_many_arguments)]
+    fn new_from_parts(
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        fps: FrameRate,
+        frame_bytes: usize,
+        start_frame: i64,
+        stdout: ChildStdout,
+        child: Child,
+    ) -> Self {
+        Self {
+            path,
+            width,
+            height,
+            fps,
+            frame_bytes,
+            next_frame: start_frame,
+            eof: false,
+            reader: BufReader::with_capacity(frame_bytes.min(2 * 1024 * 1024), stdout),
+            skip_buf: Vec::new(),
+            child,
+        }
+    }
+
+    pub fn next_frame_index(&self) -> i64 {
+        self.next_frame
+    }
+
+    /// 要求フレームが現在位置から前方 8 フレーム以内であればプロセス再起動なしで読み出す。
+    /// 大きくシークした場合や EOF 時は `None` を返す（呼び出し元で再オープンする）。
+    pub fn read_frame_at(&mut self, target_frame: i64) -> Option<Vec<u8>> {
+        if self.eof || target_frame < self.next_frame || target_frame - self.next_frame > 8 {
+            return None;
+        }
+        while self.next_frame < target_frame {
+            if self.skip_buf.len() != self.frame_bytes {
+                self.skip_buf.resize(self.frame_bytes, 0);
+            }
+            if self.reader.read_exact(&mut self.skip_buf).is_err() {
+                self.eof = true;
+                return None;
+            }
+            self.next_frame += 1;
+        }
+        let mut frame = vec![0u8; self.frame_bytes];
+        if self.reader.read_exact(&mut frame).is_err() {
+            self.eof = true;
+            return None;
+        }
+        self.next_frame += 1;
+        Some(frame)
+    }
+}
+
+impl Drop for VideoStreamDecoder {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,5 +965,46 @@ mod tests {
             cli.decode_frame_rgba8(Path::new("in.mp4"), 0.0, MAX_VIDEO_DIMENSION + 1, 64),
             Err(MediaError::InvalidArgument(_))
         ));
+    }
+
+    #[test]
+    fn video_stream_decoder_reads_sequential_frames_without_respawn() {
+        let cli = FfmpegCli::default();
+        let tmp = tempdir().unwrap();
+        let mp4_path = tmp.path().join("stream_test.mp4");
+
+        let config = ExportConfig {
+            width: 96,
+            height: 54,
+            fps: FrameRate::FPS_30,
+            format: ExportFormat::Mp4H264,
+            crf: 23,
+            encoder: VideoEncoder::Software,
+        };
+        let mut session = cli.start_export(&mp4_path, &config, None).unwrap();
+        for f in 0..10u8 {
+            let mut frame = vec![0u8; 96 * 54 * 4];
+            for px in frame.as_chunks_mut::<4>().0 {
+                px[0] = 20 + f * 20;
+                px[1] = 120;
+                px[2] = 220;
+                px[3] = 255;
+            }
+            session.write_rgba8_frame(&frame).unwrap();
+        }
+        session.finish().unwrap();
+
+        let mut dec = cli
+            .open_video_stream(&mp4_path, 0, FrameRate::FPS_30, 96, 54)
+            .unwrap();
+        let f0 = dec.read_frame_at(0).unwrap();
+        let f1 = dec.read_frame_at(1).unwrap();
+        let f4 = dec.read_frame_at(4).unwrap(); // 3フレーム前方スキップ
+        assert_eq!(f0.len(), 96 * 54 * 4);
+        assert_eq!(f1.len(), 96 * 54 * 4);
+        assert_eq!(f4.len(), 96 * 54 * 4);
+        assert_eq!(dec.next_frame_index(), 5);
+        // 後方シークは None を返し、呼び出し元の再オープンを促す
+        assert!(dec.read_frame_at(2).is_none());
     }
 }

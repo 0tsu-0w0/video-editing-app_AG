@@ -325,7 +325,16 @@ impl AssetBrowserPanel {
         let mut dirty = false;
         ui.horizontal(|ui| {
             ui.label("フォルダ:");
-            ui.add(egui::TextEdit::singleline(&mut self.browse_dir_input).desired_width(170.0));
+            ui.add(egui::TextEdit::singleline(&mut self.browse_dir_input).desired_width(150.0));
+            if ui
+                .button("📂")
+                .on_hover_text("OSフォルダ選択ダイアログを開く")
+                .clicked()
+                && let Some(dir) = crate::native_dialog::pick_folder("素材フォルダを選択")
+            {
+                self.browse_dir_input = dir.display().to_string();
+                self.rescan_directory();
+            }
             if ui.button("🔄 更新").clicked() {
                 self.rescan_directory();
             }
@@ -565,7 +574,15 @@ impl AssetBrowserPanel {
         ui.label("VOICEVOX / A.I.VOICE / 録画ツールの出力フォルダを監視し、新着ファイルを自動でタイムラインへ配置します。");
         ui.horizontal(|ui| {
             ui.label("監視フォルダ:");
-            ui.add(egui::TextEdit::singleline(&mut self.watch_dir_input).desired_width(180.0));
+            ui.add(egui::TextEdit::singleline(&mut self.watch_dir_input).desired_width(160.0));
+            if ui
+                .button("📂")
+                .on_hover_text("監視するフォルダを選択")
+                .clicked()
+                && let Some(dir) = crate::native_dialog::pick_folder("監視フォルダを選択")
+            {
+                self.watch_dir_input = dir.display().to_string();
+            }
             if let Some(w) = self.watcher.as_ref() {
                 let watching_path = w.dir().display().to_string();
                 if ui.button("⏹ 監視停止").clicked() {

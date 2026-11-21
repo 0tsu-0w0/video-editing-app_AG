@@ -228,6 +228,13 @@ pub enum EditCommand {
     RemoveMarker {
         marker_id: uuid::Uuid,
     },
+    /// アクティブシーンの解像度・FPSを変更（`rescale_items` でアイテム座標・サイズを自動リフレーム）
+    SetSceneSettings {
+        width: u32,
+        height: u32,
+        fps: crate::time::FrameRate,
+        rescale_items: bool,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -276,6 +283,7 @@ impl EditCommand {
             Self::SetTargetLufs { .. } => "set_target_lufs",
             Self::AddMarker { .. } => "add_marker",
             Self::RemoveMarker { .. } => "remove_marker",
+            Self::SetSceneSettings { .. } => "set_scene_settings",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1030,6 +1038,62 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             scene.markers.retain(|m| m.id != *marker_id);
             Ok(())
         }
+        EditCommand::SetSceneSettings {
+            width,
+            height,
+            fps,
+            rescale_items,
+        } => {
+            let new_w = (*width).clamp(16, 8192);
+            let new_h = (*height).clamp(16, 8192);
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let old_w = scene.width.max(1) as f32;
+            let old_h = scene.height.max(1) as f32;
+            scene.width = new_w;
+            scene.height = new_h;
+            scene.fps = *fps;
+
+            if *rescale_items {
+                let sx = new_w as f32 / old_w;
+                let sy = new_h as f32 / old_h;
+                let uniform = sx.min(sy);
+                for layer in &mut scene.layers {
+                    layer.offset_x *= sx;
+                    layer.offset_y *= sy;
+                    for item in &mut layer.items {
+                        item.transform.x *= sx;
+                        item.transform.y *= sy;
+                        if let Some(kfs) = item.keyframes.get_mut("x") {
+                            for kf in kfs {
+                                kf.value *= sx;
+                            }
+                        }
+                        if let Some(kfs) = item.keyframes.get_mut("y") {
+                            for kf in kfs {
+                                kf.value *= sy;
+                            }
+                        }
+                        match &mut item.kind {
+                            ItemKind::Shape { width, height, .. }
+                            | ItemKind::CharacterSprite { width, height, .. } => {
+                                *width = (*width * uniform).max(4.0);
+                                *height = (*height * uniform).max(4.0);
+                            }
+                            ItemKind::Text { font_size, .. } => {
+                                *font_size = (*font_size * uniform).clamp(8.0, 400.0);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            project.settings.width = new_w;
+            project.settings.height = new_h;
+            project.settings.fps = *fps;
+            Ok(())
+        }
         EditCommand::Batch { commands, .. } => {
             for cmd in commands {
                 apply_command(project, cmd)?;
@@ -1376,5 +1440,63 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn set_scene_settings_rescales_items_and_is_undoable() {
+        use crate::project::ScenePreset;
+        use crate::time::FrameRate;
+
+        let mut project = Project::new(
+            "SceneSettings",
+            ProjectSettings {
+                width: 1280,
+                height: 720,
+                fps: FrameRate::FPS_60,
+                ..Default::default()
+            },
+        );
+        let mut bus = CommandBus::new();
+        let mut item = sample_item("Box");
+        item.transform.x = 640.0;
+        item.transform.y = 360.0;
+        bus.execute(
+            &mut project,
+            EditCommand::AddObject {
+                layer_index: 0,
+                item,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        let (sw, sh) = ScenePreset::Shorts9x16.dimensions();
+        bus.execute(
+            &mut project,
+            EditCommand::SetSceneSettings {
+                width: sw,
+                height: sh,
+                fps: FrameRate::FPS_30,
+                rescale_items: true,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        let sc = project.active_scene().unwrap();
+        assert_eq!((sc.width, sc.height), (1080, 1920));
+        assert_eq!(sc.fps, FrameRate::FPS_30);
+        // 元の中心 (640, 360) -> 新中心 (540, 960) へ正確にリフレームされる
+        assert!((sc.layers[0].items[0].transform.x - 540.0).abs() < 0.5);
+        assert!((sc.layers[0].items[0].transform.y - 960.0).abs() < 0.5);
+
+        // Undo で 1280x720・60fps・元座標へ完全復元
+        assert!(bus.undo(&mut project));
+        let sc = project.active_scene().unwrap();
+        assert_eq!((sc.width, sc.height), (1280, 720));
+        assert_eq!(sc.fps, FrameRate::FPS_60);
+        assert!((sc.layers[0].items[0].transform.x - 640.0).abs() < 0.5);
     }
 }

@@ -24,8 +24,8 @@ pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor};
 pub use project::{
     AssetId, AssetRef, AudioEffectNode, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId,
     ItemKind, Layer, LayerId, MediaKind, PlaybackSettings, Project, ProjectSettings, RgbaColor,
-    Scene, SceneId, ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte,
-    TrackMatteMode, Transform2D, TransitionKind,
+    Scene, SceneId, ScenePreset, ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker,
+    TrackMatte, TrackMatteMode, Transform2D, TransitionKind,
 };
 pub use time::{FrameRate, RationalTime, TICKS_PER_SECOND, TimeInput};
 pub use timeline_ops::{

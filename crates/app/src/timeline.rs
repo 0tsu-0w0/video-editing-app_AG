@@ -153,6 +153,7 @@ impl TimelineState {
         ui: &mut Ui,
         session: &mut EditorSession,
         waveforms: &BTreeMap<Uuid, WaveformPeaks>,
+        ram_cached_ranges: &[(i64, i64)],
     ) -> TimelinePlaybackAction {
         let fps = session.project.settings.fps;
         let mut playback_action = TimelinePlaybackAction::None;
@@ -937,6 +938,25 @@ impl TimelineState {
                 egui::FontId::monospace(10.0),
                 Color32::from_gray(185),
             );
+        }
+
+        // AE 風 RAM プレビュー先読みキャッシュ済みバー（ルーラー下端の緑色ライン）
+        let fps_f = fps.as_f64().max(1.0);
+        for &(f0, f1) in ram_cached_ranges {
+            let s0 = f0 as f64 / fps_f;
+            let s1 = (f1 + 1) as f64 / fps_f;
+            let rx0 = (track_origin_x + (s0 - scroll_sec) as f32 * pps).max(track_origin_x);
+            let rx1 = (track_origin_x + (s1 - scroll_sec) as f32 * pps).min(canvas_rect.right());
+            if rx1 > rx0 {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(rx0, ruler_rect.bottom() - 3.5),
+                        Pos2::new(rx1, ruler_rect.bottom()),
+                    ),
+                    0.0,
+                    Color32::from_rgb(72, 214, 118),
+                );
+            }
         }
 
         // ルーラー上のタイムラインマーカー描画＆クリック操作（左クリック=ジャンプ、右クリック=削除）

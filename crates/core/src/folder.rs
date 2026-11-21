@@ -89,6 +89,10 @@ impl ProjectFolder {
         self.root.join("exports")
     }
 
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
+    }
+
     pub fn ensure_layout(&self) -> Result<(), FolderError> {
         fs::create_dir_all(&self.root)?;
         fs::create_dir_all(self.assets_dir())?;
@@ -97,6 +101,7 @@ impl ProjectFolder {
         fs::create_dir_all(self.cache_waveforms_dir())?;
         fs::create_dir_all(self.cache_proxy_dir())?;
         fs::create_dir_all(self.exports_dir())?;
+        fs::create_dir_all(self.backups_dir())?;
         if !self.history_jsonl_path().exists() {
             fs::File::create(self.history_jsonl_path())?;
         }
@@ -238,6 +243,79 @@ impl ProjectFolder {
         }
         Ok(())
     }
+
+    /// 定期自動保存スナップショットを `backups/autosave_<ms>_<seq>.json` へ原子的に書き出し、
+    /// `max_keep` 件を超える古いバックアップを自動ローテーション削除する。
+    pub fn save_auto_backup(
+        &self,
+        project: &Project,
+        max_keep: usize,
+    ) -> Result<PathBuf, FolderError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static BACKUP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+        fs::create_dir_all(self.backups_dir())?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let seq = BACKUP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let file_name = format!("autosave_{now_ms:016}_{seq:04}.json");
+        let tmp_path = self.backups_dir().join(format!("{file_name}.tmp"));
+        let final_path = self.backups_dir().join(file_name);
+        let json = serde_json::to_string_pretty(project)?;
+        {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(&tmp_path, &final_path)?;
+
+        // 古いバックアップをローテーション削除
+        let keep = max_keep.max(1);
+        let all = self.list_backups();
+        if all.len() > keep {
+            for old in &all[keep..] {
+                let _ = fs::remove_file(old);
+            }
+        }
+        Ok(final_path)
+    }
+
+    /// `backups/` 内の自動保存スナップショット一覧を新しい順で返す
+    pub fn list_backups(&self) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(self.backups_dir()) else {
+            return Vec::new();
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|e| e.to_str()) == Some("json")
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("autosave_"))
+            })
+            .collect();
+        files.sort();
+        files.reverse();
+        files
+    }
+
+    /// 指定バックアップスナップショットを読み込む（プロジェクト内 `backups/` 配下のみ許可）
+    pub fn load_backup(&self, backup_path: &Path) -> Result<Project, FolderError> {
+        let canonical_dir = fs::canonicalize(self.backups_dir())?;
+        let canonical_file = fs::canonicalize(backup_path)?;
+        if !canonical_file.starts_with(&canonical_dir) {
+            return Err(FolderError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "backup path outside project backups directory",
+            )));
+        }
+        let data = fs::read_to_string(&canonical_file)?;
+        Ok(serde_json::from_str(&data)?)
+    }
 }
 
 fn sanitize_alias_filename(name: &str) -> String {
@@ -303,6 +381,7 @@ mod tests {
         assert!(folder.cache_waveforms_dir().exists());
         assert!(folder.cache_proxy_dir().exists());
         assert!(folder.exports_dir().exists());
+        assert!(folder.backups_dir().exists());
 
         // History journal
         folder
@@ -423,5 +502,21 @@ mod tests {
 
         folder.delete_alias(&alias.name).unwrap();
         assert!(folder.load_aliases().is_empty());
+    }
+
+    #[test]
+    fn auto_backup_creates_rotates_and_restores_safely() {
+        let tmp = tempdir().unwrap();
+        let mut project = Project::new("AutoSaveTest", ProjectSettings::default());
+        let folder = ProjectFolder::init(tmp.path().join("proj"), &project).unwrap();
+
+        for i in 1..=5 {
+            project.name = format!("Rev {i}");
+            folder.save_auto_backup(&project, 3).unwrap();
+        }
+        let list = folder.list_backups();
+        assert_eq!(list.len(), 3, "should rotate to max_keep=3");
+        let latest = folder.load_backup(&list[0]).unwrap();
+        assert_eq!(latest.name, "Rev 5");
     }
 }
