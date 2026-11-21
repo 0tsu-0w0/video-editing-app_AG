@@ -170,7 +170,13 @@ pub fn tool_definitions() -> Value {
     ])
 }
 
-fn parse_time_arg(args: &Value, frame_key: &str, sec_key: &str, fps: FrameRate, default: RationalTime) -> RationalTime {
+fn parse_time_arg(
+    args: &Value,
+    frame_key: &str,
+    sec_key: &str,
+    fps: FrameRate,
+    default: RationalTime,
+) -> RationalTime {
     if let Some(f) = args.get(frame_key).and_then(Value::as_i64) {
         RationalTime::from_frame(f, fps)
     } else if let Some(s) = args.get(sec_key).and_then(Value::as_f64) {
@@ -201,7 +207,9 @@ fn parse_params_map(val: Option<&Value>) -> BTreeMap<String, f32> {
 }
 
 pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Result<Value, String> {
-    let mut guard = session.lock().map_err(|_| "session lock poisoned".to_string())?;
+    let mut guard = session
+        .lock()
+        .map_err(|_| "session lock poisoned".to_string())?;
     let fps = guard.project.settings.fps;
 
     match name {
@@ -297,7 +305,11 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
         }
         "render_frame_preview" => {
             let t = parse_time_arg(args, "frame", "seconds", fps, guard.playhead);
-            let scale = args.get("scale").and_then(Value::as_f64).unwrap_or(0.5).clamp(0.1, 1.0);
+            let scale = args
+                .get("scale")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.5)
+                .clamp(0.1, 1.0);
             let mut scene = guard
                 .project
                 .active_scene()
@@ -336,7 +348,9 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 args.get("start_sec").and_then(Value::as_f64).unwrap_or(0.0),
             );
             let duration = RationalTime::from_seconds(
-                args.get("duration_sec").and_then(Value::as_f64).unwrap_or(2.0),
+                args.get("duration_sec")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(2.0),
             );
             let kind_str = args.get("kind").and_then(Value::as_str).unwrap_or("text");
             let kind = match kind_str {
@@ -353,7 +367,10 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                         .unwrap_or("テキスト")
                         .to_string(),
                     font_family: "sans-serif".to_string(),
-                    font_size: args.get("font_size").and_then(Value::as_f64).unwrap_or(48.0) as f32,
+                    font_size: args
+                        .get("font_size")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(48.0) as f32,
                     color: RgbaColor::WHITE,
                 },
             };
@@ -376,7 +393,9 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-            Ok(json!({ "content": [{ "type": "text", "text": json!({"created_id": id}).to_string() }] }))
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"created_id": id}).to_string() }] }),
+            )
         }
         "delete_object" => {
             let id = parse_uuid(args, "id")?;
@@ -397,8 +416,13 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 .get("target_layer_index")
                 .and_then(Value::as_u64)
                 .ok_or("missing target_layer_index")? as usize;
-            let new_start =
-                parse_time_arg(args, "new_start_frame", "new_start_sec", fps, RationalTime::ZERO);
+            let new_start = parse_time_arg(
+                args,
+                "new_start_frame",
+                "new_start_sec",
+                fps,
+                RationalTime::ZERO,
+            );
             let sess = &mut *guard;
             sess.bus
                 .execute(
@@ -416,7 +440,8 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
         }
         "split_object" => {
             let id = parse_uuid(args, "id")?;
-            let split_at = parse_time_arg(args, "split_at_frame", "split_at_sec", fps, guard.playhead);
+            let split_at =
+                parse_time_arg(args, "split_at_frame", "split_at_sec", fps, guard.playhead);
             let right_id = Uuid::new_v4();
             let sess = &mut *guard;
             sess.bus
@@ -431,7 +456,9 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-            Ok(json!({ "content": [{ "type": "text", "text": json!({"right_id": right_id}).to_string() }] }))
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"right_id": right_id}).to_string() }] }),
+            )
         }
         "set_property" => {
             let id = parse_uuid(args, "id")?;
@@ -508,7 +535,9 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-            Ok(json!({ "content": [{ "type": "text", "text": json!({"effect_id": effect_id}).to_string() }] }))
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"effect_id": effect_id}).to_string() }] }),
+            )
         }
         "update_effect_params" => {
             let id = parse_uuid(args, "id")?;
@@ -551,7 +580,9 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-            Ok(json!({ "content": [{ "type": "text", "text": json!({"executed": count}).to_string() }] }))
+            Ok(
+                json!({ "content": [{ "type": "text", "text": json!({"executed": count}).to_string() }] }),
+            )
         }
         other => Err(format!("unknown tool: {other}")),
     }

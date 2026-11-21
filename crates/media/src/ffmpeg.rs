@@ -227,19 +227,8 @@ impl FfmpegCli {
 
         let mut cmd = Command::new(&self.ffmpeg_bin);
         cmd.args([
-            "-y",
-            "-v",
-            "error",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-s",
-            &size_str,
-            "-r",
-            &fps_str,
-            "-i",
-            "pipe:0",
+            "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size_str, "-r",
+            &fps_str, "-i", "pipe:0",
         ]);
 
         if let Some(wav) = audio_wav_path {
@@ -365,7 +354,7 @@ mod tests {
         let mut session = cli.start_export(&mp4_path, &config, None).unwrap();
         // 15フレーム（0.5秒）の単色フレームを書き出す
         let mut frame = vec![0u8; 160 * 90 * 4];
-        for px in frame.chunks_exact_mut(4) {
+        for px in frame.as_chunks_mut::<4>().0 {
             px[0] = 64;
             px[1] = 160;
             px[2] = 240;

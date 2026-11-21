@@ -270,8 +270,13 @@ impl CommandBus {
     }
 }
 
-fn find_item_mut(project: &mut Project, item_id: ItemId) -> Result<&mut TimelineItem, CommandError> {
-    let scene = project.active_scene_mut().ok_or(CommandError::NoActiveScene)?;
+fn find_item_mut(
+    project: &mut Project,
+    item_id: ItemId,
+) -> Result<&mut TimelineItem, CommandError> {
+    let scene = project
+        .active_scene_mut()
+        .ok_or(CommandError::NoActiveScene)?;
     for layer in &mut scene.layers {
         if let Some(item) = layer.items.iter_mut().find(|i| i.id == item_id) {
             return Ok(item);
@@ -283,7 +288,9 @@ fn find_item_mut(project: &mut Project, item_id: ItemId) -> Result<&mut Timeline
 fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), CommandError> {
     match command {
         EditCommand::AddObject { layer_index, item } => {
-            let scene = project.active_scene_mut().ok_or(CommandError::NoActiveScene)?;
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
             let layer = scene
                 .layers
                 .get_mut(*layer_index)
@@ -292,7 +299,9 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             Ok(())
         }
         EditCommand::DeleteObject { item_id } => {
-            let scene = project.active_scene_mut().ok_or(CommandError::NoActiveScene)?;
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
             for layer in &mut scene.layers {
                 if let Some(pos) = layer.items.iter().position(|i| i.id == *item_id) {
                     layer.items.remove(pos);
@@ -306,7 +315,9 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             target_layer_index,
             new_start,
         } => {
-            let scene = project.active_scene_mut().ok_or(CommandError::NoActiveScene)?;
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
             if *target_layer_index >= scene.layers.len() {
                 return Err(CommandError::InvalidLayer(*target_layer_index));
             }
@@ -337,7 +348,9 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             split_at,
             new_right_id,
         } => {
-            let scene = project.active_scene_mut().ok_or(CommandError::NoActiveScene)?;
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
             for layer in &mut scene.layers {
                 if let Some(pos) = layer.items.iter().position(|i| i.id == *item_id) {
                     let left = &mut layer.items[pos];
@@ -482,7 +495,10 @@ mod tests {
 
         // Undoで元の位置 (0.0s) に戻る
         assert!(bus.undo(&mut project));
-        assert_eq!(project.active_scene().unwrap().layers[0].items[0].start, RationalTime::ZERO);
+        assert_eq!(
+            project.active_scene().unwrap().layers[0].items[0].start,
+            RationalTime::ZERO
+        );
         assert!(bus.redo(&mut project));
         assert_eq!(
             project.active_scene().unwrap().layers[0].items[0].start,
@@ -522,7 +538,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(live_project.active_scene().unwrap().layers[0].items.len(), 2);
+        assert_eq!(
+            live_project.active_scene().unwrap().layers[0].items.len(),
+            2
+        );
 
         // クラッシュ想定: project.json は初期状態のまま、history.jsonl をリプレイして完全復旧
         let mut recovered = folder.load_project().unwrap();

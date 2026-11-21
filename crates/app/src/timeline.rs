@@ -77,7 +77,10 @@ impl TimelineState {
                 self.split_selected_at_playhead(session);
             }
             if ui
-                .add_enabled(!session.selected_items.is_empty(), egui::Button::new("🗑 削除 (Del)"))
+                .add_enabled(
+                    !session.selected_items.is_empty(),
+                    egui::Button::new("🗑 削除 (Del)"),
+                )
                 .clicked()
                 || delete_key
             {
@@ -151,8 +154,7 @@ impl TimelineState {
             ui.separator();
             ui.checkbox(&mut self.snap_enabled, "スナップ");
             ui.add(
-                egui::Slider::new(&mut self.pixels_per_second, 40.0..=300.0)
-                    .text("ズーム(px/s)"),
+                egui::Slider::new(&mut self.pixels_per_second, 40.0..=300.0).text("ズーム(px/s)"),
             );
         });
 
@@ -189,13 +191,19 @@ impl TimelineState {
         for sec in 0..=max_sec {
             let x = track_origin_x + sec as f32 * pps;
             painter.line_segment(
-                [Pos2::new(x, ruler_rect.top()), Pos2::new(x, canvas_rect.bottom())],
+                [
+                    Pos2::new(x, ruler_rect.top()),
+                    Pos2::new(x, canvas_rect.bottom()),
+                ],
                 Stroke::new(1.0, Color32::from_rgb(45, 49, 58)),
             );
             painter.text(
                 Pos2::new(x + 3.0, ruler_rect.top() + 4.0),
                 egui::Align2::LEFT_TOP,
-                format!("{sec}s ({}f)", RationalTime::from_seconds(sec as f64).to_frame_round(fps)),
+                format!(
+                    "{sec}s ({}f)",
+                    RationalTime::from_seconds(sec as f64).to_frame_round(fps)
+                ),
                 egui::FontId::monospace(10.0),
                 Color32::from_gray(185),
             );
@@ -265,10 +273,10 @@ impl TimelineState {
                     painter.rect_filled(clip_rect, 4.0, fill);
 
                     // 音声クリップの場合は波形ピークを描画
-                    if let ItemKind::Audio { asset_id, .. } = &item.kind {
-                        if let Some(wf) = waveforms.get(asset_id) {
-                            draw_waveform(&painter, clip_rect, wf);
-                        }
+                    if let ItemKind::Audio { asset_id, .. } = &item.kind
+                        && let Some(wf) = waveforms.get(asset_id)
+                    {
+                        draw_waveform(&painter, clip_rect, wf);
                     }
 
                     painter.rect_stroke(
@@ -293,21 +301,20 @@ impl TimelineState {
                     );
 
                     // クリック／ドラッグ開始の当たり判定
-                    if response.drag_started() || response.clicked() {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            if clip_rect.contains(pos) {
-                                let is_right_edge = (clip_rect.right() - pos.x).abs() <= 8.0;
-                                let mode = if is_right_edge {
-                                    DragMode::TrimRight
-                                } else {
-                                    let ptr_sec = ((pos.x - track_origin_x) / pps) as f64;
-                                    DragMode::Move {
-                                        grab_offset_sec: ptr_sec - item.start.as_seconds(),
-                                    }
-                                };
-                                clicked_item = Some((item.id, mode));
+                    if (response.drag_started() || response.clicked())
+                        && let Some(pos) = response.interact_pointer_pos()
+                        && clip_rect.contains(pos)
+                    {
+                        let is_right_edge = (clip_rect.right() - pos.x).abs() <= 8.0;
+                        let mode = if is_right_edge {
+                            DragMode::TrimRight
+                        } else {
+                            let ptr_sec = ((pos.x - track_origin_x) / pps) as f64;
+                            DragMode::Move {
+                                grab_offset_sec: ptr_sec - item.start.as_seconds(),
                             }
-                        }
+                        };
+                        clicked_item = Some((item.id, mode));
                     }
                 }
             }
@@ -327,69 +334,65 @@ impl TimelineState {
                 self.dragging_item = Some(DragOp { item_id, mode });
                 session.bus.set_gui_drag_locked(true);
             }
-        } else if response.clicked() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                if pos.x >= track_origin_x {
-                    let sec = ((pos.x - track_origin_x) / pps).max(0.0) as f64;
-                    session.playhead = RationalTime::from_seconds(sec);
-                }
-            }
+        } else if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+            && pos.x >= track_origin_x
+        {
+            let sec = ((pos.x - track_origin_x) / pps).max(0.0) as f64;
+            session.playhead = RationalTime::from_seconds(sec);
         }
 
         if let Some(drag) = self.dragging_item {
-            if response.dragged() {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let raw_sec = ((pos.x - track_origin_x) / pps).max(0.0) as f64;
-                    let target_layer = (((pos.y - (canvas_rect.top() + ruler_h)) / track_h)
-                        .floor()
-                        .max(0.0) as usize)
-                        .min(layer_count.saturating_sub(1));
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let raw_sec = ((pos.x - track_origin_x) / pps).max(0.0) as f64;
+                let target_layer = (((pos.y - (canvas_rect.top() + ruler_h)) / track_h)
+                    .floor()
+                    .max(0.0) as usize)
+                    .min(layer_count.saturating_sub(1));
 
-                    match drag.mode {
-                        DragMode::Move { grab_offset_sec } => {
-                            let mut cand_sec = (raw_sec - grab_offset_sec).max(0.0);
+                match drag.mode {
+                    DragMode::Move { grab_offset_sec } => {
+                        let mut cand_sec = (raw_sec - grab_offset_sec).max(0.0);
+                        if self.snap_enabled {
+                            cand_sec = snap_value(cand_sec, &snap_targets, 8.0 / pps as f64);
+                        }
+                        let _ = session.bus.execute(
+                            &mut session.project,
+                            EditCommand::MoveObject {
+                                item_id: drag.item_id,
+                                target_layer_index: target_layer,
+                                new_start: RationalTime::from_seconds(cand_sec),
+                            },
+                            CommandSource::Gui,
+                            Some("timeline_move"),
+                        );
+                    }
+                    DragMode::TrimRight => {
+                        let item_start = session.project.active_scene().and_then(|s| {
+                            s.layers
+                                .iter()
+                                .flat_map(|l| l.items.iter())
+                                .find(|i| i.id == drag.item_id)
+                                .map(|i| i.start)
+                        });
+                        if let Some(start) = item_start {
+                            let mut end_sec = raw_sec.max(start.as_seconds() + 0.1);
                             if self.snap_enabled {
-                                cand_sec = snap_value(cand_sec, &snap_targets, 8.0 / pps as f64);
+                                end_sec = snap_value(end_sec, &snap_targets, 8.0 / pps as f64);
                             }
+                            let dur = (end_sec - start.as_seconds()).max(0.1);
                             let _ = session.bus.execute(
                                 &mut session.project,
-                                EditCommand::MoveObject {
+                                EditCommand::TrimObject {
                                     item_id: drag.item_id,
-                                    target_layer_index: target_layer,
-                                    new_start: RationalTime::from_seconds(cand_sec),
+                                    new_start: start,
+                                    new_duration: RationalTime::from_seconds(dur),
                                 },
                                 CommandSource::Gui,
-                                Some("timeline_move"),
+                                Some("timeline_trim"),
                             );
-                        }
-                        DragMode::TrimRight => {
-                            let item_start = session
-                                .project
-                                .active_scene()
-                                .and_then(|s| {
-                                    s.layers
-                                        .iter()
-                                        .flat_map(|l| l.items.iter())
-                                        .find(|i| i.id == drag.item_id)
-                                        .map(|i| i.start)
-                                });
-                            if let Some(start) = item_start {
-                                let mut end_sec = raw_sec.max(start.as_seconds() + 0.1);
-                                if self.snap_enabled {
-                                    end_sec = snap_value(end_sec, &snap_targets, 8.0 / pps as f64);
-                                }
-                                let dur = (end_sec - start.as_seconds()).max(0.1);
-                                let _ = session.bus.execute(
-                                    &mut session.project,
-                                    EditCommand::TrimObject {
-                                        item_id: drag.item_id,
-                                        new_start: start,
-                                        new_duration: RationalTime::from_seconds(dur),
-                                    },
-                                    CommandSource::Gui,
-                                    Some("timeline_trim"),
-                                );
-                            }
                         }
                     }
                 }

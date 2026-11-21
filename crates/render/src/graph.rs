@@ -61,8 +61,9 @@ impl RenderGraph {
                     _ => {
                         if let Some(mut item_img) = self.render_item(item, w, h) {
                             apply_effect_chain(&mut item_img, &item.effect_chain);
-                            let dst = layer_buf
-                                .get_or_insert_with(|| LinearImage::new(w, h, LinearPremul::TRANSPARENT));
+                            let dst = layer_buf.get_or_insert_with(|| {
+                                LinearImage::new(w, h, LinearPremul::TRANSPARENT)
+                            });
                             dst.blend_over(
                                 &item_img,
                                 item.transform.x.round() as i32,
@@ -110,7 +111,12 @@ impl RenderGraph {
         canvas
     }
 
-    fn render_item(&mut self, item: &TimelineItem, canvas_w: u32, canvas_h: u32) -> Option<LinearImage> {
+    fn render_item(
+        &mut self,
+        item: &TimelineItem,
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> Option<LinearImage> {
         match &item.kind {
             ItemKind::Shape {
                 shape,

@@ -146,10 +146,10 @@ impl ProjectFolder {
                 return AssetResolution::Found(candidate);
             }
         }
-        if let Some(abs) = &asset.fallback_absolute_path {
-            if abs.exists() {
-                return AssetResolution::Found(abs.clone());
-            }
+        if let Some(abs) = &asset.fallback_absolute_path
+            && abs.exists()
+        {
+            return AssetResolution::Found(abs.clone());
         }
         AssetResolution::Offline
     }

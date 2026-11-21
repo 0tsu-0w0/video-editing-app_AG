@@ -45,10 +45,12 @@ struct EditorApp {
 
 impl EditorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut settings = ProjectSettings::default();
-        settings.width = 1280;
-        settings.height = 720;
-        settings.fps = FrameRate::FPS_60;
+        let settings = ProjectSettings {
+            width: 1280,
+            height: 720,
+            fps: FrameRate::FPS_60,
+            ..Default::default()
+        };
 
         let mut project = Project::new("Phase 1b NLE + MCP Project", settings.clone());
         let mut initial_selected = Vec::new();
@@ -247,7 +249,11 @@ impl TabViewer for EditorTabViewer<'_> {
                     ui.horizontal(|ui| {
                         let is_playing = self.app.audio_state.clock.read().unwrap().is_playing();
                         if ui
-                            .button(if is_playing { "⏸ 一時停止" } else { "▶ 再生" })
+                            .button(if is_playing {
+                                "⏸ 一時停止"
+                            } else {
+                                "▶ 再生"
+                            })
                             .clicked()
                         {
                             let mut clock = self.app.audio_state.clock.write().unwrap();
@@ -321,16 +327,14 @@ impl TabViewer for EditorTabViewer<'_> {
                     let mut text_edit_state: Option<(Uuid, String)> = None;
                     {
                         let sess = self.app.session.lock().unwrap();
-                        if let Some(&sel_id) = sess.selected_items.first() {
-                            if let Some(scene) = sess.project.active_scene() {
-                                for layer in &scene.layers {
-                                    if let Some(item) =
-                                        layer.items.iter().find(|i| i.id == sel_id)
-                                    {
-                                        if let ItemKind::Text { content, .. } = &item.kind {
-                                            text_edit_state = Some((sel_id, content.clone()));
-                                        }
-                                    }
+                        if let Some(&sel_id) = sess.selected_items.first()
+                            && let Some(scene) = sess.project.active_scene()
+                        {
+                            for layer in &scene.layers {
+                                if let Some(item) = layer.items.iter().find(|i| i.id == sel_id)
+                                    && let ItemKind::Text { content, .. } = &item.kind
+                                {
+                                    text_edit_state = Some((sel_id, content.clone()));
                                 }
                             }
                         }
@@ -350,7 +354,9 @@ impl TabViewer for EditorTabViewer<'_> {
                             );
                         }
                     } else {
-                        let mut dummy = String::from("（タイムラインでテキストオブジェクトを選択してください）");
+                        let mut dummy = String::from(
+                            "（タイムラインでテキストオブジェクトを選択してください）",
+                        );
                         self.app.ime_panel.ui(ui, &mut dummy);
                     }
 
@@ -386,13 +392,11 @@ impl TabViewer for EditorTabViewer<'_> {
                                     }
                                     AssetResolution::Offline => {
                                         ui.colored_label(egui::Color32::RED, "OFFLINE");
-                                        let entry = self
-                                            .app
-                                            .relink_inputs
-                                            .entry(asset.id)
-                                            .or_default();
+                                        let entry =
+                                            self.app.relink_inputs.entry(asset.id).or_default();
                                         ui.text_edit_singleline(entry);
-                                        if ui.button("再リンク").clicked() && !entry.is_empty() {
+                                        if ui.button("再リンク").clicked() && !entry.is_empty()
+                                        {
                                             asset.fallback_absolute_path =
                                                 Some(PathBuf::from(entry.trim()));
                                         }
@@ -437,8 +441,8 @@ impl eframe::App for EditorApp {
                 sess.project.active_scene().cloned()
             };
             if let Some(mut preview_scene) = scene_opt {
-                preview_scene.width = preview_scene.width / self.preview_scale.max(1);
-                preview_scene.height = preview_scene.height / self.preview_scale.max(1);
+                preview_scene.width /= self.preview_scale.max(1);
+                preview_scene.height /= self.preview_scale.max(1);
                 let linear_img = self.render_graph.render_scene(&preview_scene, current_time);
                 pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
             }

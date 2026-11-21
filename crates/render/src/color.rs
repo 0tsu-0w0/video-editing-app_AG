@@ -105,7 +105,7 @@ impl LinearImage {
 
     pub fn from_rgba8_srgb(width: u32, height: u32, data: &[u8]) -> Self {
         let mut pixels = Vec::with_capacity((width * height) as usize);
-        for px in data.chunks_exact(4) {
+        for px in data.as_chunks::<4>().0 {
             pixels.push(LinearPremul::from_rgba8_srgb(px[0], px[1], px[2], px[3]));
         }
         Self {

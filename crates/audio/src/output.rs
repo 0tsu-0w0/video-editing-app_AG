@@ -34,7 +34,9 @@ pub mod live {
         _stream: cpal::Stream,
     }
 
-    pub fn start_live_output(state: Arc<AudioEngineState>) -> Result<LiveAudioStream, AudioOutputError> {
+    pub fn start_live_output(
+        state: Arc<AudioEngineState>,
+    ) -> Result<LiveAudioStream, AudioOutputError> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()

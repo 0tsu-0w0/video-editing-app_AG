@@ -143,7 +143,11 @@ fn handle_connection(mut stream: TcpStream, session: &SharedEditorSession, expec
 
     let mut body = vec![0u8; content_length.min(16 * 1024 * 1024)];
     if reader.read_exact(&mut body).is_err() {
-        write_http_json(&mut stream, "400 Bad Request", &json!({"error": "short body"}));
+        write_http_json(
+            &mut stream,
+            "400 Bad Request",
+            &json!({"error": "short body"}),
+        );
         return;
     }
 
@@ -251,9 +255,11 @@ mod tests {
 
     #[test]
     fn mcp_server_auth_add_object_render_preview_and_undo() {
-        let mut settings = ProjectSettings::default();
-        settings.width = 64;
-        settings.height = 36;
+        let settings = ProjectSettings {
+            width: 64,
+            height: 36,
+            ..Default::default()
+        };
         let project = Project::new("McpTest", settings);
         let session = Arc::new(Mutex::new(EditorSession::new(project)));
         let server = EmbeddedMcpServer::start(Arc::clone(&session)).unwrap();
@@ -314,15 +320,26 @@ mod tests {
         );
         assert!(status.contains("200"));
         assert_eq!(preview_res["result"]["content"][0]["mimeType"], "image/png");
-        assert!(!preview_res["result"]["content"][0]["data"].as_str().unwrap().is_empty());
+        assert!(
+            !preview_res["result"]["content"][0]["data"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
 
         // AI が追加したオブジェクトは GUI と同じく Ctrl+Z (Undo) で取り消せる
         {
             let mut guard = session.lock().unwrap();
-            assert_eq!(guard.project.active_scene().unwrap().layers[0].items.len(), 1);
+            assert_eq!(
+                guard.project.active_scene().unwrap().layers[0].items.len(),
+                1
+            );
             let sess = &mut *guard;
             assert!(sess.bus.undo(&mut sess.project));
-            assert_eq!(sess.project.active_scene().unwrap().layers[0].items.len(), 0);
+            assert_eq!(
+                sess.project.active_scene().unwrap().layers[0].items.len(),
+                0
+            );
         }
     }
 }

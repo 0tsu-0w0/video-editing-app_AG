@@ -50,7 +50,11 @@ impl AudioGraph {
             RationalTime::from_audio_samples(start_sample + frame_count as i64, self.sample_rate);
 
         for clip in &self.clips {
-            if clip.muted || clip.gain <= 0.0 || clip.buffer.sample_rate == 0 || clip.buffer.channels == 0 {
+            if clip.muted
+                || clip.gain <= 0.0
+                || clip.buffer.sample_rate == 0
+                || clip.buffer.channels == 0
+            {
                 continue;
             }
             let clip_end = clip.timeline_start + clip.duration;
