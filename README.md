@@ -5,7 +5,7 @@ After Effects の**高度な表現力・アニメーション制御**、AviUtl2 
 * **仕様書 (v1.1):** [docs/spec.md](docs/spec.md)
 * **アーキテクチャ設計書:** [docs/architecture.md](docs/architecture.md)
 * **プラグイン＆カスタム WGSL 開発ガイド:** [docs/plugin-guide.md](docs/plugin-guide.md)
-* **ロードマップ:** [docs/roadmap.md](docs/roadmap.md)
+* **ロードマップ:** [docs/future_features.md](docs/future_features.md)
 * **コントリビューションガイド:** [CONTRIBUTING.md](CONTRIBUTING.md)
 * **変更履歴:** [CHANGELOG.md](CHANGELOG.md)
 
