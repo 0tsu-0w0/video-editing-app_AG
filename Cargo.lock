@@ -4251,6 +4251,8 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "half",
+ "serde_json",
+ "tempfile",
  "uuid",
  "ve-core",
  "wgpu",

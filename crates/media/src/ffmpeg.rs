@@ -373,4 +373,35 @@ mod tests {
         let decoded = cli.decode_frame_rgba8(&mp4_path, 0.1, 160, 90).unwrap();
         assert_eq!(decoded.len(), 160 * 90 * 4);
     }
+
+    #[test]
+    fn ffmpeg_transparent_png_sequence_export() {
+        let cli = FfmpegCli::default();
+        let tmp = tempdir().unwrap();
+        let pattern = tmp.path().join("frame_%04d.png");
+
+        let config = ExportConfig {
+            width: 64,
+            height: 36,
+            fps: FrameRate::FPS_30,
+            format: ExportFormat::PngSequence,
+            crf: 18,
+        };
+        let mut session = cli.start_export(&pattern, &config, None).unwrap();
+        let mut frame = vec![0u8; 64 * 36 * 4];
+        // 半透明ピクセル
+        for px in frame.as_chunks_mut::<4>().0 {
+            px[0] = 255;
+            px[1] = 128;
+            px[2] = 0;
+            px[3] = 128;
+        }
+        for _ in 0..3 {
+            session.write_rgba8_frame(&frame).unwrap();
+        }
+        session.finish().unwrap();
+
+        assert!(tmp.path().join("frame_0001.png").exists());
+        assert!(tmp.path().join("frame_0003.png").exists());
+    }
 }

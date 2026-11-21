@@ -3,8 +3,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 use ve_core::{
-    CommandSource, EditCommand, EffectNode, FrameRate, ItemKind, RationalTime, RgbaColor,
-    ShapeKind, TimelineItem, Transform2D,
+    CommandSource, CubicBezier, EditCommand, EffectNode, FrameRate, Interpolation, ItemKind,
+    Keyframe, RationalTime, RgbaColor, ShapeKind, TextAnimator, TimelineItem, TrackMatte,
+    TrackMatteMode,
 };
 use ve_render::RenderGraph;
 
@@ -153,6 +154,57 @@ pub fn tool_definitions() -> Value {
                     "effect_id": { "type": "string" },
                     "params": { "type": "object" }
                 }
+            }
+        },
+        {
+            "name": "set_keyframe",
+            "description": "オブジェクトのプロパティへキーフレーム（ベジェ曲線イージング対応）を設定する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["id", "property", "value"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "property": { "type": "string" },
+                    "time_sec": { "type": "number" },
+                    "time_frame": { "type": "integer" },
+                    "value": { "type": "number" },
+                    "easing": { "type": "string", "enum": ["linear", "hold", "ease_out", "ease_in_out"] }
+                }
+            }
+        },
+        {
+            "name": "precompose_selection",
+            "description": "指定オブジェクト群をワンクリック結合（Smart Precompose）して新シーンへ移送する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["ids", "name"],
+                "properties": {
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                    "name": { "type": "string" },
+                    "target_layer_index": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "set_track_matte",
+            "description": "指定レイヤーにトラックマット（alpha / alpha_inverted / luma / luma_inverted）を設定または解除する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["layer_index"],
+                "properties": {
+                    "layer_index": { "type": "integer" },
+                    "mode": { "type": "string", "enum": ["alpha", "alpha_inverted", "luma", "luma_inverted"] },
+                    "source_layer_index": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "switch_scene",
+            "description": "アクティブ編集シーンを切り替える（プリコンポーズ再編集・メイン復帰）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["scene_id"],
+                "properties": { "scene_id": { "type": "string" } }
             }
         },
         {
@@ -310,19 +362,24 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 .and_then(Value::as_f64)
                 .unwrap_or(0.5)
                 .clamp(0.1, 1.0);
-            let mut scene = guard
-                .project
-                .active_scene()
-                .cloned()
-                .ok_or_else(|| "no active scene".to_string())?;
-            scene.width = ((scene.width as f64) * scale).round().max(16.0) as u32;
-            scene.height = ((scene.height as f64) * scale).round().max(16.0) as u32;
+            let mut proj_clone = guard.project.clone();
+            let active_id = proj_clone.active_scene_id;
+            let (out_w, out_h) = {
+                let s = proj_clone
+                    .active_scene_mut()
+                    .ok_or_else(|| "no active scene".to_string())?;
+                s.width = ((s.width as f64) * scale).round().max(16.0) as u32;
+                s.height = ((s.height as f64) * scale).round().max(16.0) as u32;
+                (s.width, s.height)
+            };
             drop(guard);
 
             let mut rg = RenderGraph::new();
-            let linear = rg.render_scene(&scene, t);
+            let linear = rg
+                .render_project_scene(&proj_clone, active_id, t, false)
+                .ok_or_else(|| "failed to render scene".to_string())?;
             let rgba8 = linear.to_rgba8_srgb();
-            let png_bytes = encode_rgba8_to_png(scene.width, scene.height, &rgba8)?;
+            let png_bytes = encode_rgba8_to_png(out_w, out_h, &rgba8)?;
             let b64 = base64_encode(&png_bytes);
             Ok(json!({
                 "content": [
@@ -372,18 +429,11 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                         .and_then(Value::as_f64)
                         .unwrap_or(48.0) as f32,
                     color: RgbaColor::WHITE,
+                    animator: TextAnimator::default(),
                 },
             };
-            let id = Uuid::new_v4();
-            let item = TimelineItem {
-                id,
-                name: item_name,
-                start,
-                duration,
-                transform: Transform2D::default(),
-                effect_chain: vec![],
-                kind,
-            };
+            let item = TimelineItem::new(item_name, start, duration, kind);
+            let id = item.id;
             let sess = &mut *guard;
             sess.bus
                 .execute(
@@ -557,6 +607,132 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 )
                 .map_err(|e| e.to_string())?;
             Ok(json!({ "content": [{ "type": "text", "text": "updated" }] }))
+        }
+        "set_keyframe" => {
+            let id = parse_uuid(args, "id")?;
+            let property = args
+                .get("property")
+                .and_then(Value::as_str)
+                .ok_or("missing property")?
+                .to_string();
+            let value = args
+                .get("value")
+                .and_then(Value::as_f64)
+                .ok_or("missing value")? as f32;
+            let time = parse_time_arg(args, "time_frame", "time_sec", fps, RationalTime::ZERO);
+            let interpolation = match args.get("easing").and_then(Value::as_str) {
+                Some("hold") => Interpolation::Hold,
+                Some("ease_out") => Interpolation::Bezier(CubicBezier::EASE_OUT),
+                Some("ease_in_out") => Interpolation::Bezier(CubicBezier::EASE_IN_OUT),
+                _ => Interpolation::Linear,
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SetKeyframe {
+                        item_id: id,
+                        property,
+                        keyframe: Keyframe {
+                            time,
+                            value,
+                            interpolation,
+                        },
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "keyframe_set" }] }))
+        }
+        "precompose_selection" => {
+            let ids_arr = args
+                .get("ids")
+                .and_then(Value::as_array)
+                .ok_or("missing ids array")?;
+            let mut item_ids = Vec::with_capacity(ids_arr.len());
+            for v in ids_arr {
+                let s = v.as_str().ok_or("id must be string")?;
+                item_ids.push(Uuid::parse_str(s).map_err(|e| e.to_string())?);
+            }
+            let precomp_name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("Precomp")
+                .to_string();
+            let target_layer_index = args
+                .get("target_layer_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let new_scene_id = Uuid::new_v4();
+            let precomp_item_id = Uuid::new_v4();
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::PrecomposeSelection {
+                        item_ids,
+                        new_scene_id,
+                        precomp_name,
+                        precomp_item_id,
+                        target_layer_index,
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({"scene_id": new_scene_id, "precomp_item_id": precomp_item_id}).to_string()
+                }]
+            }))
+        }
+        "set_track_matte" => {
+            let layer_index = args
+                .get("layer_index")
+                .and_then(Value::as_u64)
+                .ok_or("missing layer_index")? as usize;
+            let matte = if let (Some(mode_s), Some(src_idx)) = (
+                args.get("mode").and_then(Value::as_str),
+                args.get("source_layer_index").and_then(Value::as_u64),
+            ) {
+                let mode = match mode_s {
+                    "alpha_inverted" => TrackMatteMode::AlphaInverted,
+                    "luma" => TrackMatteMode::Luma,
+                    "luma_inverted" => TrackMatteMode::LumaInverted,
+                    _ => TrackMatteMode::Alpha,
+                };
+                Some(TrackMatte {
+                    mode,
+                    source_layer_index: src_idx as usize,
+                })
+            } else {
+                None
+            };
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SetTrackMatte { layer_index, matte },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "track_matte_updated" }] }))
+        }
+        "switch_scene" => {
+            let scene_id = parse_uuid(args, "scene_id")?;
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SwitchScene { scene_id },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "content": [{ "type": "text", "text": "switched" }] }))
         }
         "batch_execute" => {
             let label = args

@@ -10,6 +10,8 @@ ve-core.workspace = true
 wgpu.workspace = true
 cosmic-text.workspace = true
 half.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true
+tempfile.workspace = true
