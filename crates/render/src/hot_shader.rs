@@ -25,6 +25,8 @@ pub struct HotShaderEntry {
     pub last_hash: String,
     /// 最後に構文・型検証（naga）を通過した安全な WGSL ソース
     pub valid_wgsl: String,
+    /// 最後に検証通過したフラグメントエントリーポイント名（GPUオフロード用）
+    pub fragment_entry_point: Option<String>,
     pub revision: u64,
     pub status: ShaderReloadStatus,
 }
@@ -54,7 +56,7 @@ impl ShaderHotReloader {
         let mtime = meta.as_ref().and_then(|m| m.modified().ok());
         let len = meta.map(|m| m.len()).unwrap_or(source.len() as u64);
         let hash = content_hash_hex(source.as_bytes());
-        let entry_points = validate_wgsl(&source)?;
+        let (entry_points, frag_ep) = validate_wgsl_detailed(&source)?;
 
         let entry = HotShaderEntry {
             id: id.clone(),
@@ -63,6 +65,7 @@ impl ShaderHotReloader {
             last_len: len,
             last_hash: hash,
             valid_wgsl: source,
+            fragment_entry_point: frag_ep,
             revision: 1,
             status: ShaderReloadStatus::Loaded {
                 revision: 1,
@@ -107,10 +110,11 @@ impl ShaderHotReloader {
             }
             entry.last_hash = hash;
 
-            match validate_wgsl(&source) {
-                Ok(entry_points) => {
+            match validate_wgsl_detailed(&source) {
+                Ok((entry_points, frag_ep)) => {
                     entry.revision += 1;
                     entry.valid_wgsl = source;
+                    entry.fragment_entry_point = frag_ep;
                     entry.status = ShaderReloadStatus::Loaded {
                         revision: entry.revision,
                         entry_points,
@@ -148,6 +152,10 @@ impl ShaderHotReloader {
 
 /// `naga` フロントエンド＆バリデータで WGSL を厳密検証し、エントリーポイント一覧を返す
 pub fn validate_wgsl(source: &str) -> Result<Vec<String>, String> {
+    validate_wgsl_detailed(source).map(|(eps, _)| eps)
+}
+
+fn validate_wgsl_detailed(source: &str) -> Result<(Vec<String>, Option<String>), String> {
     let module = naga::front::wgsl::parse_str(source)
         .map_err(|e| format!("WGSL parse error:\n{}", e.emit_to_string(source)))?;
     let mut validator = naga::valid::Validator::new(
@@ -162,7 +170,12 @@ pub fn validate_wgsl(source: &str) -> Result<Vec<String>, String> {
         .iter()
         .map(|ep| ep.name.clone())
         .collect();
-    Ok(eps)
+    let frag = module
+        .entry_points
+        .iter()
+        .find(|ep| ep.stage == naga::ShaderStage::Fragment)
+        .map(|ep| ep.name.clone());
+    Ok((eps, frag))
 }
 
 /// 指定ディレクトリ内の `.wgsl` ファイルをすべて監視登録する

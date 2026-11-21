@@ -21,7 +21,7 @@ use inspector_extras::InspectorExtrasState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
-use timeline::TimelineState;
+use timeline::{TimelinePlaybackAction, TimelineState};
 use uuid::Uuid;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
@@ -32,7 +32,9 @@ use ve_core::{
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
-use ve_render::{RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, register_shader_dir};
+use ve_render::{
+    GpuPostProcessPass, RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, register_shader_dir,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceMode {
@@ -86,6 +88,7 @@ struct EditorApp {
     workspace_mode: WorkspaceMode,
     session: SharedEditorSession,
     mcp_server: Option<EmbeddedMcpServer>,
+    mcp_copy_status: String,
     timeline_state: TimelineState,
     graph_editor: GraphEditorState,
     asset_browser: AssetBrowserPanel,
@@ -106,6 +109,15 @@ struct EditorApp {
     relink_inputs: BTreeMap<Uuid, String>,
     custom_wgsl_path_input: String,
     custom_wgsl_msg: String,
+    // v0.4 #5: wgpu GPU オフロード＆カスタム WGSL ポストプロセス設定
+    gpu_offload_enabled: bool,
+    gpu_active_custom_shader: Option<String>,
+    gpu_custom_strength: f32,
+    gpu_exposure: f32,
+    gpu_contrast: f32,
+    gpu_saturation: f32,
+    gpu_blur_radius: f32,
+    gpu_glow_intensity: f32,
     project_dir_input: String,
     project_status: String,
     pending_recovery: Vec<HistoryEntry>,
@@ -246,6 +258,7 @@ impl EditorApp {
             workspace_mode,
             session,
             mcp_server,
+            mcp_copy_status: String::new(),
             timeline_state: TimelineState::default(),
             graph_editor: GraphEditorState::default(),
             asset_browser: AssetBrowserPanel::new(),
@@ -266,6 +279,14 @@ impl EditorApp {
             relink_inputs: BTreeMap::new(),
             custom_wgsl_path_input: "shaders/custom_chromatic_aberration.wgsl".to_string(),
             custom_wgsl_msg: format!("監視中 WGSL: {loaded_shaders} 件"),
+            gpu_offload_enabled: true,
+            gpu_active_custom_shader: None,
+            gpu_custom_strength: 0.008,
+            gpu_exposure: 0.0,
+            gpu_contrast: 1.0,
+            gpu_saturation: 1.0,
+            gpu_blur_radius: 0.0,
+            gpu_glow_intensity: 0.0,
             project_dir_input: "./MyVideoProject".to_string(),
             project_status: "未保存プロジェクト（D&Dで素材読込可）".to_string(),
             pending_recovery: Vec::new(),
@@ -281,6 +302,51 @@ impl EditorApp {
             preview_dirty: true,
             last_shader_poll: std::time::Instant::now(),
         }
+    }
+
+    /// 現在有効な wgpu Ping-Pong ポストプロセス＆カスタム WGSL パス列を構築する
+    fn build_active_gpu_passes(&self) -> Vec<GpuPostProcessPass> {
+        if !self.gpu_offload_enabled {
+            return Vec::new();
+        }
+        let mut passes = Vec::new();
+        if self.gpu_exposure.abs() > 0.001
+            || (self.gpu_contrast - 1.0).abs() > 0.001
+            || (self.gpu_saturation - 1.0).abs() > 0.001
+        {
+            passes.push(GpuPostProcessPass::custom(
+                "builtin:color_grade",
+                [
+                    self.gpu_exposure,
+                    self.gpu_contrast,
+                    self.gpu_saturation,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+            ));
+        }
+        if self.gpu_blur_radius > 0.05 {
+            passes.push(GpuPostProcessPass::custom(
+                "builtin:blur",
+                [self.gpu_blur_radius, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ));
+        }
+        if self.gpu_glow_intensity > 0.01 {
+            passes.push(GpuPostProcessPass::custom(
+                "builtin:glow",
+                [3.0, 0.55, self.gpu_glow_intensity, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ));
+        }
+        if let Some(ref sid) = self.gpu_active_custom_shader {
+            passes.push(GpuPostProcessPass::custom(
+                sid.clone(),
+                [self.gpu_custom_strength, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ));
+        }
+        passes
     }
 
     fn switch_workspace(&mut self, mode: WorkspaceMode) {
@@ -415,6 +481,14 @@ impl EditorApp {
             crf: 18,
             encoder: self.export_encoder,
         };
+        let gpu_passes = self.build_active_gpu_passes();
+        let shader_files: Vec<(String, PathBuf)> = self
+            .render_graph
+            .hot_shaders
+            .list()
+            .into_iter()
+            .map(|e| (e.id.clone(), e.path.clone()))
+            .collect();
 
         self.export_job = Some(ExportJobHandle::start(ExportJobRequest {
             project: proj_clone,
@@ -423,6 +497,8 @@ impl EditorApp {
             output_path,
             config,
             transparent_bg,
+            gpu_passes,
+            shader_files,
         }));
         self.export_status = "バックグラウンド書き出し開始...".to_string();
     }
@@ -487,12 +563,15 @@ impl TabViewer for EditorTabViewer<'_> {
                     let secs = sess.playhead.as_seconds();
 
                     ui.horizontal_wrapped(|ui| {
-                        let is_playing = self.app.audio_state.clock.read().unwrap().is_playing();
+                        let (is_playing, cur_rate) = {
+                            let c = self.app.audio_state.clock.read().unwrap();
+                            (c.is_playing(), c.playback_rate())
+                        };
                         if ui
                             .button(if is_playing {
-                                "⏸ 一時停止"
+                                "⏸ 一時停止 (Space)"
                             } else {
-                                "▶ 再生"
+                                "▶ 再生 (Space)"
                             })
                             .clicked()
                             || space_pressed
@@ -500,20 +579,27 @@ impl TabViewer for EditorTabViewer<'_> {
                             let mut clock = self.app.audio_state.clock.write().unwrap();
                             if is_playing {
                                 clock.pause();
+                                clock.set_playback_rate(1.0);
                             } else {
+                                clock.set_playback_rate(1.0);
                                 clock.seek(sess.playhead);
                                 clock.play();
                                 play_started = true;
                             }
                         }
+                        if is_playing && (cur_rate - 1.0).abs() > 0.05 {
+                            let badge = if cur_rate < 0.0 {
+                                format!("⏪ {:.0}x", cur_rate)
+                            } else {
+                                format!("⏩ {:.0}x", cur_rate)
+                            };
+                            ui.colored_label(egui::Color32::from_rgb(255, 212, 82), badge);
+                        }
                         if ui.button("⏮ 先頭").clicked() {
                             sess.playhead = RationalTime::ZERO;
-                            self.app
-                                .audio_state
-                                .clock
-                                .write()
-                                .unwrap()
-                                .seek(RationalTime::ZERO);
+                            let mut clock = self.app.audio_state.clock.write().unwrap();
+                            clock.set_playback_rate(1.0);
+                            clock.seek(RationalTime::ZERO);
                         }
                         ui.monospace(format!(
                             "{secs:.3}s | Frame {frame} ({:.2}fps)",
@@ -608,17 +694,62 @@ impl TabViewer for EditorTabViewer<'_> {
                     });
 
                     ui.separator();
-                    self.app
-                        .timeline_state
-                        .show(ui, &mut sess, &self.app.waveforms);
-
-                    if !self.app.audio_state.clock.read().unwrap().is_playing() {
+                    let pb_action =
                         self.app
-                            .audio_state
-                            .clock
-                            .write()
-                            .unwrap()
-                            .seek(sess.playhead);
+                            .timeline_state
+                            .show(ui, &mut sess, &self.app.waveforms);
+
+                    match pb_action {
+                        TimelinePlaybackAction::ShuttleReverse => {
+                            let mut clock = self.app.audio_state.clock.write().unwrap();
+                            let next_rate = if clock.is_playing() && clock.playback_rate() < 0.0 {
+                                match clock.playback_rate().round() as i32 {
+                                    -1 => -2.0,
+                                    _ => -4.0,
+                                }
+                            } else {
+                                -1.0
+                            };
+                            clock.set_playback_rate(next_rate);
+                            if !clock.is_playing() {
+                                clock.seek(sess.playhead);
+                                clock.play();
+                                play_started = true;
+                            }
+                        }
+                        TimelinePlaybackAction::ShuttlePause => {
+                            let mut clock = self.app.audio_state.clock.write().unwrap();
+                            clock.pause();
+                            clock.set_playback_rate(1.0);
+                            clock.seek(sess.playhead);
+                        }
+                        TimelinePlaybackAction::ShuttleForward => {
+                            let mut clock = self.app.audio_state.clock.write().unwrap();
+                            let next_rate = if clock.is_playing() && clock.playback_rate() > 0.0 {
+                                match clock.playback_rate().round() as i32 {
+                                    1 => 2.0,
+                                    _ => 4.0,
+                                }
+                            } else {
+                                1.0
+                            };
+                            clock.set_playback_rate(next_rate);
+                            if !clock.is_playing() {
+                                clock.seek(sess.playhead);
+                                clock.play();
+                                play_started = true;
+                            }
+                        }
+                        TimelinePlaybackAction::None => {
+                            if !self.app.audio_state.clock.read().unwrap().is_playing() {
+                                self.app
+                                    .audio_state
+                                    .clock
+                                    .write()
+                                    .unwrap()
+                                    .seek(sess.playhead);
+                            }
+                        }
                     }
                 }
                 if play_started {
@@ -641,15 +772,35 @@ impl TabViewer for EditorTabViewer<'_> {
                     ui.heading("内蔵 MCP (Streamable HTTP)");
                     if let Some(mcp) = &self.app.mcp_server {
                         let url = mcp.endpoint_url();
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.monospace(&url);
                             if ui.button("URL").clicked() {
                                 ui.ctx().copy_text(url);
+                                self.app.mcp_copy_status = "MCP URLをコピーしました".into();
                             }
                             if ui.button("トークン").clicked() {
                                 ui.ctx().copy_text(mcp.bearer_token().to_string());
+                                self.app.mcp_copy_status = "Bearerトークンをコピーしました".into();
+                            }
+                            if ui
+                                .button("📋 MCPクライアント設定JSONをコピー")
+                                .on_hover_text(
+                                    "Claude Desktop / Cursor / Codex 等へそのまま貼り付け可能な JSON 設定をコピー",
+                                )
+                                .clicked()
+                            {
+                                ui.ctx().copy_text(mcp.client_config_json());
+                                self.app.mcp_copy_status =
+                                    "MCPクライアント設定JSONをクリップボードへコピーしました"
+                                        .into();
                             }
                         });
+                        if !self.app.mcp_copy_status.is_empty() {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_GREEN,
+                                &self.app.mcp_copy_status,
+                            );
+                        }
                     }
                     ui.separator();
 
@@ -1006,7 +1157,112 @@ impl TabViewer for EditorTabViewer<'_> {
                         }
                     }
                     ui.separator();
-                    ui.heading("カスタム WGSL ホットリロード (Phase 4)");
+                    ui.heading("⚡ wgpu GPU オフロード＆カスタム WGSL ホットリロード (v0.4)");
+                    let compiled_custom_cnt = self
+                        .app
+                        .preview_pipeline
+                        .as_ref()
+                        .map(|p| p.compiled_custom_shader_count())
+                        .unwrap_or(0);
+                    let mut gpu_changed = false;
+                    gpu_changed |= ui
+                        .checkbox(
+                            &mut self.app.gpu_offload_enabled,
+                            format!(
+                                "Rgba16Float Ping-Pong GPU パイプライン有効（コンパイル済カスタム: {compiled_custom_cnt}）"
+                            ),
+                        )
+                        .changed();
+                    if self.app.gpu_offload_enabled {
+                        let shader_entries = self.app.render_graph.hot_shaders.list();
+                        let cur_shader_label = self
+                            .app
+                            .gpu_active_custom_shader
+                            .clone()
+                            .unwrap_or_else(|| "なし（組み込みのみ）".into());
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_label("アクティブ WGSL")
+                                .selected_text(cur_shader_label)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.app.gpu_active_custom_shader,
+                                            None,
+                                            "なし（組み込みのみ）",
+                                        )
+                                        .changed()
+                                    {
+                                        gpu_changed = true;
+                                    }
+                                    for entry in &shader_entries {
+                                        if entry.fragment_entry_point.is_some()
+                                            && ui
+                                                .selectable_value(
+                                                    &mut self.app.gpu_active_custom_shader,
+                                                    Some(entry.id.clone()),
+                                                    &entry.id,
+                                                )
+                                                .changed()
+                                        {
+                                            gpu_changed = true;
+                                        }
+                                    }
+                                });
+                            if ui.small_button("リセット").clicked() {
+                                self.app.gpu_active_custom_shader = None;
+                                self.app.gpu_custom_strength = 0.008;
+                                self.app.gpu_exposure = 0.0;
+                                self.app.gpu_contrast = 1.0;
+                                self.app.gpu_saturation = 1.0;
+                                self.app.gpu_blur_radius = 0.0;
+                                self.app.gpu_glow_intensity = 0.0;
+                                gpu_changed = true;
+                            }
+                        });
+                        if self.app.gpu_active_custom_shader.is_some() {
+                            gpu_changed |= ui
+                                .add(
+                                    egui::Slider::new(&mut self.app.gpu_custom_strength, 0.0..=0.08)
+                                        .fixed_decimals(4)
+                                        .text("カスタム強度 (p0)"),
+                                )
+                                .changed();
+                        }
+                        gpu_changed |= ui
+                            .add(
+                                egui::Slider::new(&mut self.app.gpu_exposure, -2.0..=2.0)
+                                    .text("GPU 露出 (EV)"),
+                            )
+                            .changed();
+                        gpu_changed |= ui
+                            .add(
+                                egui::Slider::new(&mut self.app.gpu_contrast, 0.2..=2.5)
+                                    .text("GPU コントラスト"),
+                            )
+                            .changed();
+                        gpu_changed |= ui
+                            .add(
+                                egui::Slider::new(&mut self.app.gpu_saturation, 0.0..=2.5)
+                                    .text("GPU 彩度"),
+                            )
+                            .changed();
+                        gpu_changed |= ui
+                            .add(
+                                egui::Slider::new(&mut self.app.gpu_blur_radius, 0.0..=12.0)
+                                    .text("GPU 2-Pass ブラー"),
+                            )
+                            .changed();
+                        gpu_changed |= ui
+                            .add(
+                                egui::Slider::new(&mut self.app.gpu_glow_intensity, 0.0..=3.0)
+                                    .text("GPU グロー強度"),
+                            )
+                            .changed();
+                    }
+                    if gpu_changed {
+                        self.app.preview_dirty = true;
+                    }
+
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.app.custom_wgsl_path_input);
                         if ui.button("監視登録").clicked()
@@ -1346,10 +1602,14 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // Render Graph 評価（ダーティ判定によりアイドル時はクローン・CPU描画・GPU転送を完全スキップ）
+        // Render Graph 評価＋wgpu Ping-Pong GPU オフロード（アイドル時は完全スキップ）
+        let active_gpu_passes = self.build_active_gpu_passes();
         if let (Some(wgpu_state), Some(pipe)) =
             (frame.wgpu_render_state(), self.preview_pipeline.as_mut())
         {
+            if pipe.sync_hot_shaders(&wgpu_state.device, &self.render_graph.hot_shaders) > 0 {
+                self.preview_dirty = true;
+            }
             let (revision, active_id) = {
                 let sess = self.session.lock().unwrap();
                 (sess.bus.revision(), sess.project.active_scene_id)
@@ -1377,7 +1637,13 @@ impl eframe::App for EditorApp {
                     current_time,
                     false,
                 ) {
-                    pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
+                    pipe.upload_process_and_present(
+                        &wgpu_state.device,
+                        &wgpu_state.queue,
+                        &linear_img,
+                        &active_gpu_passes,
+                        current_time.as_seconds() as f32,
+                    );
                     self.last_rendered_key = Some(render_key);
                     self.preview_dirty = false;
                 }
@@ -1417,7 +1683,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v0.1.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v0.4.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

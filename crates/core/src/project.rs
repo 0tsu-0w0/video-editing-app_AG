@@ -671,6 +671,36 @@ impl Layer {
     }
 }
 
+/// タイムラインマーカー（`M` キー追加・クリックジャンプ・YouTube チャプター自動出力対応）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineMarker {
+    pub id: Uuid,
+    pub time: RationalTime,
+    pub label: String,
+    #[serde(default = "default_marker_color")]
+    pub color: RgbaColor,
+}
+
+fn default_marker_color() -> RgbaColor {
+    RgbaColor {
+        r: 0.25,
+        g: 0.85,
+        b: 0.55,
+        a: 1.0,
+    }
+}
+
+impl TimelineMarker {
+    pub fn new(time: RationalTime, label: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            time: time.max(RationalTime::ZERO),
+            label: label.into(),
+            color: default_marker_color(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     pub id: SceneId,
@@ -686,6 +716,9 @@ pub struct Scene {
     /// 書き出し時の目標ラウドネス正規化（例: `Some(-14.0)` で YouTube 基準 -14 LUFS）
     #[serde(default)]
     pub target_lufs: Option<f32>,
+    /// タイムラインマーカー一覧（YouTube チャプター生成対応）
+    #[serde(default)]
+    pub markers: Vec<TimelineMarker>,
     pub layers: Vec<Layer>,
 }
 
@@ -700,6 +733,7 @@ impl Scene {
             camera: Camera3D::default(),
             master_audio_effects: Vec::new(),
             target_lufs: None,
+            markers: Vec::new(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),

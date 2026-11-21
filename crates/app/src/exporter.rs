@@ -6,7 +6,7 @@ use std::time::Instant;
 use ve_audio::AudioGraph;
 use ve_core::{Project, ProjectFolder, RationalTime, SceneId};
 use ve_media::{ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, write_wav_pcm16};
-use ve_render::RenderGraph;
+use ve_render::{GpuPostProcessPass, HeadlessGpuOffloader, RenderGraph};
 
 #[derive(Debug, Clone)]
 pub struct ExportJobRequest {
@@ -16,6 +16,8 @@ pub struct ExportJobRequest {
     pub output_path: PathBuf,
     pub config: ExportConfig,
     pub transparent_bg: bool,
+    pub gpu_passes: Vec<GpuPostProcessPass>,
+    pub shader_files: Vec<(String, PathBuf)>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +243,16 @@ fn run_export_worker(
     let mut rg = RenderGraph::new();
     rg.use_proxies = false; // 書き出し時は必ず高画質原本を参照
     rg.set_project_folder(req.folder.clone());
+    for (id, path) in &req.shader_files {
+        let _ = rg.hot_shaders.register_file(id.clone(), path);
+    }
+
+    // GPU オフロードが有効な場合はヘッドレス wgpu::Device 経由でポストプロセスを実行（非搭載環境は CPU 自動フォールバック）
+    let mut gpu_offloader = if !req.gpu_passes.is_empty() {
+        HeadlessGpuOffloader::try_new(req.config.width, req.config.height)
+    } else {
+        None
+    };
 
     let cli = FfmpegCli::default();
     let audio_wav_ref = temp_wav_guard.as_ref().map(|g| g.path.as_path());
@@ -256,9 +268,14 @@ fn run_export_worker(
         }
     };
     let resolved_enc = session.resolved_encoder();
+    let gpu_tag = if gpu_offloader.is_some() {
+        " + wgpu GPU"
+    } else {
+        ""
+    };
     update_progress(&progress, |p| {
         p.resolved_encoder = Some(resolved_enc);
-        p.stage = format!("エンコード中 ({})...", resolved_enc.display_name());
+        p.stage = format!("エンコード中 ({}{gpu_tag})...", resolved_enc.display_name());
     });
 
     // 3. フレーム単位でレンダリング＆エンコード（毎フレームキャンセル確認）
@@ -289,6 +306,19 @@ fn run_export_worker(
                 p.finished = true;
             });
             return;
+        };
+
+        let linear = if let Some(offloader) = gpu_offloader.as_mut() {
+            offloader
+                .apply_passes_readback(
+                    &linear,
+                    &rg.hot_shaders,
+                    &req.gpu_passes,
+                    t.as_seconds() as f32,
+                )
+                .unwrap_or(linear)
+        } else {
+            linear
         };
 
         if let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb()) {
@@ -426,6 +456,11 @@ mod tests {
                 encoder: VideoEncoder::Auto,
             },
             transparent_bg: false,
+            gpu_passes: vec![GpuPostProcessPass::custom(
+                "builtin:color_grade",
+                [0.05, 1.05, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )],
+            shader_files: Vec::new(),
         });
         let snap = handle.wait();
         assert!(snap.succeeded, "export failed: {:?}", snap.error);
@@ -455,6 +490,8 @@ mod tests {
                 ..Default::default()
             },
             transparent_bg: false,
+            gpu_passes: Vec::new(),
+            shader_files: Vec::new(),
         });
         let snap = handle.wait();
         assert!(snap.succeeded, "wav export failed: {:?}", snap.error);
@@ -489,6 +526,8 @@ mod tests {
                 encoder: VideoEncoder::Software,
             },
             transparent_bg: false,
+            gpu_passes: Vec::new(),
+            shader_files: Vec::new(),
         });
         handle.cancel();
         let snap = handle.wait();

@@ -617,6 +617,352 @@ pub fn build_motion_preset_commands(item: &TimelineItem, preset: MotionPreset) -
     }
 }
 
+/// 無音区間自動カット（ジェットカット / Jump Cut）設定
+#[derive(Debug, Clone, PartialEq)]
+pub struct JumpCutConfig {
+    /// 無音判定の RMS しきい値（既定 0.025）
+    pub rms_threshold: f32,
+    /// カット対象とする最小無音長（秒、既定 0.45s）
+    pub min_silence_sec: f64,
+    /// 発話語頭の食い込み防止マージン（秒、既定 0.08s）
+    pub pad_before_sec: f64,
+    /// 発話語尾の食い込み防止マージン（秒、既定 0.12s）
+    pub pad_after_sec: f64,
+    /// 音声に連動して同時にカット＆詰めを行うレイヤーインデックス群
+    pub ripple_linked_layers: Vec<usize>,
+}
+
+impl Default for JumpCutConfig {
+    fn default() -> Self {
+        Self {
+            rms_threshold: 0.025,
+            min_silence_sec: 0.45,
+            pad_before_sec: 0.08,
+            pad_after_sec: 0.12,
+            ripple_linked_layers: vec![0, 1, 2],
+        }
+    }
+}
+
+/// 保持すべき発話区間（タイムライン時刻）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeechInterval {
+    pub start: RationalTime,
+    pub end: RationalTime,
+}
+
+/// 波形 RMS バケット列から「保持すべき有音区間」を抽出する（短すぎる無音の結合・前後パディング対応）
+pub fn detect_speech_intervals_from_rms(
+    rms_series: &[f32],
+    bucket_sec: f64,
+    total_sec: f64,
+    cfg: &JumpCutConfig,
+) -> Vec<SpeechInterval> {
+    if rms_series.is_empty() || bucket_sec <= 0.0 || total_sec <= 0.0 {
+        return Vec::new();
+    }
+    let threshold = cfg.rms_threshold.max(0.0);
+    let mut raw: Vec<(f64, f64)> = Vec::new();
+    let mut cur_start: Option<f64> = None;
+
+    for (idx, &rms) in rms_series.iter().enumerate() {
+        let t0 = idx as f64 * bucket_sec;
+        if t0 >= total_sec {
+            break;
+        }
+        if rms >= threshold {
+            if cur_start.is_none() {
+                cur_start = Some(t0);
+            }
+        } else if let Some(s) = cur_start.take() {
+            raw.push((s, t0.min(total_sec)));
+        }
+    }
+    if let Some(s) = cur_start {
+        raw.push((s, total_sec));
+    }
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    // min_silence_sec 未満の短い間は発話継続として結合
+    let min_gap = cfg.min_silence_sec.max(0.0);
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (s, e) in raw {
+        if let Some(last) = merged.last_mut()
+            && s - last.1 < min_gap
+        {
+            last.1 = last.1.max(e);
+            continue;
+        }
+        merged.push((s, e));
+    }
+
+    // 前後マージン（pad_before / pad_after）を付与して重複を再マージ
+    let pad_b = cfg.pad_before_sec.max(0.0);
+    let pad_a = cfg.pad_after_sec.max(0.0);
+    let mut padded: Vec<(f64, f64)> = Vec::new();
+    for (s, e) in merged {
+        let ps = (s - pad_b).max(0.0);
+        let pe = (e + pad_a).min(total_sec);
+        if let Some(last) = padded.last_mut()
+            && ps <= last.1
+        {
+            last.1 = last.1.max(pe);
+            continue;
+        }
+        if pe - ps > 0.02 {
+            padded.push((ps, pe));
+        }
+    }
+
+    padded
+        .into_iter()
+        .map(|(s, e)| SpeechInterval {
+            start: RationalTime::from_seconds(s),
+            end: RationalTime::from_seconds(e),
+        })
+        .collect()
+}
+
+/// 発話区間列 `speech_intervals` 以外の無音区間を対象音声レイヤー＆連動レイヤーから一括カット＆左詰めする
+/// `EditCommand::Batch`（1回の Ctrl+Z で全復元可能）を構築する。
+/// 戻り値: `(保持区間数, 削除した無音合計秒数, Batchコマンド)`
+pub fn build_jump_cut_commands(
+    scene: &Scene,
+    audio_layer_index: usize,
+    speech_intervals: &[SpeechInterval],
+    ripple_linked_layers: &[usize],
+) -> Option<(usize, f64, EditCommand)> {
+    if speech_intervals.is_empty() {
+        return None;
+    }
+    let mut sorted = speech_intervals.to_vec();
+    sorted.sort_by_key(|iv| iv.start);
+
+    // 各保持区間を詰めた後の新開始時刻テーブルを構築
+    let mut mapped: Vec<(SpeechInterval, RationalTime)> = Vec::with_capacity(sorted.len());
+    let mut out_cursor = sorted[0].start.min(RationalTime::ZERO);
+    let mut kept_total_sec = 0.0f64;
+    for iv in &sorted {
+        if iv.end <= iv.start {
+            continue;
+        }
+        let dur = iv.end - iv.start;
+        mapped.push((*iv, out_cursor));
+        out_cursor = out_cursor + dur;
+        kept_total_sec += dur.as_seconds();
+    }
+    if mapped.is_empty() {
+        return None;
+    }
+
+    let orig_span_sec = (sorted.last().unwrap().end - sorted.first().unwrap().start)
+        .as_seconds()
+        .max(0.0);
+    let removed_sec = (orig_span_sec - kept_total_sec).max(0.0);
+
+    // 対象レイヤー集合（重複排除）
+    let mut target_layers: Vec<usize> = vec![audio_layer_index];
+    for &l in ripple_linked_layers {
+        if l < scene.layers.len() && !target_layers.contains(&l) {
+            target_layers.push(l);
+        }
+    }
+
+    let mut commands = Vec::new();
+    for &layer_idx in &target_layers {
+        let Some(layer) = scene.layers.get(layer_idx) else {
+            continue;
+        };
+        for item in &layer.items {
+            let mut slices: Vec<TimelineItem> = Vec::new();
+            for (iv, new_iv_start) in &mapped {
+                let ov_start = item.start.max(iv.start);
+                let ov_end = item.end().min(iv.end);
+                if ov_end <= ov_start {
+                    continue;
+                }
+                let slice_dur = ov_end - ov_start;
+                let offset_into_item = ov_start - item.start;
+                let offset_into_iv = ov_start - iv.start;
+                let mut cloned = item.clone();
+                cloned.id = Uuid::new_v4();
+                cloned.start = *new_iv_start + offset_into_iv;
+                cloned.duration = slice_dur;
+                match &mut cloned.kind {
+                    ItemKind::Video { source_offset, .. }
+                    | ItemKind::Audio { source_offset, .. } => {
+                        let speed = f64::from(item.playback.speed).abs().max(0.01);
+                        let delta_src =
+                            RationalTime::from_seconds(offset_into_item.as_seconds() * speed);
+                        *source_offset = *source_offset + delta_src;
+                    }
+                    _ => {}
+                }
+                slices.push(cloned);
+            }
+
+            // 元アイテムを削除し、切り出した有音スライス群を追加
+            commands.push(EditCommand::DeleteObject { item_id: item.id });
+            for slice in slices {
+                commands.push(EditCommand::AddObject {
+                    layer_index: layer_idx,
+                    item: slice,
+                });
+            }
+        }
+    }
+
+    if commands.is_empty() {
+        None
+    } else {
+        Some((
+            mapped.len(),
+            removed_sec,
+            EditCommand::Batch {
+                label: "auto_jump_cut".into(),
+                commands,
+            },
+        ))
+    }
+}
+
+/// 選択中アイテムを削除し、同じレイヤー上で後続するクリップを削除尺分だけ左へ詰める（リップル削除）
+pub fn build_ripple_delete_commands(scene: &Scene, item_ids: &[ItemId]) -> Option<EditCommand> {
+    let selected: HashSet<ItemId> = item_ids.iter().copied().collect();
+    if selected.is_empty() {
+        return None;
+    }
+
+    let mut commands = Vec::new();
+    for (layer_idx, layer) in scene.layers.iter().enumerate() {
+        let deleted: Vec<&TimelineItem> = layer
+            .items
+            .iter()
+            .filter(|i| selected.contains(&i.id))
+            .collect();
+        if deleted.is_empty() {
+            continue;
+        }
+        for d in &deleted {
+            commands.push(EditCommand::DeleteObject { item_id: d.id });
+        }
+        // 各非選択アイテムについて、自分より前で削除されたアイテム群の合計尺分だけ左へ詰める
+        for item in &layer.items {
+            if selected.contains(&item.id) {
+                continue;
+            }
+            let shift_ticks: i64 = deleted
+                .iter()
+                .filter(|d| d.start < item.start)
+                .map(|d| d.duration.ticks)
+                .sum();
+            if shift_ticks > 0 {
+                let new_start = RationalTime::from_ticks((item.start.ticks - shift_ticks).max(0));
+                commands.push(EditCommand::MoveObject {
+                    item_id: item.id,
+                    target_layer_index: layer_idx,
+                    new_start,
+                });
+            }
+        }
+    }
+
+    if commands.is_empty() {
+        None
+    } else {
+        Some(EditCommand::Batch {
+            label: "ripple_delete".into(),
+            commands,
+        })
+    }
+}
+
+/// タイムラインマーカー列から YouTube 概要欄へそのまま貼れるチャプターテキストを生成する
+pub fn format_youtube_chapters(markers: &[crate::project::TimelineMarker]) -> String {
+    if markers.is_empty() {
+        return String::new();
+    }
+    let mut sorted: Vec<&crate::project::TimelineMarker> = markers.iter().collect();
+    sorted.sort_by_key(|m| m.time);
+
+    let max_sec = sorted.last().map(|m| m.time.as_seconds()).unwrap_or(0.0);
+    let include_hours = max_sec >= 3600.0;
+
+    let fmt_ts = |secs: f64| -> String {
+        let total = secs.max(0.0).floor() as u64;
+        let h = total / 3600;
+        let m = (total % 3600) / 60;
+        let s = total % 60;
+        if include_hours {
+            format!("{h}:{m:02}:{s:02}")
+        } else {
+            format!("{m:02}:{s:02}")
+        }
+    };
+
+    let mut lines = Vec::new();
+    if sorted[0].time.as_seconds() >= 1.0 {
+        lines.push(format!("{} イントロ", fmt_ts(0.0)));
+    }
+    for m in sorted {
+        let label = if m.label.trim().is_empty() {
+            "チャプター"
+        } else {
+            m.label.trim()
+        };
+        lines.push(format!("{} {label}", fmt_ts(m.time.as_seconds())));
+    }
+    lines.join("\n")
+}
+
+/// 字幕テキストを日本語で読みやすい文字数（既定18文字）へ自動改行整形する（オフライン差分プレビュー＆MCP用）
+pub fn wrap_subtitle_japanese(text: &str, max_chars_per_line: usize) -> String {
+    let limit = max_chars_per_line.max(6);
+    let cleaned = text.replace('\r', "").replace("  ", " ");
+    let mut out_lines = Vec::new();
+    for raw_line in cleaned.split('\n') {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = trimmed.chars().collect();
+        if chars.len() <= limit {
+            out_lines.push(trimmed.to_string());
+            continue;
+        }
+        let mut start = 0usize;
+        while start < chars.len() {
+            let end = (start + limit).min(chars.len());
+            if end == chars.len() {
+                out_lines.push(chars[start..end].iter().collect());
+                break;
+            }
+            // 句読点やスペースが終端付近にあればそこで自然に改行
+            let break_pos = (start + (limit / 2)..=end)
+                .rev()
+                .find(|&idx| {
+                    idx < chars.len()
+                        && matches!(
+                            chars[idx - 1],
+                            '。' | '、' | '！' | '？' | '!' | '?' | ' ' | '　'
+                        )
+                })
+                .unwrap_or(end);
+            out_lines.push(
+                chars[start..break_pos]
+                    .iter()
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
+            );
+            start = break_pos;
+        }
+    }
+    out_lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,5 +1111,124 @@ mod tests {
             Some(1),
         );
         assert_eq!(before, vec![a_id, b_id]);
+    }
+
+    #[test]
+    fn jump_cut_removes_silence_and_syncs_linked_layers_with_single_undo() {
+        // 10秒間の波形: [0.5..2.0s] と [6.0..8.0s] が発話、他は無音
+        let mut rms = vec![0.002f32; 100]; // 100ms per bucket
+        for b in &mut rms[5..20] {
+            *b = 0.2;
+        }
+        for b in &mut rms[60..80] {
+            *b = 0.25;
+        }
+        let cfg = JumpCutConfig {
+            rms_threshold: 0.05,
+            min_silence_sec: 0.5,
+            pad_before_sec: 0.1,
+            pad_after_sec: 0.1,
+            ripple_linked_layers: vec![0, 1],
+        };
+        let intervals = detect_speech_intervals_from_rms(&rms, 0.1, 10.0, &cfg);
+        assert_eq!(intervals.len(), 2);
+
+        let mut proj = Project::new("JumpCutTest", ProjectSettings::default());
+        let mut bus = CommandBus::new();
+        {
+            let scene = proj.active_scene_mut().unwrap();
+            scene.layers[0].items.push(TimelineItem::new(
+                "MainVideo",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(10.0),
+                ItemKind::Video {
+                    asset_id: Uuid::new_v4(),
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            ));
+            scene.layers[3].items.push(TimelineItem::new(
+                "MainVoice",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(10.0),
+                ItemKind::Audio {
+                    asset_id: Uuid::new_v4(),
+                    source_offset: RationalTime::ZERO,
+                    volume: 1.0,
+                },
+            ));
+        }
+
+        let (kept, removed_sec, cmd) = build_jump_cut_commands(
+            proj.active_scene().unwrap(),
+            3,
+            &intervals,
+            &cfg.ripple_linked_layers,
+        )
+        .expect("jump cut commands");
+        assert_eq!(kept, 2);
+        assert!(removed_sec > 3.0);
+
+        bus.execute(&mut proj, cmd, CommandSource::Gui, None)
+            .unwrap();
+        let scene = proj.active_scene().unwrap();
+        // 映像・音声どちらも2スライスになり、合計尺が短縮されている
+        assert_eq!(scene.layers[0].items.len(), 2);
+        assert_eq!(scene.layers[3].items.len(), 2);
+        assert!(scene.total_duration().as_seconds() < 5.0);
+        // 2つ目のスライスの source_offset が発話開始位置へ進んでいる
+        if let ItemKind::Video { source_offset, .. } = scene.layers[0].items[1].kind {
+            assert!(source_offset.as_seconds() > 5.5);
+        } else {
+            panic!("expected video slice");
+        }
+
+        // 1回の Undo で元の10秒1本クリップへ完全復元
+        assert!(bus.undo(&mut proj));
+        assert_eq!(proj.active_scene().unwrap().layers[0].items.len(), 1);
+        assert!((proj.active_scene().unwrap().total_duration().as_seconds() - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ripple_delete_closes_gap_for_subsequent_clips() {
+        let mut proj = Project::new("RippleTest", ProjectSettings::default());
+        let mut bus = CommandBus::new();
+        let a = make_text_item("A", 0.0, 2.0, "A");
+        let b = make_text_item("B", 2.0, 3.0, "B");
+        let c = make_text_item("C", 5.0, 2.0, "C");
+        let b_id = b.id;
+        proj.active_scene_mut().unwrap().layers[1]
+            .items
+            .extend([a, b, c]);
+
+        let cmd =
+            build_ripple_delete_commands(proj.active_scene().unwrap(), &[b_id]).expect("ripple");
+        bus.execute(&mut proj, cmd, CommandSource::Gui, None)
+            .unwrap();
+        let items = &proj.active_scene().unwrap().layers[1].items;
+        assert_eq!(items.len(), 2);
+        assert!((items[1].start.as_seconds() - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn formats_youtube_chapters_and_wraps_japanese_subtitles() {
+        use crate::project::TimelineMarker;
+
+        let markers = vec![
+            TimelineMarker::new(RationalTime::from_seconds(75.0), "本編解説"),
+            TimelineMarker::new(RationalTime::from_seconds(10.0), "オープニング"),
+        ];
+        let chapters = format_youtube_chapters(&markers);
+        assert_eq!(
+            chapters,
+            "00:00 イントロ\n00:10 オープニング\n01:15 本編解説"
+        );
+
+        let wrapped = wrap_subtitle_japanese(
+            "今日は次世代ハイブリッド動画編集ソフトの最新機能を分かりやすく解説します。",
+            18,
+        );
+        assert!(wrapped.contains('\n'));
+        assert!(wrapped.lines().all(|l| l.chars().count() <= 18));
     }
 }

@@ -1,20 +1,49 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use ve_audio::WaveformPeaks;
+use ve_audio::{AudioGraph, WaveformPeaks};
 use ve_core::{
-    AlignMode, CommandSource, EditCommand, FilterTargetScope, ItemId, ItemKind, RationalTime,
-    RgbaColor, SceneId, SelectDirection, TextAnimator, TimelineItem, Transform2D, TransitionKind,
-    build_align_commands, build_close_gaps_commands, build_fit_duration_to_layer_commands,
-    build_replace_text_commands, search_text_items, select_items_from_time, select_layer_items,
+    AlignMode, CommandSource, EditCommand, FilterTargetScope, ItemId, ItemKind, JumpCutConfig,
+    RationalTime, RgbaColor, SceneId, SelectDirection, TextAnimator, TimelineItem, TimelineMarker,
+    Transform2D, TransitionKind, build_align_commands, build_close_gaps_commands,
+    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_replace_text_commands,
+    build_ripple_delete_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
+    search_text_items, select_items_from_time, select_layer_items,
 };
 use ve_mcp::EditorSession;
+
+/// J/K/L シャトル再生・フレームステップ等の再生制御アクション
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelinePlaybackAction {
+    None,
+    /// `J`: 逆再生 / 速度アップ (-1x -> -2x -> -4x)
+    ShuttleReverse,
+    /// `K`: 一時停止＆1x リセット
+    ShuttlePause,
+    /// `L`: 正再生 / 倍速アップ (1x -> 2x -> 4x)
+    ShuttleForward,
+}
 
 pub struct TimelineState {
     pub pixels_per_second: f32,
     pub scroll_offset_sec: f64,
     pub snap_enabled: bool,
     pub dragging_item: Option<DragOp>,
+    // v0.4 #7: ラバーバンド（矩形）選択
+    pub marquee_origin: Option<Pos2>,
+    // v0.4 #7: マーカー追加設定
+    pub marker_label_input: String,
+    pub marker_color_idx: usize,
+    pub marker_status: String,
+    // v0.4 #3: 無音区間自動カット（ジェットカット）
+    pub show_jump_cut_bar: bool,
+    pub jump_cut_audio_layer: usize,
+    pub jump_cut_rms_threshold: f32,
+    pub jump_cut_min_silence_sec: f64,
+    pub jump_cut_pad_before_sec: f64,
+    pub jump_cut_pad_after_sec: f64,
+    pub jump_cut_linked_layers: BTreeSet<usize>,
+    pub jump_cut_status: String,
     // B-1: アルティメットプラグイン風 整列・隙間詰め・長さフィット
     pub distribute_gap_sec: f64,
     pub fit_reference_layer: usize,
@@ -29,13 +58,19 @@ pub struct TimelineState {
     pub editing_layer_index: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum DragMode {
-    Move { grab_offset_sec: f64 },
+    Move {
+        grab_offset_sec: f64,
+        anchor_layer: usize,
+        anchor_start_sec: f64,
+        /// ドラッグ開始時の全選択対象 `(item_id, initial_layer, initial_start_sec)`
+        group_items: Vec<(ItemId, usize, f64)>,
+    },
     TrimRight,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DragOp {
     pub item_id: ItemId,
     pub mode: DragMode,
@@ -48,6 +83,18 @@ impl Default for TimelineState {
             scroll_offset_sec: 0.0,
             snap_enabled: true,
             dragging_item: None,
+            marquee_origin: None,
+            marker_label_input: String::new(),
+            marker_color_idx: 0,
+            marker_status: String::new(),
+            show_jump_cut_bar: false,
+            jump_cut_audio_layer: 3,
+            jump_cut_rms_threshold: 0.025,
+            jump_cut_min_silence_sec: 0.45,
+            jump_cut_pad_before_sec: 0.08,
+            jump_cut_pad_after_sec: 0.12,
+            jump_cut_linked_layers: [0, 1, 2].into_iter().collect(),
+            jump_cut_status: String::new(),
             distribute_gap_sec: 0.25,
             fit_reference_layer: 3,
             show_search_bar: false,
@@ -61,32 +108,128 @@ impl Default for TimelineState {
     }
 }
 
+const MARKER_PALETTE: &[(&str, RgbaColor)] = &[
+    (
+        "黄",
+        RgbaColor {
+            r: 0.98,
+            g: 0.82,
+            b: 0.20,
+            a: 1.0,
+        },
+    ),
+    (
+        "水",
+        RgbaColor {
+            r: 0.25,
+            g: 0.80,
+            b: 0.98,
+            a: 1.0,
+        },
+    ),
+    (
+        "緑",
+        RgbaColor {
+            r: 0.30,
+            g: 0.86,
+            b: 0.48,
+            a: 1.0,
+        },
+    ),
+    (
+        "桃",
+        RgbaColor {
+            r: 0.96,
+            g: 0.42,
+            b: 0.65,
+            a: 1.0,
+        },
+    ),
+];
+
 impl TimelineState {
     pub fn show(
         &mut self,
         ui: &mut Ui,
         session: &mut EditorSession,
         waveforms: &BTreeMap<Uuid, WaveformPeaks>,
-    ) {
+    ) -> TimelinePlaybackAction {
         let fps = session.project.settings.fps;
+        let mut playback_action = TimelinePlaybackAction::None;
 
-        // ショートカット: Ctrl+Z / Ctrl+Y / Ctrl+F / Delete / S (分割) — テキスト入力フォーカス中は無効化
+        // ショートカット: Ctrl+Z / Ctrl+Y / Ctrl+F / Delete / Shift+Delete / S / M / ←→(Shift=10f) / J・K・L
+        // テキスト入力フォーカス中はすべて抑止する
         let text_editing = ui.ctx().egui_wants_keyboard_input();
-        let (undo_key, redo_key, split_key, delete_key, find_key) = if text_editing {
-            (false, false, false, false, false)
+        let (
+            undo_key,
+            redo_key,
+            split_key,
+            delete_key,
+            ripple_delete_key,
+            find_key,
+            marker_key,
+            step_frames,
+            shuttle_act,
+        ) = if text_editing {
+            (
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                0i64,
+                TimelinePlaybackAction::None,
+            )
         } else {
             ui.input(|i| {
-                let undo = i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
-                let redo = (i.modifiers.command && i.key_pressed(egui::Key::Y))
-                    || (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z));
-                let split = !i.modifiers.command && i.key_pressed(egui::Key::S);
-                let del = i.key_pressed(egui::Key::Delete);
-                let find = i.modifiers.command && i.key_pressed(egui::Key::F);
-                (undo, redo, split, del, find)
+                let cmd = i.modifiers.command;
+                let shift = i.modifiers.shift;
+                let undo = cmd && !shift && i.key_pressed(egui::Key::Z);
+                let redo = (cmd && i.key_pressed(egui::Key::Y))
+                    || (cmd && shift && i.key_pressed(egui::Key::Z));
+                let split = !cmd && i.key_pressed(egui::Key::S);
+                let del_pressed = i.key_pressed(egui::Key::Delete);
+                let del = del_pressed && !shift;
+                let ripple_del = del_pressed && shift;
+                let find = cmd && i.key_pressed(egui::Key::F);
+                let marker = !cmd && i.key_pressed(egui::Key::M);
+                let step = if !cmd && i.key_pressed(egui::Key::ArrowLeft) {
+                    if shift { -10 } else { -1 }
+                } else if !cmd && i.key_pressed(egui::Key::ArrowRight) {
+                    if shift { 10 } else { 1 }
+                } else {
+                    0
+                };
+                let shuttle = if !cmd && i.key_pressed(egui::Key::J) {
+                    TimelinePlaybackAction::ShuttleReverse
+                } else if !cmd && i.key_pressed(egui::Key::K) {
+                    TimelinePlaybackAction::ShuttlePause
+                } else if !cmd && i.key_pressed(egui::Key::L) {
+                    TimelinePlaybackAction::ShuttleForward
+                } else {
+                    TimelinePlaybackAction::None
+                };
+                (
+                    undo, redo, split, del, ripple_del, find, marker, step, shuttle,
+                )
             })
         };
         if find_key {
             self.show_search_bar = !self.show_search_bar;
+        }
+        if step_frames != 0 {
+            let cur_f = session.playhead.to_frame_round(fps);
+            let next_f = (cur_f + step_frames).max(0);
+            session.playhead = RationalTime::from_frame(next_f, fps);
+            playback_action = TimelinePlaybackAction::ShuttlePause;
+        }
+        if shuttle_act != TimelinePlaybackAction::None {
+            playback_action = shuttle_act;
+        }
+        if marker_key {
+            self.add_marker_at_playhead(session);
         }
 
         // ===== 1. メイン編集ツールバー =====
@@ -119,6 +262,16 @@ impl TimelineState {
                 || delete_key
             {
                 self.delete_selected(session);
+            }
+            if ui
+                .add_enabled(
+                    !session.selected_items.is_empty(),
+                    egui::Button::new("⇤ リップル削除 (Shift+Del)"),
+                )
+                .clicked()
+                || ripple_delete_key
+            {
+                self.ripple_delete_selected(session);
             }
             if ui
                 .add_enabled(
@@ -252,12 +405,62 @@ impl TimelineState {
             }
 
             ui.separator();
+            ui.toggle_value(&mut self.show_jump_cut_bar, "⚡ 無音カット");
             ui.toggle_value(&mut self.show_search_bar, "🔍 検索/置換 (Ctrl+F)");
+            if ui
+                .button("🚩 マーカー (M)")
+                .on_hover_text("現在の再生ヘッド位置にチャプターマーカーを追加")
+                .clicked()
+            {
+                self.add_marker_at_playhead(session);
+            }
+            let marker_count = session
+                .project
+                .active_scene()
+                .map(|s| s.markers.len())
+                .unwrap_or(0);
+            if ui
+                .add_enabled(
+                    marker_count > 0,
+                    egui::Button::new(format!("📋 YouTubeチャプター ({marker_count})")),
+                )
+                .clicked()
+                && let Some(scene) = session.project.active_scene()
+            {
+                let text = format_youtube_chapters(&scene.markers);
+                ui.ctx().copy_text(text);
+                self.marker_status = format!("YouTubeチャプター {marker_count} 件をコピーしました");
+            }
             ui.checkbox(&mut self.snap_enabled, "スナップ");
             ui.add(
-                egui::Slider::new(&mut self.pixels_per_second, 30.0..=300.0).text("ズーム(px/s)"),
+                egui::Slider::new(&mut self.pixels_per_second, 30.0..=400.0).text("ズーム(px/s)"),
             );
         });
+
+        // マーカーラベル・色クイック設定（マーカー存在時または入力中・操作後）
+        let marker_count = session
+            .project
+            .active_scene()
+            .map(|s| s.markers.len())
+            .unwrap_or(0);
+        if marker_count > 0 || !self.marker_status.is_empty() || !self.marker_label_input.is_empty()
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("🚩 次マーカー名:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.marker_label_input)
+                        .hint_text("空欄時は「チャプター N」")
+                        .desired_width(140.0),
+                );
+                for (idx, (name, _)) in MARKER_PALETTE.iter().enumerate() {
+                    ui.selectable_value(&mut self.marker_color_idx, idx, *name);
+                }
+                ui.weak("（ルーラー上の旗: 左クリック=移動 / 右クリック=削除）");
+                if !self.marker_status.is_empty() {
+                    ui.colored_label(Color32::LIGHT_GREEN, &self.marker_status);
+                }
+            });
+        }
 
         // ===== 2. アイテム整列・隙間詰め・長さフィットバー（アルティメットプラグイン相当） =====
         let has_sel = !session.selected_items.is_empty();
@@ -269,6 +472,89 @@ impl TimelineState {
             .unwrap_or(0);
         if layer_count > 0 && self.fit_reference_layer >= layer_count {
             self.fit_reference_layer = layer_count - 1;
+        }
+        if layer_count > 0 && self.jump_cut_audio_layer >= layer_count {
+            self.jump_cut_audio_layer = layer_count - 1;
+        }
+
+        // ===== 2B. 無音区間自動カット（ジェットカット）設定バー（v0.4 #3） =====
+        if self.show_jump_cut_bar {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong("⚡ 無音区間自動カット (Jump Cut):");
+                    ui.label("解析音声:");
+                    egui::ComboBox::from_id_salt("jump_cut_audio_layer")
+                        .width(64.0)
+                        .selected_text(format!("L{}", self.jump_cut_audio_layer))
+                        .show_ui(ui, |ui| {
+                            for idx in 0..layer_count {
+                                ui.selectable_value(
+                                    &mut self.jump_cut_audio_layer,
+                                    idx,
+                                    format!("L{idx}"),
+                                );
+                            }
+                        });
+                    ui.label("RMS閾値:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.jump_cut_rms_threshold)
+                            .speed(0.002)
+                            .range(0.002..=0.30)
+                            .fixed_decimals(3),
+                    );
+                    ui.label("最小無音:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.jump_cut_min_silence_sec)
+                            .speed(0.05)
+                            .range(0.10..=3.0)
+                            .suffix("s"),
+                    );
+                    ui.label("語頭余白:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.jump_cut_pad_before_sec)
+                            .speed(0.01)
+                            .range(0.0..=0.5)
+                            .suffix("s"),
+                    );
+                    ui.label("語尾余白:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.jump_cut_pad_after_sec)
+                            .speed(0.01)
+                            .range(0.0..=0.5)
+                            .suffix("s"),
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("連動リップルレイヤー:");
+                    for idx in 0..layer_count {
+                        let mut linked = self.jump_cut_linked_layers.contains(&idx)
+                            || idx == self.jump_cut_audio_layer;
+                        let enabled = idx != self.jump_cut_audio_layer;
+                        if ui
+                            .add_enabled(
+                                enabled,
+                                egui::Checkbox::new(&mut linked, format!("L{idx}")),
+                            )
+                            .changed()
+                        {
+                            if linked {
+                                self.jump_cut_linked_layers.insert(idx);
+                            } else {
+                                self.jump_cut_linked_layers.remove(&idx);
+                            }
+                        }
+                    }
+                    if ui
+                        .button("✂ 無音を一括カット＆詰め (1ステップUndo)")
+                        .clicked()
+                    {
+                        self.execute_jump_cut(session, waveforms);
+                    }
+                    if !self.jump_cut_status.is_empty() {
+                        ui.colored_label(Color32::from_rgb(255, 224, 128), &self.jump_cut_status);
+                    }
+                });
+            });
         }
 
         ui.horizontal_wrapped(|ui| {
@@ -593,20 +879,32 @@ impl TimelineState {
 
         let track_origin_x = canvas_rect.left() + header_w;
         let pps = self.pixels_per_second;
-        let scroll_sec = self.scroll_offset_sec.max(0.0);
 
-        // Shift + ホイールで横スクロール、Ctrl + ホイールでズーム
+        // Shift + ホイールで横スクロール、Ctrl + ホイールで再生ヘッド中心のタイムラインズーム
         if response.hovered() {
             let (scroll_delta, ctrl_held) =
                 ui.input(|i| (i.smooth_scroll_delta, i.modifiers.command));
             if ctrl_held && scroll_delta.y.abs() > 0.1 {
                 let factor = if scroll_delta.y > 0.0 { 1.12 } else { 0.89 };
-                self.pixels_per_second = (self.pixels_per_second * factor).clamp(30.0, 300.0);
+                let old_pps = self.pixels_per_second;
+                let new_pps = (old_pps * factor).clamp(30.0, 400.0);
+                let ph_sec = session.playhead.as_seconds();
+                let ph_offset_px = (ph_sec - self.scroll_offset_sec) * f64::from(old_pps);
+                let track_w = f64::from((canvas_rect.right() - track_origin_x).max(100.0));
+                let target_px = if (0.0..=track_w).contains(&ph_offset_px) {
+                    ph_offset_px
+                } else {
+                    track_w * 0.5
+                };
+                self.pixels_per_second = new_pps;
+                self.scroll_offset_sec = (ph_sec - target_px / f64::from(new_pps)).max(0.0);
             } else if scroll_delta.x.abs() > 0.1 {
                 self.scroll_offset_sec =
                     (self.scroll_offset_sec - f64::from(scroll_delta.x) / f64::from(pps)).max(0.0);
             }
         }
+        let pps = self.pixels_per_second;
+        let scroll_sec = self.scroll_offset_sec.max(0.0);
 
         // ルーラー描画
         let ruler_rect = Rect::from_min_max(
@@ -641,12 +939,85 @@ impl TimelineState {
             );
         }
 
-        // スナップ候補時刻の収集（再生ヘッド＋全クリップ端）
+        // ルーラー上のタイムラインマーカー描画＆クリック操作（左クリック=ジャンプ、右クリック=削除）
+        let mut jump_to_marker: Option<RationalTime> = None;
+        let mut remove_marker_id: Option<Uuid> = None;
+        if let Some(scene) = session.project.active_scene() {
+            for marker in &scene.markers {
+                let mx = track_origin_x + (marker.time.as_seconds() - scroll_sec) as f32 * pps;
+                if mx < track_origin_x - 4.0 || mx > canvas_rect.right() + 4.0 {
+                    continue;
+                }
+                let mcol = rgba_to_color32(marker.color);
+                let flag_rect = Rect::from_min_max(
+                    Pos2::new(mx - 5.0, ruler_rect.top() + 1.0),
+                    Pos2::new(
+                        (mx + 64.0).min(canvas_rect.right()),
+                        ruler_rect.bottom() - 2.0,
+                    ),
+                );
+                // マーカー縦ガイドライン
+                painter.line_segment(
+                    [
+                        Pos2::new(mx, ruler_rect.bottom()),
+                        Pos2::new(mx, canvas_rect.bottom()),
+                    ],
+                    Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(mcol.r(), mcol.g(), mcol.b(), 110),
+                    ),
+                );
+                // 旗ヘッド（三角＋ラベルピル）
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(mx, ruler_rect.top() + 2.0),
+                        Pos2::new(mx + 6.0, ruler_rect.bottom() - 3.0),
+                    ),
+                    2.0,
+                    mcol,
+                );
+                painter.text(
+                    Pos2::new(mx + 8.0, ruler_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &marker.label,
+                    egui::FontId::proportional(10.0),
+                    mcol,
+                );
+                if response.clicked()
+                    && let Some(pos) = response.interact_pointer_pos()
+                    && flag_rect.contains(pos)
+                {
+                    jump_to_marker = Some(marker.time);
+                } else if response.secondary_clicked()
+                    && let Some(pos) = response.interact_pointer_pos()
+                    && flag_rect.contains(pos)
+                {
+                    remove_marker_id = Some(marker.id);
+                }
+            }
+        }
+
+        // スナップ候補時刻の収集（再生ヘッド＋マーカー＋ドラッグ対象外の全クリップ端）
+        let dragged_ids: BTreeSet<ItemId> = match &self.dragging_item {
+            Some(DragOp {
+                item_id,
+                mode: DragMode::Move { group_items, .. },
+            }) => {
+                let mut set: BTreeSet<ItemId> = group_items.iter().map(|(id, _, _)| *id).collect();
+                set.insert(*item_id);
+                set
+            }
+            Some(DragOp { item_id, .. }) => [*item_id].into_iter().collect(),
+            None => BTreeSet::new(),
+        };
         let mut snap_targets: Vec<f64> = vec![session.playhead.as_seconds()];
         if let Some(scene) = session.project.active_scene() {
+            for m in &scene.markers {
+                snap_targets.push(m.time.as_seconds());
+            }
             for layer in &scene.layers {
                 for item in &layer.items {
-                    if self.dragging_item.map(|d| d.item_id) != Some(item.id) {
+                    if !dragged_ids.contains(&item.id) {
                         snap_targets.push(item.start.as_seconds());
                         snap_targets.push(item.end().as_seconds());
                     }
@@ -665,6 +1036,8 @@ impl TimelineState {
         let mut toggle_layer_vis: Option<usize> = None;
         let mut toggle_layer_mute: Option<usize> = None;
         let mut open_layer_settings: Option<usize> = None;
+        // ラバーバンド矩形選択用のクリップ矩形一覧
+        let mut clip_rects: Vec<(ItemId, Rect)> = Vec::new();
 
         if let Some(scene) = session.project.active_scene() {
             for (layer_idx, layer) in scene.layers.iter().enumerate() {
@@ -787,6 +1160,8 @@ impl TimelineState {
                         Pos2::new(vis_x0, y0 + 2.0),
                         Pos2::new(x1.min(canvas_rect.right()), y0 + track_h - 5.0),
                     );
+                    clip_rects.push((item.id, clip_rect));
+
                     let selected = session.selected_items.contains(&item.id);
                     let fill = clip_color_for_kind(&item.kind);
                     painter.rect_filled(clip_rect, 4.0, fill);
@@ -879,12 +1254,29 @@ impl TimelineState {
                             let ptr_sec = scroll_sec + ((pos.x - track_origin_x) / pps) as f64;
                             DragMode::Move {
                                 grab_offset_sec: ptr_sec - item.start.as_seconds(),
+                                anchor_layer: layer_idx,
+                                anchor_start_sec: item.start.as_seconds(),
+                                group_items: Vec::new(),
                             }
                         };
                         clicked_item = Some((item.id, mode));
                     }
                 }
             }
+        }
+
+        // マーカー操作の反映
+        if let Some(mid) = remove_marker_id {
+            let _ = session.bus.execute(
+                &mut session.project,
+                EditCommand::RemoveMarker { marker_id: mid },
+                CommandSource::Gui,
+                None,
+            );
+            self.marker_status = "マーカーを削除しました".into();
+        } else if let Some(mtime) = jump_to_marker {
+            session.playhead = mtime;
+            return playback_action;
         }
 
         // レイヤーヘッダーのクイック操作反映
@@ -943,13 +1335,13 @@ impl TimelineState {
             && let Some(scene) = session.project.active_scene()
         {
             session.selected_items = select_layer_items(scene, l_idx);
-            return;
+            return playback_action;
         }
         if let Some((pivot, dir)) = ctrl_dbl_select
             && let Some(scene) = session.project.active_scene()
         {
             session.selected_items = select_items_from_time(scene, pivot, dir, None);
-            return;
+            return playback_action;
         }
 
         if let Some(scene_id) = enter_precomp_scene {
@@ -960,11 +1352,11 @@ impl TimelineState {
                 None,
             );
             session.selected_items.clear();
-            return;
+            return playback_action;
         }
 
-        // ポインタ操作の処理（選択・ドラッグ移動・伸縮・ルーラーシーク）
-        if let Some((item_id, mode)) = clicked_item {
+        // ポインタ操作の処理（選択・複数クリップ同時ドラッグ移動・伸縮・ラバーバンド矩形選択・ルーラーシーク）
+        if let Some((item_id, mut mode)) = clicked_item {
             if shift_held {
                 if let Some(pos) = session.selected_items.iter().position(|id| *id == item_id) {
                     if !response.drag_started() {
@@ -977,8 +1369,37 @@ impl TimelineState {
                 session.selected_items = vec![item_id];
             }
             if response.drag_started() {
+                // 複数選択中のドラッグ時は全選択アイテムの初期座標をスナップショット
+                if let DragMode::Move {
+                    ref mut group_items,
+                    ..
+                } = mode
+                    && let Some(scene) = session.project.active_scene()
+                {
+                    let sel_set: BTreeSet<ItemId> =
+                        session.selected_items.iter().copied().collect();
+                    for (l_idx, layer) in scene.layers.iter().enumerate() {
+                        for it in &layer.items {
+                            if sel_set.contains(&it.id) {
+                                group_items.push((it.id, l_idx, it.start.as_seconds()));
+                            }
+                        }
+                    }
+                }
                 self.dragging_item = Some(DragOp { item_id, mode });
                 session.bus.set_gui_drag_locked(true);
+            }
+        } else if response.drag_started()
+            && let Some(pos) = response.interact_pointer_pos()
+            && pos.x >= track_origin_x
+        {
+            if pos.y < ruler_rect.bottom() {
+                // ルーラー上ドラッグ: 再生ヘッドスクラブ
+                let sec = (scroll_sec + ((pos.x - track_origin_x) / pps) as f64).max(0.0);
+                session.playhead = RationalTime::from_seconds(sec);
+            } else {
+                // 空トラック上ドラッグ: ラバーバンド矩形選択開始
+                self.marquee_origin = Some(pos);
             }
         } else if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
@@ -988,7 +1409,49 @@ impl TimelineState {
             session.playhead = RationalTime::from_seconds(sec);
         }
 
-        if let Some(drag) = self.dragging_item {
+        // ラバーバンド矩形選択の更新＆描画
+        if let Some(origin) = self.marquee_origin {
+            if let Some(cur) = response.interact_pointer_pos() {
+                let mrect = Rect::from_two_pos(origin, cur).intersect(canvas_rect);
+                painter.rect_filled(
+                    mrect,
+                    2.0,
+                    Color32::from_rgba_unmultiplied(72, 162, 255, 48),
+                );
+                painter.rect_stroke(
+                    mrect,
+                    2.0,
+                    Stroke::new(1.2, Color32::from_rgb(108, 192, 255)),
+                    StrokeKind::Inside,
+                );
+                if response.dragged() || response.drag_stopped() {
+                    let mut picked: Vec<ItemId> = if shift_held {
+                        session.selected_items.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    for (cid, crect) in &clip_rects {
+                        if crect.intersects(mrect) && !picked.contains(cid) {
+                            picked.push(*cid);
+                        }
+                    }
+                    session.selected_items = picked;
+                }
+            }
+            if response.drag_stopped() {
+                self.marquee_origin = None;
+            }
+        } else if self.dragging_item.is_none()
+            && response.dragged()
+            && let Some(pos) = response.interact_pointer_pos()
+            && pos.x >= track_origin_x
+            && pos.y < ruler_rect.bottom()
+        {
+            let sec = (scroll_sec + ((pos.x - track_origin_x) / pps) as f64).max(0.0);
+            session.playhead = RationalTime::from_seconds(sec);
+        }
+
+        if let Some(drag) = self.dragging_item.clone() {
             if response.dragged()
                 && let Some(pos) = response.interact_pointer_pos()
             {
@@ -999,21 +1462,66 @@ impl TimelineState {
                     .min(layer_count.saturating_sub(1));
 
                 match drag.mode {
-                    DragMode::Move { grab_offset_sec } => {
+                    DragMode::Move {
+                        grab_offset_sec,
+                        anchor_layer,
+                        anchor_start_sec,
+                        group_items,
+                    } => {
                         let mut cand_sec = (raw_sec - grab_offset_sec).max(0.0);
                         if self.snap_enabled {
                             cand_sec = snap_value(cand_sec, &snap_targets, 8.0 / pps as f64);
                         }
-                        let _ = session.bus.execute(
-                            &mut session.project,
-                            EditCommand::MoveObject {
-                                item_id: drag.item_id,
-                                target_layer_index: target_layer,
-                                new_start: RationalTime::from_seconds(cand_sec),
-                            },
-                            CommandSource::Gui,
-                            Some("timeline_move"),
-                        );
+                        if group_items.len() <= 1 {
+                            let _ = session.bus.execute(
+                                &mut session.project,
+                                EditCommand::MoveObject {
+                                    item_id: drag.item_id,
+                                    target_layer_index: target_layer,
+                                    new_start: RationalTime::from_seconds(cand_sec),
+                                },
+                                CommandSource::Gui,
+                                Some("timeline_move"),
+                            );
+                        } else {
+                            // 複数選択クリップの一括相対移動（最小時刻 >= 0、レイヤー範囲内へ安全クランプ）
+                            let min_init_sec = group_items
+                                .iter()
+                                .map(|(_, _, s)| *s)
+                                .fold(f64::INFINITY, f64::min);
+                            let raw_delta_sec = cand_sec - anchor_start_sec;
+                            let delta_sec = raw_delta_sec.max(-min_init_sec);
+
+                            let min_init_l =
+                                group_items.iter().map(|(_, l, _)| *l).min().unwrap_or(0) as isize;
+                            let max_init_l =
+                                group_items.iter().map(|(_, l, _)| *l).max().unwrap_or(0) as isize;
+                            let max_layer_i = layer_count.saturating_sub(1) as isize;
+                            let raw_delta_l = target_layer as isize - anchor_layer as isize;
+                            let delta_l = raw_delta_l.clamp(-min_init_l, max_layer_i - max_init_l);
+
+                            let cmds: Vec<EditCommand> = group_items
+                                .iter()
+                                .map(|(id, init_l, init_s)| EditCommand::MoveObject {
+                                    item_id: *id,
+                                    target_layer_index: (*init_l as isize + delta_l)
+                                        .clamp(0, max_layer_i)
+                                        as usize,
+                                    new_start: RationalTime::from_seconds(
+                                        (*init_s + delta_sec).max(0.0),
+                                    ),
+                                })
+                                .collect();
+                            let _ = session.bus.execute(
+                                &mut session.project,
+                                EditCommand::Batch {
+                                    label: "timeline_move_multi".into(),
+                                    commands: cmds,
+                                },
+                                CommandSource::Gui,
+                                Some("timeline_move"),
+                            );
+                        }
                     }
                     DragMode::TrimRight => {
                         let item_start = session.project.active_scene().and_then(|s| {
@@ -1060,6 +1568,8 @@ impl TimelineState {
                 Stroke::new(2.0, Color32::from_rgb(235, 72, 72)),
             );
         }
+
+        playback_action
     }
 
     /// タイムライン全体を俯瞰・クリックジャンプできるミニマップバーを描画する
@@ -1112,6 +1622,20 @@ impl TimelineState {
                         Pos2::new(x1.min(bar_rect.right()), (y + row_h - 1.0).max(y + 1.0)),
                     );
                     painter.rect_filled(r, 1.0, clip_color_for_kind(&item.kind));
+                }
+            }
+            // ミニマップ上のマーカー表示
+            for marker in &scene.markers {
+                let mx =
+                    bar_rect.left() + (marker.time.as_seconds() / span) as f32 * bar_rect.width();
+                if mx >= bar_rect.left() && mx <= bar_rect.right() {
+                    painter.line_segment(
+                        [
+                            Pos2::new(mx, bar_rect.top()),
+                            Pos2::new(mx, bar_rect.top() + 6.0),
+                        ],
+                        Stroke::new(2.0, rgba_to_color32(marker.color)),
+                    );
                 }
             }
         }
@@ -1235,6 +1759,201 @@ impl TimelineState {
             .is_ok()
         {
             session.selected_items.clear();
+        }
+    }
+
+    fn ripple_delete_selected(&self, session: &mut EditorSession) {
+        let Some(scene) = session.project.active_scene().cloned() else {
+            return;
+        };
+        if let Some(cmd) = build_ripple_delete_commands(&scene, &session.selected_items)
+            && session
+                .bus
+                .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                .is_ok()
+        {
+            session.selected_items.clear();
+        }
+    }
+
+    fn add_marker_at_playhead(&mut self, session: &mut EditorSession) {
+        let next_idx = session
+            .project
+            .active_scene()
+            .map(|s| s.markers.len() + 1)
+            .unwrap_or(1);
+        let label = if self.marker_label_input.trim().is_empty() {
+            format!("チャプター {next_idx}")
+        } else {
+            self.marker_label_input.trim().to_string()
+        };
+        let color = MARKER_PALETTE
+            .get(self.marker_color_idx % MARKER_PALETTE.len())
+            .map(|(_, c)| *c)
+            .unwrap_or(RgbaColor::WHITE);
+        let marker = TimelineMarker {
+            id: Uuid::new_v4(),
+            time: session.playhead,
+            label: label.clone(),
+            color,
+        };
+        if session
+            .bus
+            .execute(
+                &mut session.project,
+                EditCommand::AddMarker { marker },
+                CommandSource::Gui,
+                None,
+            )
+            .is_ok()
+        {
+            self.marker_label_input.clear();
+            self.marker_status = format!(
+                "マーカー「{label}」を {:.2}s へ追加しました",
+                session.playhead.as_seconds()
+            );
+        }
+    }
+
+    fn execute_jump_cut(
+        &mut self,
+        session: &mut EditorSession,
+        waveforms: &BTreeMap<Uuid, WaveformPeaks>,
+    ) {
+        let Some(scene) = session.project.active_scene().cloned() else {
+            self.jump_cut_status = "アクティブシーンがありません".into();
+            return;
+        };
+        let total_sec = scene.total_duration().as_seconds();
+        if total_sec <= 0.05 {
+            self.jump_cut_status = "カット対象のクリップがありません".into();
+            return;
+        }
+        let audio_layer = self
+            .jump_cut_audio_layer
+            .min(scene.layers.len().saturating_sub(1));
+
+        // 1. 実メディアの AudioGraph から 50ms 単位の RMS 列を生成。
+        //    実ファイルが無い場合（デモ波形など）は waveforms キャッシュへフォールバック。
+        let sr = session.project.settings.audio_sample_rate.max(8_000);
+        let audio_graph = AudioGraph::from_project_scene(
+            &session.project,
+            session.project.active_scene_id,
+            session.folder.as_ref(),
+            sr,
+        );
+        let bucket_sec = 0.05_f64;
+        let bucket_count = (total_sec / bucket_sec).ceil().max(1.0) as usize;
+        let mut rms_series = vec![0.0_f32; bucket_count];
+        let mut has_audio_signal = false;
+
+        if !audio_graph.clips.is_empty() {
+            let pcm = audio_graph.render_range(RationalTime::ZERO, scene.total_duration());
+            let frames_per_bucket = ((sr as f64) * bucket_sec).round().max(1.0) as usize;
+            let stereo_frames = pcm.as_chunks::<2>().0;
+            for (b_idx, rms_slot) in rms_series.iter_mut().enumerate() {
+                let start_f = b_idx * frames_per_bucket;
+                if start_f >= stereo_frames.len() {
+                    break;
+                }
+                let end_f = ((b_idx + 1) * frames_per_bucket).min(stereo_frames.len());
+                let slice = &stereo_frames[start_f..end_f];
+                if slice.is_empty() {
+                    continue;
+                }
+                let sum_sq: f64 = slice
+                    .iter()
+                    .map(|[l, r]| {
+                        let mono = 0.5 * (f64::from(*l) + f64::from(*r));
+                        mono * mono
+                    })
+                    .sum();
+                *rms_slot = (sum_sq / slice.len() as f64).sqrt() as f32;
+                if *rms_slot > 0.0 {
+                    has_audio_signal = true;
+                }
+            }
+        }
+
+        if !has_audio_signal && let Some(layer) = scene.layers.get(audio_layer) {
+            for item in &layer.items {
+                if let ItemKind::Audio {
+                    asset_id,
+                    source_offset,
+                    volume,
+                } = &item.kind
+                    && let Some(wf) = waveforms.get(asset_id)
+                    && wf.sample_rate > 0
+                    && wf.samples_per_bucket > 0
+                {
+                    let wf_bucket_sec = (wf.samples_per_bucket as f64) / f64::from(wf.sample_rate);
+                    let start_s = item.start.as_seconds();
+                    let end_s = item.end().as_seconds();
+                    let src_off = source_offset.as_seconds();
+                    for (b_idx, rms_slot) in rms_series.iter_mut().enumerate() {
+                        let t = (b_idx as f64 + 0.5) * bucket_sec;
+                        if t < start_s || t >= end_s {
+                            continue;
+                        }
+                        let wf_idx = ((src_off + (t - start_s)) / wf_bucket_sec).floor() as usize;
+                        if let Some(b) = wf.buckets.get(wf_idx) {
+                            let v = b.rms * volume.max(0.0);
+                            if v > *rms_slot {
+                                *rms_slot = v;
+                                has_audio_signal = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !has_audio_signal {
+            self.jump_cut_status = format!(
+                "L{audio_layer} に解析可能な音声波形がありません（先に音声ファイルを配置してください）"
+            );
+            return;
+        }
+
+        let linked: Vec<usize> = self
+            .jump_cut_linked_layers
+            .iter()
+            .copied()
+            .filter(|&l| l < scene.layers.len())
+            .collect();
+        let cfg = JumpCutConfig {
+            rms_threshold: self.jump_cut_rms_threshold,
+            min_silence_sec: self.jump_cut_min_silence_sec,
+            pad_before_sec: self.jump_cut_pad_before_sec,
+            pad_after_sec: self.jump_cut_pad_after_sec,
+            ripple_linked_layers: linked.clone(),
+        };
+        let intervals = detect_speech_intervals_from_rms(&rms_series, bucket_sec, total_sec, &cfg);
+        if intervals.is_empty() {
+            self.jump_cut_status =
+                "しきい値以上の有音区間が検出されませんでした（RMS閾値を下げてください）".into();
+            return;
+        }
+        match build_jump_cut_commands(&scene, audio_layer, &intervals, &linked) {
+            Some((kept_count, removed_sec, cmd)) => {
+                match session
+                    .bus
+                    .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                {
+                    Ok(_) => {
+                        session.selected_items.clear();
+                        self.jump_cut_status = format!(
+                            "無音カット完了: 発話 {kept_count} 区間を保持 / 約 {removed_sec:.2} 秒を自動カット（Ctrl+Z で復元可）"
+                        );
+                    }
+                    Err(e) => {
+                        self.jump_cut_status = format!("無音カット実行エラー: {e}");
+                    }
+                }
+            }
+            None => {
+                self.jump_cut_status = "カット可能な無音区間はありませんでした".into();
+            }
         }
     }
 }

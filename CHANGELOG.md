@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.0] - 2026-11-21
+
+ロードマップ残バックログ（#3・#5・#6・#7・#8）をすべて実装完了しました。
+
+### #3 無音区間自動カット（ジェットカット / Jump Cut）
+* `ve-core` に RMS 発話区間検出（`detect_speech_intervals_from_rms`）および連動レイヤー一括カット＆左詰めコマンド生成（`build_jump_cut_commands`・1 ステップ Undo 対応）を追加
+* タイムラインに「⚡ 無音カット」設定バー（解析レイヤー・RMS 閾値・最小無音長・語頭/語尾余白・連動レイヤー選択）を追加し、実メディア `AudioGraph` と `WaveformPeaks` の双方に対応
+* 内蔵 MCP ツール `auto_jump_cut` を追加
+
+### #5 カスタム WGSL シェーダー＆エフェクトの `wgpu` GPU オフロード
+* `WgpuPreviewPipeline` に `Rgba16Float` Ping-Pong テクスチャ 2 枚と共通 48-byte `GpuEffectUniform`（`params[8]`, `resolution`, `time_sec`）を追加し、組み込み色調補正・2-Pass 分離ブラー・グロー・クリッピングおよびホットリロード済みカスタム WGSL パイプラインを GPU 実行
+* ホットリロード成功時に `wgpu::RenderPipeline` を自動再構築し、検証エラー時は直前の正常パイプラインを保持
+* オフスクリーン書き出し向け `HeadlessGpuOffloader` を実装（GPU 非搭載環境では CPU `RenderGraph` へ自動フォールバック）
+
+### #6 Claude 字幕文脈補正 UI（差分確認）＆ MCP ワークフロー強化
+* `AudioAi3DPanel` に「✨ Claude で字幕を文脈補正」（`CloudUploadGuard` 付き）およびオフライン「📝 自動改行プレビュー」と Before / After 差分確認・個別編集・1 ステップ Undo 一括適用 UI を追加
+* インスペクタに「📋 MCPクライアント設定JSONをコピー」ボタンを追加
+* 内蔵 MCP に `auto_jump_cut`, `refine_subtitles`, `import_media`, `manage_markers`, `start_export`（確認ガード＆出力名サニタイズ付き）を追加
+
+### #7 キーボードショートカット完全化＆タイムライン操作性向上
+* `Space`（再生/一時停止）、`←`/`→`（`Shift` で 10 フレーム移動）、`J`/`K`/`L` シャトル再生（`-4x/-2x/-1x/0/1x/2x/4x`、`AudioMasterClock` ロックフリー原子レート対応）
+* `Ctrl + マウスホイール` による再生ヘッド中心のタイムラインズーム
+* `M` タイムラインマーカー追加（ラベル・色付き、ルーラー旗クリックでジャンプ／右クリック削除、YouTube チャプターテキスト一括コピー）
+* 空トラックドラッグによるラバーバンド矩形選択、複数選択クリップ同時ドラッグ移動、リップル削除（`Shift+Delete`）
+
+### #8 GitHub Releases 自動配布パイプライン
+* `.github/workflows/release.yml` を追加し、`v*` タグプッシュ時に Windows 11 x64（`.zip`）および Ubuntu Linux x64（`.tar.gz`）の最適化リリースバイナリと SHA-256 チェックサムを自動公開
+
+## [0.3.0] - 2026-11-21
+
+* AviUtl2 本体実用機能（A-1〜A-6: 名前付きカラーパレット、インライン制御文字＆補完、レイヤー常駐設定、シーンチェンジ、再生速度・逆再生・ループ、実務頻出フィルタ）
+* 人気プラグイン相当機能（B-1〜B-7: 整列・隙間詰め・ミニマップ、フォント視覚化ピッカー、音声 DSP＆LUFS 正規化、エイリアス棚、テキスト検索・一括置換、かんしくん風フォルダ監視、演出プリセット）
+* 字幕リッチ装飾（縁取り・ドロップシャドウ・座布団背景）
+
+## [0.2.0] - 2026-11-21
+
+* コードレビュー最適化・セキュリティ強化（PR #5）
+* 実メディア動画・画像・PSD の本格描画＆軽量プロキシ自動生成＆バックグラウンド非同期書き出し（PR #6）
+
 ## [0.1.0] - 2026-11-21
 
 仕様書 v1.1（[docs/spec.md](docs/spec.md)）の全ロードマップ（Phase 1a 〜 Phase 4）を実装しました。

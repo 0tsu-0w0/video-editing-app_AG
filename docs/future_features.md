@@ -1,23 +1,15 @@
 # 今後の機能追加ロードマップ（Future Features Backlog）
 
 > 更新日: 2026-11-20  
-> Phase 1〜4・最適化/セキュリティ強化（PR #5）・実メディア描画＆非同期書き出し（PR #6）に続き、**v0.3（AviUtl2 本体実用機能 A-1〜A-6 ＋ 人気プラグイン相当機能 B-1〜B-7 ＋ #4 字幕リッチ装飾）**を実装完了。以下に未着手の将来候補を保持しています。
+> Phase 1〜4・最適化/セキュリティ強化（PR #5）・実メディア描画＆非同期書き出し（PR #6）・v0.3（AviUtl2 本体実用機能 A-1〜A-6 ＋ 人気プラグイン相当機能 B-1〜B-7 ＋ #4 字幕リッチ装飾、PR #7）に続き、**v0.4 で残バックログ（#3・#5・#6・#7・#8）をすべて実装完了しました。**
 
 ---
 
-## 3. 無音区間自動カット（ジェットカット / Jump Cut）
+## 3. ~~無音区間自動カット（ジェットカット / Jump Cut）~~ ✅ 実装済み（v0.4）
 
-### 目的
-解説動画・実況動画・トーク動画の編集において最も時間を要する「無音・間延び区間の手動カット」を 1 アクションで自動化する。
-
-### 設計メモ・既存フック
-- **既存資産**:
-  - `ve-ai`: `segment_audio_by_vad(&AudioBuffer, rms_threshold, min_segment_sec)`（`crates/ai/src/transcribe.rs`）
-  - `ve-audio`: `WaveformPeaks` の `rms` バケット列（`crates/audio/src/waveform.rs`）
-  - `ve-core`: `EditCommand::Batch`（複数分割＋移動を 1 回の `Ctrl+Z` Undo 単位で実行可能）
-- **実装イメージ**:
-  - パラメータ: `rms_threshold`（無音判定しきい値）、`min_silence_sec`（カット対象の最小無音尺）、`pad_before_sec` / `pad_after_sec`（語頭・語尾の食い込み防止マージン）、`ripple_linked_layers`（連動して詰める映像・字幕レイヤー指定）。
-  - 実行経路: GUI（タイムラインツールバー「⚡ 無音カット」）および内蔵 MCP ツール `auto_jump_cut` の両方から `CommandBus` 経由で実行。
+- `ve-core`: `JumpCutConfig`, `SpeechInterval`, `detect_speech_intervals_from_rms`, `build_jump_cut_commands`（音声レイヤー＋連動する映像・字幕・立ち絵レイヤーを一括カット＆左詰め、1回の `Ctrl+Z` で復元可能な `EditCommand::Batch` 生成）。
+- `ve-app`: タイムラインツールバーに「⚡ 無音カット」展開パネルを実装（解析対象レイヤー・RMS閾値・最小無音長・語頭/語尾マージン・連動リップルレイヤー指定、`AudioGraph` 実波形および `WaveformPeaks` フォールバック対応）。
+- `ve-mcp`: 内蔵 MCP ツール `auto_jump_cut` を追加。
 
 ---
 
@@ -27,67 +19,35 @@
 
 ---
 
-## 5. カスタム WGSL シェーダー＆エフェクトの `wgpu` GPU オフロード
+## 5. ~~カスタム WGSL シェーダー＆エフェクトの `wgpu` GPU オフロード~~ ✅ 実装済み（v0.4）
 
-### 目的
-1080p / 4K 60fps での重いエフェクト（大半径ブラー・グロー・色調補正・ユーザー自作 `.wgsl`）を CPU 処理から GPU パイプラインへ完全移行する。
-
-### 設計メモ・既存フック
-- **既存資産**:
-  - `ve-render`: `ShaderHotReloader::build_wgpu_module`（`crates/render/src/hot_shader.rs`）
-  - `ve-render`: `WgpuPreviewPipeline`（`crates/render/src/pipeline.rs`）
-  - `ve-render`: 組み込み `shaders/effects.wgsl`、サンプル `shaders/custom_chromatic_aberration.wgsl`
-- **実装イメージ**:
-  - `WgpuPreviewPipeline` に `Rgba16Float` の Ping-Pong テクスチャ 2 枚と共通 Uniform バッファ（`resolution`, `time_sec`, `params[8]`）を追加。
-  - ホットリロード成功時に `wgpu::RenderPipeline` を自動再構築し、エラー時は直前の正常パイプラインを保持。
-  - オフスクリーン書き出し時もヘッドレス `wgpu::Device` 経由で GPU レンダリング結果をリードバック可能にする（GPU 非搭載環境では現行 CPU `RenderGraph` へ自動フォールバック）。
+- `ve-render`: `WgpuPreviewPipeline` に `Rgba16Float` の Ping-Pong テクスチャ 2 枚と共通 48-byte `GpuEffectUniform`（`params[8]`, `resolution`, `time_sec`、先頭 16 バイトが既存 WGSL と完全互換）を追加。
+- `ShaderHotReloader`: `naga` によるフラグメントエントリポイント自動抽出し、ホットリロード時に `wgpu::RenderPipeline` を自動再構築（構文エラー時は直前の正常パイプラインを保持）。
+- `HeadlessGpuOffloader`: オフスクリーン書き出し時のヘッドレス `wgpu::Device` GPU ポストプロセス＆リードバックを実装（GPU 非搭載環境では CPU `RenderGraph` へシームレスに自動フォールバック）。
+- `ve-app`: インスペクタに GPU オフロード有効化・アクティブ WGSL 選択・強度/色調/2-Passブラー/グロー調整 UI を実装し、プレビューとバックグラウンド書き出しの両方へ接続。
 
 ---
 
-## 6. Claude 字幕文脈補正 UI（差分確認）＆ MCP ワークフロー強化
+## 6. ~~Claude 字幕文脈補正 UI（差分確認）＆ MCP ワークフロー強化~~ ✅ 実装済み（v0.4）
 
-### 目的
-Whisper / Gemini での一次書き起こし結果を Claude API で自然な日本語・読みやすい改行幅へ仕上げ、外部 AI エージェント（Claude Desktop / Cursor / Codex 等）との連携障壁を極小化する。
-
-### 設計メモ・既存フック
-- **既存資産**:
-  - `ve-ai`: `ClaudeRefiner::refine_subtitles`（`crates/ai/src/transcribe.rs`）、`CloudUploadGuard`（`crates/ai/src/guard.rs`）
-  - `ve-mcp`: `EmbeddedMcpServer` / `tools.rs`（`crates/mcp/src/`）
-- **実装イメージ**:
-  - `AudioAi3DPanel` に「✨ Claude で字幕を文脈補正」ボタンと Before / After 差分プレビュー＆一括適用（`EditCommand::Batch` で Undo 対応）を追加。
-  - インスペクタに「MCP クライアント設定 JSON をコピー」ボタンを追加（現在の `127.0.0.1:<port>/mcp` と一時トークンをフォーマット済みでコピー）。
-  - MCP ツール拡張: `refine_subtitles`, `import_media`, `auto_jump_cut`, `start_export`（確認ガード付き）。
+- `ve-app` (`AudioAi3DPanel`): 「✨ Claude で字幕を文脈補正」（`CloudUploadGuard` 確認ガード付き）およびオフライン「📝 自動改行プレビュー」を追加。Before / After 差分テーブルで各行を個別編集・チェック選択でき、`EditCommand::Batch` による 1 ステップ Undo で一括適用可能。
+- `ve-app` (`Inspector`): 「📋 MCPクライアント設定JSONをコピー」ボタンを追加（`EmbeddedMcpServer::client_config_json()` で現在の `127.0.0.1:<port>/mcp` と Bearer トークンを整形コピー）。
+- `ve-mcp`: 新ツール `auto_jump_cut`, `refine_subtitles`（オフライン日本語改行／Claude文脈補正対応）, `import_media`, `manage_markers`（追加・削除・一覧・YouTubeチャプター出力）, `start_export`（`user_confirmed: true` 必須確認ガード＋出力ファイル名サニタイズ付き）を実装。
 
 ---
 
-## 7. キーボードショートカット完全化＆タイムライン操作性向上
+## 7. ~~キーボードショートカット完全化＆タイムライン操作性向上~~ ✅ 実装済み（v0.4）
 
-### 目的
-AviUtl2 / Premiere / DaVinci 経験者がマウスを持ち替えずに高速カット編集できる操作感を実現する。
-
-### 設計メモ・既存フック
-- **既存資産**:
-  - `ve-app`: `TimelineState::show`（`crates/app/src/timeline.rs`、テキストフォーカス時は `egui_wants_keyboard_input()` でショートカット抑止済み）
-- **実装イメージ**:
-  - `Space`: 再生 / 一時停止トグル
-  - `←` / `→`（`Shift` で 10 フレーム）: フレーム単位ステップ移動
-  - `J` / `K` / `L`: 逆再生・停止・倍速再生（1x / 2x / 4x）
-  - `Ctrl + マウスホイール`: 再生ヘッド中心のタイムラインズーム
-  - `M`: タイムラインマーカー追加（ラベル・色付き、YouTube チャプターテキスト自動出力機能付き）
-  - 複数クリップの矩形選択（ラバーバンド選択）と一括移動・リップル削除
+- `Space`: 再生 / 一時停止トグル（シャトル速度 1x リセット）
+- `←` / `→`（`Shift` で 10 フレーム）: フレーム単位ステップ移動
+- `J` / `K` / `L`: 逆再生・停止・倍速シャトル再生（`-4x / -2x / -1x / 0 / 1x / 2x / 4x`、`AudioMasterClock` ロックフリー原子レート対応）
+- `Ctrl + マウスホイール`: 再生ヘッド中心のタイムラインズーム（スクロールオフセット自動補正）
+- `M`: ラベル・色付きタイムラインマーカー追加（ルーラー上の旗クリックでジャンプ／右クリックで削除、ミニマップ表示、「📋 YouTubeチャプター」一括コピー対応）
+- 空トラックドラッグによる複数クリップ矩形選択（ラバーバンド選択）、複数選択クリップ同時ドラッグ移動（1 ステップ Undo 結合）、およびリップル削除（`Shift+Delete` / ツールバーボタン）。
 
 ---
 
-## 8. GitHub Releases 自動配布パイプライン（Windows 11 / Linux）
+## 8. ~~GitHub Releases 自動配布パイプライン（Windows 11 / Linux）~~ ✅ 実装済み（v0.4）
 
-### 目的
-OSS 公開・自分用デプロイの双方で、タグを打つだけで最新の最適化済みネイティブバイナリを即座に配布できるようにする。
-
-### 設計メモ・既存フック
-- **既存資産**:
-  - `.github/workflows/ci.yml`（Ubuntu + Windows 11 ビルド実績あり）
-  - ルート `Cargo.toml` の `[profile.release]`（`lto = "thin"`, `codegen-units = 1`, `strip = "symbols"` 設定済み）
-- **実装イメージ**:
-  - `.github/workflows/release.yml` を追加（`push: tags: ['v*']` で起動）。
-  - `windows-latest` で `cargo build --release -p ve-app` → `ve-app.exe` + `shaders/` + `LICENSE-*` + `README.md` を `ve-app-windows-x64.zip` へパッケージングし SHA-256 チェックサム付きで GitHub Release へ自動添付。
-  - `ubuntu-latest` 向け tar.gz アーカイブも併せて公開。
+- `.github/workflows/release.yml` を追加（`push: tags: ['v*']` および手動 `workflow_dispatch` で起動）。
+- `windows-latest` で `ve-app-windows-x64.zip` + `.sha256`、`ubuntu-latest` で `ve-app-linux-x64.tar.gz` + `.sha256` を自動パッケージングし、`SHA256SUMS.txt` とともに GitHub Release へ自動公開。

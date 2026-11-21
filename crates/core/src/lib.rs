@@ -24,12 +24,14 @@ pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor};
 pub use project::{
     AssetId, AssetRef, AudioEffectNode, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId,
     ItemKind, Layer, LayerId, MediaKind, PlaybackSettings, Project, ProjectSettings, RgbaColor,
-    Scene, SceneId, ShapeKind, TextAnimator, TextStyle, TimelineItem, TrackMatte, TrackMatteMode,
-    Transform2D, TransitionKind,
+    Scene, SceneId, ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte,
+    TrackMatteMode, Transform2D, TransitionKind,
 };
 pub use time::{FrameRate, RationalTime, TICKS_PER_SECOND, TimeInput};
 pub use timeline_ops::{
-    AlignMode, MotionPreset, SelectDirection, TextSearchMatch, build_align_commands,
-    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_motion_preset_commands,
-    build_replace_text_commands, search_text_items, select_items_from_time, select_layer_items,
+    AlignMode, JumpCutConfig, MotionPreset, SelectDirection, SpeechInterval, TextSearchMatch,
+    build_align_commands, build_close_gaps_commands, build_fit_duration_to_layer_commands,
+    build_jump_cut_commands, build_motion_preset_commands, build_replace_text_commands,
+    build_ripple_delete_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
+    search_text_items, select_items_from_time, select_layer_items, wrap_subtitle_japanese,
 };

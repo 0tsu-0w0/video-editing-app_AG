@@ -11,7 +11,9 @@ pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph};
 pub use hot_shader::{
     HotShaderEntry, ShaderHotReloader, ShaderReloadStatus, register_shader_dir, validate_wgsl,
 };
-pub use pipeline::WgpuPreviewPipeline;
+pub use pipeline::{
+    GpuEffectUniform, GpuPostProcessPass, HeadlessGpuOffloader, WgpuPreviewPipeline,
+};
 pub use psd_sprite::PsdCharacterAsset;
 pub use sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
 pub use text::{StyledSpan, TextRenderer, parse_inline_text_spans, strip_inline_tags};

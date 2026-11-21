@@ -174,6 +174,22 @@ impl EmbeddedMcpServer {
     pub fn bearer_token(&self) -> &str {
         &self.token
     }
+
+    /// Claude Desktop / Cursor / Codex 等へそのまま貼り付けできる MCP クライアント設定 JSON を生成する
+    pub fn client_config_json(&self) -> String {
+        serde_json::to_string_pretty(&json!({
+            "mcpServers": {
+                "next-gen-video-editor": {
+                    "type": "streamable-http",
+                    "url": self.endpoint_url(),
+                    "headers": {
+                        "Authorization": format!("Bearer {}", self.token)
+                    }
+                }
+            }
+        }))
+        .unwrap_or_default()
+    }
 }
 
 impl Drop for EmbeddedMcpServer {
