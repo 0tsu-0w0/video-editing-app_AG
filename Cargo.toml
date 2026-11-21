@@ -5,6 +5,7 @@ members = [
     "crates/media",
     "crates/audio",
     "crates/render",
+    "crates/mcp",
     "crates/app",
 ]
 
@@ -20,6 +21,7 @@ ve-core = { path = "crates/core" }
 ve-media = { path = "crates/media" }
 ve-audio = { path = "crates/audio" }
 ve-render = { path = "crates/render" }
+ve-mcp = { path = "crates/mcp" }
 
 # Serialization & Core utilities
 serde = { version = "1.0", features = ["derive"] }
@@ -37,6 +39,7 @@ cpal = "0.15"
 wgpu = "30.0"
 cosmic-text = "0.19"
 half = { version = "2.6", features = ["bytemuck"] }
+png = "0.18"
 
 # GUI
 egui = "0.37"
