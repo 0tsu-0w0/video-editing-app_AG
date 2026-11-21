@@ -9,7 +9,8 @@ use ve_core::{
     FrameRate, Interpolation, ItemKind, Keyframe, LipSyncMode, MediaKind, RationalTime, RgbaColor,
     ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode,
 };
-use ve_render::RenderGraph;
+use ve_plugin_api::PluginRegistry;
+use ve_render::{RenderGraph, validate_wgsl};
 
 pub fn tool_definitions() -> Value {
     json!([
@@ -265,6 +266,20 @@ pub fn tool_definitions() -> Value {
                     "provider": { "type": "string", "enum": ["gemini", "claude"] },
                     "duration_sec": { "type": "number" }
                 }
+            }
+        },
+        {
+            "name": "list_plugins",
+            "description": "登録済みエフェクト／ジェネレータプラグインのマニフェスト一覧を取得する",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "validate_custom_wgsl",
+            "description": "カスタム WGSL シェーダー文字列を naga で静的検証し、エントリーポイントまたは構文エラーを返す",
+            "inputSchema": {
+                "type": "object",
+                "required": ["source"],
+                "properties": { "source": { "type": "string" } }
             }
         },
         {
@@ -879,6 +894,7 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                         linked_audio_layer,
                         mode,
                         png_paths: BTreeMap::new(),
+                        psd_config: None,
                         phoneme_override: Vec::new(),
                     },
                     width: 260.0,
@@ -1002,6 +1018,31 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 CloudUploadGuard::default().estimate_audio_transcription(provider, duration_sec);
             let text = serde_json::to_string_pretty(&est).unwrap_or_default();
             Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+        }
+        "list_plugins" => {
+            let manifests = PluginRegistry::with_builtins().list_manifests();
+            let text = serde_json::to_string_pretty(&manifests).unwrap_or_default();
+            Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+        }
+        "validate_custom_wgsl" => {
+            let source = args
+                .get("source")
+                .and_then(Value::as_str)
+                .ok_or("missing WGSL 'source'")?;
+            match validate_wgsl(source) {
+                Ok(entry_points) => Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": json!({"valid": true, "entry_points": entry_points}).to_string()
+                    }]
+                })),
+                Err(err) => Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": json!({"valid": false, "error": err}).to_string()
+                    }]
+                })),
+            }
         }
         "batch_execute" => {
             let label = args

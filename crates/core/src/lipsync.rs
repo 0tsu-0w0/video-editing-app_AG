@@ -48,14 +48,76 @@ pub struct PhonemeSegment {
     pub mouth: MouthShape,
 }
 
-/// Phase 3 PNG差分立ち絵オブジェクトの設定（連動音声レイヤー選択のみの設定レス設計）
+/// Phase 4: PSD ネイティブ立ち絵レイヤー切り替え設定（目パチ・口パク差分）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PsdCharacterConfig {
+    pub psd_path: PathBuf,
+    /// 体・髪・服など常時表示するベースレイヤー名（空の場合は目/口差分以外の可視レイヤーを使用）
+    #[serde(default)]
+    pub base_layers: Vec<String>,
+    /// 口形状と PSD 内レイヤー名の対応表（例: Closed -> "口_閉じ", A -> "口_あ"）
+    #[serde(default)]
+    pub mouth_layers: BTreeMap<MouthShape, String>,
+    /// 開き目レイヤー名（例: "目_開き"）
+    #[serde(default)]
+    pub eye_open_layer: Option<String>,
+    /// 閉じ目レイヤー名（例: "目_閉じ"）
+    #[serde(default)]
+    pub eye_closed_layer: Option<String>,
+    /// 自動目パチの周期（秒、0以下で無効）
+    #[serde(default = "default_blink_interval")]
+    pub blink_interval_sec: f32,
+    /// 自動目パチの閉じ時間（秒）
+    #[serde(default = "default_blink_duration")]
+    pub blink_duration_sec: f32,
+}
+
+fn default_blink_interval() -> f32 {
+    3.5
+}
+
+fn default_blink_duration() -> f32 {
+    0.14
+}
+
+impl Default for PsdCharacterConfig {
+    fn default() -> Self {
+        Self {
+            psd_path: PathBuf::new(),
+            base_layers: Vec::new(),
+            mouth_layers: BTreeMap::new(),
+            eye_open_layer: None,
+            eye_closed_layer: None,
+            blink_interval_sec: default_blink_interval(),
+            blink_duration_sec: default_blink_duration(),
+        }
+    }
+}
+
+impl PsdCharacterConfig {
+    /// 指定時刻に目パチ（閉じ目）状態かどうかを決定論的に評価する
+    pub fn is_eye_closed_at(&self, time_sec: f64) -> bool {
+        if self.blink_interval_sec <= 0.0 || self.blink_duration_sec <= 0.0 {
+            return false;
+        }
+        let interval = f64::from(self.blink_interval_sec);
+        let dur = f64::from(self.blink_duration_sec).min(interval * 0.5);
+        let phase = time_sec.rem_euclid(interval);
+        phase >= (interval - dur)
+    }
+}
+
+/// Phase 3/4 立ち絵オブジェクトの設定（PNG差分方式 / PSDネイティブ対応）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CharacterSpriteConfig {
     /// 連動する音声レイヤーのインデックス（選択するだけで即動作）
     pub linked_audio_layer: Option<usize>,
     pub mode: LipSyncMode,
-    /// 口形状ごとの PNG 差分ファイルパス
+    /// Phase 3: 口形状ごとの PNG 差分ファイルパス
     pub png_paths: BTreeMap<MouthShape, PathBuf>,
+    /// Phase 4: PSD ネイティブ立ち絵設定（設定時は PNG より優先してレイヤー直接合成）
+    #[serde(default)]
+    pub psd_config: Option<PsdCharacterConfig>,
     /// 立ち絵側へ直接紐づけられた音素トラック（未指定時は連動レイヤーの音声アイテムから取得）
     #[serde(default)]
     pub phoneme_override: Vec<PhonemeSegment>,

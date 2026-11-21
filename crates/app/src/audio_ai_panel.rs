@@ -10,7 +10,8 @@ use ve_ai::{
 use ve_audio::{WaveformBucket, WaveformPeaks};
 use ve_core::{
     AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, ItemKind, LipSyncMode, MediaKind,
-    MouthShape, PhonemeSegment, RationalTime, RgbaColor, TextAnimator, TimelineItem, Transform2D,
+    MouthShape, PhonemeSegment, PsdCharacterConfig, RationalTime, RgbaColor, TextAnimator,
+    TimelineItem, Transform2D,
 };
 use ve_mcp::EditorSession;
 use ve_media::decode_audio_file;
@@ -160,6 +161,80 @@ impl AudioAi3DPanel {
                                     }
                                 }
                             });
+                        }
+                    });
+
+                egui::CollapsingHeader::new("PSD ネイティブ立ち絵設定（Phase 4: 目パチ・口パク）")
+                    .show(ui, |ui| {
+                        let mut use_psd = cfg.psd_config.is_some();
+                        if ui
+                            .checkbox(&mut use_psd, "PSD レイヤー直接読み込みを有効化")
+                            .changed()
+                        {
+                            cfg.psd_config = if use_psd {
+                                Some(PsdCharacterConfig::default())
+                            } else {
+                                None
+                            };
+                        }
+                        if let Some(psd) = cfg.psd_config.as_mut() {
+                            let mut psd_str = psd.psd_path.to_string_lossy().into_owned();
+                            ui.horizontal(|ui| {
+                                ui.label("PSDパス:");
+                                if ui.text_edit_singleline(&mut psd_str).changed() {
+                                    psd.psd_path = PathBuf::from(psd_str.trim());
+                                }
+                            });
+                            let mut eye_open = psd.eye_open_layer.clone().unwrap_or_default();
+                            ui.horizontal(|ui| {
+                                ui.label("開き目レイヤー:");
+                                if ui.text_edit_singleline(&mut eye_open).changed() {
+                                    psd.eye_open_layer = if eye_open.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(eye_open.trim().to_string())
+                                    };
+                                }
+                            });
+                            let mut eye_closed = psd.eye_closed_layer.clone().unwrap_or_default();
+                            ui.horizontal(|ui| {
+                                ui.label("閉じ目レイヤー:");
+                                if ui.text_edit_singleline(&mut eye_closed).changed() {
+                                    psd.eye_closed_layer = if eye_closed.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(eye_closed.trim().to_string())
+                                    };
+                                }
+                            });
+                            ui.add(
+                                egui::Slider::new(&mut psd.blink_interval_sec, 0.0..=10.0)
+                                    .text("目パチ周期(秒)"),
+                            );
+                            for shape in [
+                                MouthShape::Closed,
+                                MouthShape::HalfOpen,
+                                MouthShape::Open,
+                                MouthShape::A,
+                                MouthShape::I,
+                                MouthShape::U,
+                                MouthShape::E,
+                                MouthShape::O,
+                            ] {
+                                let mut lname =
+                                    psd.mouth_layers.get(&shape).cloned().unwrap_or_default();
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("口 {shape:?}:"));
+                                    if ui.text_edit_singleline(&mut lname).changed() {
+                                        if lname.trim().is_empty() {
+                                            psd.mouth_layers.remove(&shape);
+                                        } else {
+                                            psd.mouth_layers
+                                                .insert(shape, lname.trim().to_string());
+                                        }
+                                    }
+                                });
+                            }
                         }
                     });
 
@@ -588,6 +663,7 @@ impl AudioAi3DPanel {
                     linked_audio_layer: Some(3),
                     mode: LipSyncMode::default(),
                     png_paths: BTreeMap::new(),
+                    psd_config: None,
                     phoneme_override: Vec::new(),
                 },
                 width: 240.0,

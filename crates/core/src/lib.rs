@@ -13,8 +13,8 @@ pub use camera::{Camera3D, Projected3D, Transform3D};
 pub use command::{CommandBus, CommandError, CommandSource, EditCommand};
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
 pub use lipsync::{
-    CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, evaluate_vowel_mouth,
-    phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
+    CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
+    evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
 };
 pub use project::{
     AssetId, AssetRef, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer,

@@ -8,10 +8,13 @@ rust-version.workspace = true
 [dependencies]
 ve-core.workspace = true
 ve-audio.workspace = true
+ve-plugin-api.workspace = true
 wgpu.workspace = true
+naga.workspace = true
 cosmic-text.workspace = true
 half.workspace = true
 png.workspace = true
+psd.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
