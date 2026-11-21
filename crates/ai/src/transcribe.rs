@@ -5,11 +5,43 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 use ve_core::{
     ItemKind, PhonemeSegment, RationalTime, RgbaColor, TextAnimator, TimelineItem, Transform2D,
+    base64_encode,
 };
 use ve_media::AudioBuffer;
+
+/// 外部AI音声送信の最大ペイロードサイズ（50 MiB）
+const MAX_CLOUD_AUDIO_BYTES: usize = 50 * 1024 * 1024;
+
+fn validate_secure_endpoint(url: &str) -> Result<(), TranscribeError> {
+    if url.starts_with("https://")
+        || url.starts_with("http://127.0.0.1:")
+        || url.starts_with("http://127.0.0.1/")
+        || url.starts_with("http://localhost:")
+        || url.starts_with("http://localhost/")
+        || url.starts_with("http://[::1]:")
+        || url.starts_with("http://[::1]/")
+    {
+        Ok(())
+    } else {
+        Err(TranscribeError::Failed(format!(
+            "安全でないエンドポイントURL（HTTPS または localhost のみ許可）: {url}"
+        )))
+    }
+}
+
+fn sanitize_cli_path(path: &Path) -> PathBuf {
+    if path.is_relative()
+        && let Some(s) = path.to_str()
+        && s.starts_with('-')
+    {
+        return Path::new(".").join(path);
+    }
+    path.to_path_buf()
+}
 
 #[derive(Debug, Error)]
 pub enum TranscribeError {
@@ -94,11 +126,26 @@ impl LocalWhisperTranscriber {
         let model = self.model_path.as_ref().ok_or_else(|| {
             TranscribeError::Failed("Whisper モデルファイル (.bin) が未設定です".into())
         })?;
+        if self.language.is_empty()
+            || self.language.len() > 16
+            || !self
+                .language
+                .bytes()
+                .all(|b| b.is_ascii_alphabetic() || b == b'-')
+        {
+            return Err(TranscribeError::Failed(format!(
+                "不正な言語コード: {}",
+                self.language
+            )));
+        }
+        let safe_model = sanitize_cli_path(model);
+        let safe_wav = sanitize_cli_path(wav_path);
+
         let output = Command::new(&self.whisper_bin)
             .args(["-m"])
-            .arg(model)
+            .arg(&safe_model)
             .args(["-l", &self.language, "-osrt", "-f"])
-            .arg(wav_path)
+            .arg(&safe_wav)
             .output()?;
         if !output.status.success() {
             return Err(TranscribeError::Failed(
@@ -244,6 +291,14 @@ impl Default for GeminiTranscriber {
 }
 
 impl GeminiTranscriber {
+    pub fn endpoint_url(&self) -> String {
+        format!(
+            "{}/models/{}:generateContent",
+            self.endpoint_base.trim_end_matches('/'),
+            self.model
+        )
+    }
+
     pub fn transcribe_audio_bytes(
         &self,
         store: &dyn CredentialStore,
@@ -254,12 +309,16 @@ impl GeminiTranscriber {
     ) -> Result<Vec<SubtitleSegment>, TranscribeError> {
         self.guard
             .verify_before_send(ApiProvider::Gemini, duration_sec, user_confirmed)?;
+        if audio_bytes.len() > MAX_CLOUD_AUDIO_BYTES {
+            return Err(TranscribeError::Failed(format!(
+                "音声ファイルサイズが上限 ({} MiB) を超えています",
+                MAX_CLOUD_AUDIO_BYTES / (1024 * 1024)
+            )));
+        }
+        let url = self.endpoint_url();
+        validate_secure_endpoint(&url)?;
         let api_key = store.get_api_key(ApiProvider::Gemini)?;
 
-        let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            self.endpoint_base, self.model, api_key
-        );
         let b64 = base64_encode(audio_bytes);
         let body = json!({
             "contents": [{
@@ -280,9 +339,14 @@ impl GeminiTranscriber {
             }
         });
 
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(120))
+            .build()?;
         let resp: Value = client
-            .post(url)
+            .post(&url)
+            // URLクエリ (?key=...) での漏洩リスクを排除し、公式 HTTP ヘッダー経由で送信する
+            .header("x-goog-api-key", api_key)
             .json(&body)
             .send()?
             .error_for_status()?
@@ -321,6 +385,7 @@ impl ClaudeRefiner {
     ) -> Result<Vec<SubtitleSegment>, TranscribeError> {
         self.guard
             .verify_before_send(ApiProvider::Claude, duration_sec, user_confirmed)?;
+        validate_secure_endpoint(&self.endpoint_url)?;
         let api_key = store.get_api_key(ApiProvider::Claude)?;
 
         let raw_items: Vec<Value> = segments
@@ -345,7 +410,10 @@ impl ClaudeRefiner {
             "messages": [{ "role": "user", "content": prompt }]
         });
 
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()?;
         let resp: Value = client
             .post(&self.endpoint_url)
             .header("x-api-key", api_key)
@@ -386,30 +454,6 @@ pub fn parse_llm_segments_json(raw: &str) -> Result<Vec<SubtitleSegment>, Transc
             phonemes: Vec::new(),
         })
         .collect())
-}
-
-fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[(n & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -464,5 +508,24 @@ mod tests {
             .transcribe_audio_bytes(&store, b"RIFF", "audio/wav", 30.0, false)
             .unwrap_err();
         assert!(matches!(err, TranscribeError::Guard(_)));
+    }
+
+    #[test]
+    fn gemini_endpoint_excludes_api_key_and_rejects_cleartext_remote_url() {
+        let store = InMemoryCredentialStore::new();
+        store
+            .set_api_key(ApiProvider::Gemini, "secret-key")
+            .unwrap();
+
+        let mut gemini = GeminiTranscriber::default();
+        assert!(!gemini.endpoint_url().contains("key="));
+        assert!(gemini.endpoint_url().starts_with("https://"));
+
+        // 平文リモートHTTPエンドポイントはAPIキー送信前に拒否される
+        gemini.endpoint_base = "http://insecure.example.com/v1".to_string();
+        let err = gemini
+            .transcribe_audio_bytes(&store, b"RIFF", "audio/wav", 10.0, true)
+            .unwrap_err();
+        assert!(matches!(err, TranscribeError::Failed(_)));
     }
 }

@@ -54,7 +54,11 @@ impl CloudUploadGuard {
         provider: ApiProvider,
         duration_sec: f64,
     ) -> CloudCostEstimate {
-        let duration_sec = duration_sec.max(0.0);
+        let duration_sec = if duration_sec.is_finite() {
+            duration_sec.max(0.0)
+        } else {
+            0.0
+        };
         // Gemini 音声入力目安: ~32 audio tokens/sec, ~$0.0005 / min オーダー
         // Claude 字幕補正目安: ~5 文字/sec -> ~4 tokens/sec
         let (tokens, usd) = match provider {
@@ -92,14 +96,14 @@ impl CloudUploadGuard {
         }
     }
 
-    /// 送信直前の安全検証: 尺上限チェックとユーザーの明示確認フラグを強制する
+    /// 送信直前の安全検証: 有限値・尺上限チェックとユーザーの明示確認フラグを強制する
     pub fn verify_before_send(
         &self,
         provider: ApiProvider,
         duration_sec: f64,
         user_confirmed: bool,
     ) -> Result<CloudCostEstimate, GuardError> {
-        if duration_sec > self.max_duration_sec {
+        if !duration_sec.is_finite() || duration_sec < 0.0 || duration_sec > self.max_duration_sec {
             return Err(GuardError::DurationLimitExceeded {
                 duration_sec,
                 max_duration_sec: self.max_duration_sec,
@@ -131,11 +135,13 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, GuardError::ConfirmationRequired { .. }));
 
-        // 上限超過は確認済みでもブロック
-        let err = guard
-            .verify_before_send(ApiProvider::Gemini, 3600.0, true)
-            .unwrap_err();
-        assert!(matches!(err, GuardError::DurationLimitExceeded { .. }));
+        // 上限超過・NaN・無限大・負値は確認済みでもブロック
+        for bad in [3600.0, f64::NAN, f64::INFINITY, -1.0] {
+            let err = guard
+                .verify_before_send(ApiProvider::Gemini, bad, true)
+                .unwrap_err();
+            assert!(matches!(err, GuardError::DurationLimitExceeded { .. }));
+        }
 
         // 確認済みかつ範囲内は許可
         let est = guard

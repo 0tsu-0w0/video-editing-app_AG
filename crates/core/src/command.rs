@@ -188,14 +188,33 @@ struct UndoRecord {
     source: CommandSource,
 }
 
+/// Undo スタックの既定最大保持段数（長時間編集時のメモリ肥大化を防止）
+pub const DEFAULT_MAX_UNDO_DEPTH: usize = 200;
+
 /// GUI・AI（MCP）・Undo/Redo・Command Coalescing・`history.jsonl` 復旧を一元管理する Command Bus
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CommandBus {
-    undo_stack: Vec<UndoRecord>,
+    undo_stack: std::collections::VecDeque<UndoRecord>,
     redo_stack: Vec<UndoRecord>,
+    max_undo_depth: usize,
+    revision: u64,
     next_seq: u64,
     gui_drag_locked: bool,
     journal_folder: Option<ProjectFolder>,
+}
+
+impl Default for CommandBus {
+    fn default() -> Self {
+        Self {
+            undo_stack: std::collections::VecDeque::new(),
+            redo_stack: Vec::new(),
+            max_undo_depth: DEFAULT_MAX_UNDO_DEPTH,
+            revision: 0,
+            next_seq: 0,
+            gui_drag_locked: false,
+            journal_folder: None,
+        }
+    }
 }
 
 impl CommandBus {
@@ -209,12 +228,23 @@ impl CommandBus {
             .map(|h| h.last().map(|e| e.seq + 1).unwrap_or(1))
             .unwrap_or(1);
         Self {
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
             next_seq,
-            gui_drag_locked: false,
             journal_folder: Some(folder),
+            ..Self::default()
         }
+    }
+
+    pub fn with_max_undo_depth(mut self, max_depth: usize) -> Self {
+        self.max_undo_depth = max_depth.max(1);
+        while self.undo_stack.len() > self.max_undo_depth {
+            self.undo_stack.pop_front();
+        }
+        self
+    }
+
+    /// プロジェクト状態が変更（execute / undo / redo）されるたびに増加するモノトニック世代番号（GUI ダーティ判定用）
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn set_gui_drag_locked(&mut self, locked: bool) {
@@ -253,30 +283,30 @@ impl CommandBus {
             return Err(CommandError::GuiDragLocked);
         }
 
-        let before = project.clone();
+        // 作業コピー上で先に適用し、失敗時は元プロジェクトを一切汚さない
         let mut working = project.clone();
         apply_command(&mut working, &command)?;
 
-        // コミット確定
-        *project = working.clone();
+        // コミット確定 & Command Coalescing（Project クローン回数を最小化）
         self.redo_stack.clear();
+        let can_coalesce = coalesce_key.is_some_and(|key| {
+            self.undo_stack.back().is_some_and(|last| {
+                last.source == source && last.coalesce_key.as_deref() == Some(key)
+            })
+        });
 
-        // Command Coalescing: 連続ドラッグ等の同一キー操作を1つのUndo単位へ集約
-        let coalesced = if let (Some(key), Some(last)) = (coalesce_key, self.undo_stack.last_mut())
-        {
-            if last.source == source && last.coalesce_key.as_deref() == Some(key) {
+        if can_coalesce {
+            if let Some(last) = self.undo_stack.back_mut() {
                 last.after = working.clone();
                 last.command = command.clone();
-                true
-            } else {
-                false
             }
+            *project = working;
         } else {
-            false
-        };
-
-        if !coalesced {
-            self.undo_stack.push(UndoRecord {
+            let before = std::mem::replace(project, working.clone());
+            if self.undo_stack.len() >= self.max_undo_depth.max(1) {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(UndoRecord {
                 coalesce_key: coalesce_key.map(str::to_owned),
                 before,
                 after: working,
@@ -284,6 +314,8 @@ impl CommandBus {
                 source,
             });
         }
+
+        self.revision = self.revision.wrapping_add(1);
 
         if let Some(folder) = &self.journal_folder {
             let seq = self.next_seq.max(1);
@@ -306,9 +338,10 @@ impl CommandBus {
     }
 
     pub fn undo(&mut self, project: &mut Project) -> bool {
-        if let Some(record) = self.undo_stack.pop() {
+        if let Some(record) = self.undo_stack.pop_back() {
             *project = record.before.clone();
             self.redo_stack.push(record);
+            self.revision = self.revision.wrapping_add(1);
             true
         } else {
             false
@@ -318,7 +351,11 @@ impl CommandBus {
     pub fn redo(&mut self, project: &mut Project) -> bool {
         if let Some(record) = self.redo_stack.pop() {
             *project = record.after.clone();
-            self.undo_stack.push(record);
+            if self.undo_stack.len() >= self.max_undo_depth.max(1) {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(record);
+            self.revision = self.revision.wrapping_add(1);
             true
         } else {
             false
@@ -899,5 +936,32 @@ mod tests {
         assert_eq!(project.scenes.len(), 1);
         assert_eq!(project.active_scene().unwrap().layers[0].items.len(), 1);
         assert_eq!(project.active_scene().unwrap().layers[1].items.len(), 1);
+    }
+
+    #[test]
+    fn undo_stack_respects_max_depth_and_increments_revision() {
+        let mut project = Project::new("CapTest", ProjectSettings::default());
+        let mut bus = CommandBus::new().with_max_undo_depth(3);
+        assert_eq!(bus.revision(), 0);
+
+        for i in 0..5 {
+            bus.execute(
+                &mut project,
+                EditCommand::AddObject {
+                    layer_index: 0,
+                    item: sample_item(&format!("Item {i}")),
+                },
+                CommandSource::Gui,
+                None,
+            )
+            .unwrap();
+        }
+        assert_eq!(bus.undo_len(), 3);
+        assert_eq!(bus.revision(), 5);
+
+        assert!(bus.undo(&mut project));
+        assert_eq!(bus.revision(), 6);
+        assert!(bus.redo(&mut project));
+        assert_eq!(bus.revision(), 7);
     }
 }

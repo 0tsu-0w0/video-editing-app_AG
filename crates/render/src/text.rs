@@ -1,4 +1,4 @@
-use crate::color::{LinearImage, LinearPremul, srgb_to_linear};
+use crate::color::{LinearImage, LinearPremul};
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
 use ve_core::{RgbaColor, TextAnimator};
 
@@ -111,10 +111,11 @@ impl TextRenderer {
                     ch_color.a *= opacity;
                     let glyph_size = (font_size * scale).max(6.0);
                     let cell = (glyph_size * 2.0).ceil() as u32;
-                    let ch_str = ch.to_string();
+                    let mut ch_buf = [0u8; 4];
+                    let ch_str = ch.encode_utf8(&mut ch_buf);
                     self.rasterize_into(
                         &mut image,
-                        &ch_str,
+                        ch_str,
                         font_family,
                         glyph_size,
                         ch_color,
@@ -177,13 +178,12 @@ impl TextRenderer {
                 if glyph_color.a() == 0 {
                     return;
                 }
-                let a = f32::from(glyph_color.a()) / 255.0;
-                let src = LinearPremul {
-                    r: srgb_to_linear(f32::from(glyph_color.r()) / 255.0) * a,
-                    g: srgb_to_linear(f32::from(glyph_color.g()) / 255.0) * a,
-                    b: srgb_to_linear(f32::from(glyph_color.b()) / 255.0) * a,
-                    a,
-                };
+                let src = LinearPremul::from_rgba8_srgb(
+                    glyph_color.r(),
+                    glyph_color.g(),
+                    glyph_color.b(),
+                    glyph_color.a(),
+                );
                 for dy in 0..h as i32 {
                     let py = y + dy + offset_y;
                     if py < 0 || py >= max_h {

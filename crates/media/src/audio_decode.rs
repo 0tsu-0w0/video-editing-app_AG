@@ -124,13 +124,30 @@ pub fn write_wav_pcm16(
     sample_rate: u32,
     channels: u16,
 ) -> Result<(), MediaError> {
-    let mut file = File::create(path)?;
+    if sample_rate == 0 || channels == 0 {
+        return Err(MediaError::InvalidArgument(
+            "WAV sample_rate and channels must be non-zero".into(),
+        ));
+    }
     let bits_per_sample: u16 = 16;
-    let byte_rate = sample_rate * u32::from(channels) * u32::from(bits_per_sample / 8);
-    let block_align = channels * (bits_per_sample / 8);
-    let data_bytes = (interleaved_f32.len() * 2) as u32;
-    let riff_size = 36 + data_bytes;
+    let byte_rate = sample_rate
+        .checked_mul(u32::from(channels))
+        .and_then(|v| v.checked_mul(u32::from(bits_per_sample / 8)))
+        .ok_or_else(|| MediaError::InvalidArgument("WAV byte_rate overflow".into()))?;
+    let block_align = channels
+        .checked_mul(bits_per_sample / 8)
+        .ok_or_else(|| MediaError::InvalidArgument("WAV block_align overflow".into()))?;
+    let data_bytes_usize = interleaved_f32
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| MediaError::InvalidArgument("WAV data size overflow".into()))?;
+    let data_bytes = u32::try_from(data_bytes_usize)
+        .map_err(|_| MediaError::InvalidArgument("WAV exceeds 4 GiB RIFF limit".into()))?;
+    let riff_size = data_bytes
+        .checked_add(36)
+        .ok_or_else(|| MediaError::InvalidArgument("WAV exceeds 4 GiB RIFF limit".into()))?;
 
+    let mut file = std::io::BufWriter::with_capacity(64 * 1024, File::create(path)?);
     file.write_all(b"RIFF")?;
     file.write_all(&riff_size.to_le_bytes())?;
     file.write_all(b"WAVE")?;
@@ -150,6 +167,7 @@ pub fn write_wav_pcm16(
         let pcm = (clamped * i16::MAX as f32).round() as i16;
         file.write_all(&pcm.to_le_bytes())?;
     }
+    file.flush()?;
     Ok(())
 }
 

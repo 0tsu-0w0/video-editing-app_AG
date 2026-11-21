@@ -45,30 +45,42 @@ pub mod live {
             .default_output_config()
             .map_err(|e| AudioOutputError::Backend(e.to_string()))?;
         let channels = config.channels() as usize;
+        // リアルタイム音声スレッドでの毎コールバック Heap 確保を避けるためスクラッチバッファを事前確保
+        let mut stereo_scratch = vec![0.0f32; 4096];
 
         let stream = device
             .build_output_stream(
                 &config.into(),
                 move |data: &mut [f32], _| {
-                    let frames = data.len() / channels.max(1);
-                    let (playing, start_sample) = {
-                        let clock = state.clock.read().unwrap();
-                        (clock.is_playing(), clock.current_sample())
+                    let ch_count = channels.max(1);
+                    let frames = data.len() / ch_count;
+                    let (playing, start_sample) = match state.clock.try_read() {
+                        Ok(clock) => (clock.is_playing(), clock.current_sample()),
+                        Err(_) => {
+                            data.fill(0.0);
+                            return;
+                        }
                     };
                     if !playing {
                         data.fill(0.0);
                         return;
                     }
-                    let mut stereo = vec![0.0f32; frames * 2];
-                    if let Ok(graph) = state.graph.read() {
-                        graph.render_block(start_sample, frames, &mut stereo);
+                    let needed = frames * 2;
+                    if stereo_scratch.len() < needed {
+                        stereo_scratch.resize(needed, 0.0);
+                    }
+                    let stereo = &mut stereo_scratch[..needed];
+                    if let Ok(graph) = state.graph.try_read() {
+                        graph.render_block(start_sample, frames, stereo);
+                    } else {
+                        stereo.fill(0.0);
                     }
                     for i in 0..frames {
-                        for ch in 0..channels {
-                            data[i * channels + ch] = stereo[i * 2 + ch.min(1)];
+                        for ch in 0..ch_count {
+                            data[i * ch_count + ch] = stereo[i * 2 + ch.min(1)];
                         }
                     }
-                    if let Ok(clock) = state.clock.read() {
+                    if let Ok(clock) = state.clock.try_read() {
                         clock.advance_by_audio_callback(frames);
                     }
                 },

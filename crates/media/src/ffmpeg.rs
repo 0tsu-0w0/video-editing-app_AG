@@ -5,6 +5,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use thiserror::Error;
 use ve_core::FrameRate;
 
+/// 動画フレーム1辺の安全上限（8K解像度）
+pub const MAX_VIDEO_DIMENSION: u32 = 8192;
+
 #[derive(Debug, Error)]
 pub enum MediaError {
     #[error("FFmpeg/FFprobe execution error: {0}")]
@@ -15,6 +18,31 @@ pub enum MediaError {
     NonZeroExit(String),
     #[error("Audio decode error: {0}")]
     AudioDecode(String),
+    #[error("Invalid media argument: {0}")]
+    InvalidArgument(String),
+}
+
+/// `-` で始まる相対パスが FFmpeg/FFprobe のCLIオプションとして誤解釈される引数インジェクションを防ぐ
+fn sanitize_ffmpeg_path(path: &Path) -> PathBuf {
+    if path.is_relative()
+        && let Some(s) = path.to_str()
+        && s.starts_with('-')
+    {
+        return Path::new(".").join(path);
+    }
+    path.to_path_buf()
+}
+
+fn checked_rgba_frame_bytes(width: u32, height: u32) -> Result<usize, MediaError> {
+    if width == 0 || height == 0 || width > MAX_VIDEO_DIMENSION || height > MAX_VIDEO_DIMENSION {
+        return Err(MediaError::InvalidArgument(format!(
+            "dimensions {width}x{height} out of valid range 1..={MAX_VIDEO_DIMENSION}"
+        )));
+    }
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| MediaError::InvalidArgument("frame buffer size overflow".into()))
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +144,7 @@ impl FfmpegCli {
     }
 
     pub fn probe(&self, path: &Path) -> Result<MediaProbe, MediaError> {
+        let safe_path = sanitize_ffmpeg_path(path);
         let output = Command::new(&self.ffprobe_bin)
             .args([
                 "-v",
@@ -125,7 +154,7 @@ impl FfmpegCli {
                 "-show_format",
                 "-show_streams",
             ])
-            .arg(path)
+            .arg(&safe_path)
             .output()?;
 
         if !output.status.success() {
@@ -183,9 +212,17 @@ impl FfmpegCli {
         target_width: u32,
         target_height: u32,
     ) -> Result<Vec<u8>, MediaError> {
+        if !time_sec.is_finite() || time_sec < 0.0 {
+            return Err(MediaError::InvalidArgument(format!(
+                "invalid decode timestamp: {time_sec}"
+            )));
+        }
+        let expected = checked_rgba_frame_bytes(target_width, target_height)?;
+        let safe_path = sanitize_ffmpeg_path(path);
+
         let output = Command::new(&self.ffmpeg_bin)
             .args(["-v", "error", "-ss", &format!("{time_sec:.6}"), "-i"])
-            .arg(path)
+            .arg(&safe_path)
             .args([
                 "-frames:v",
                 "1",
@@ -205,7 +242,6 @@ impl FfmpegCli {
             ));
         }
 
-        let expected = (target_width * target_height * 4) as usize;
         if output.stdout.len() < expected {
             return Err(MediaError::NonZeroExit(format!(
                 "short frame read: got {} bytes, expected {expected}",
@@ -222,6 +258,14 @@ impl FfmpegCli {
         config: &ExportConfig,
         audio_wav_path: Option<&Path>,
     ) -> Result<FfmpegExportSession, MediaError> {
+        let expected_frame_bytes = checked_rgba_frame_bytes(config.width, config.height)?;
+        if config.fps.num == 0 || config.fps.den == 0 {
+            return Err(MediaError::InvalidArgument(
+                "export fps numerator/denominator must be non-zero".into(),
+            ));
+        }
+        let crf = config.crf.min(51);
+        let safe_out = sanitize_ffmpeg_path(output_path);
         let fps_str = format!("{}/{}", config.fps.num, config.fps.den);
         let size_str = format!("{}x{}", config.width, config.height);
 
@@ -232,7 +276,7 @@ impl FfmpegCli {
         ]);
 
         if let Some(wav) = audio_wav_path {
-            cmd.arg("-i").arg(wav);
+            cmd.arg("-i").arg(sanitize_ffmpeg_path(wav));
         }
 
         match config.format {
@@ -243,7 +287,7 @@ impl FfmpegCli {
                     "-pix_fmt",
                     "yuv420p",
                     "-crf",
-                    &config.crf.to_string(),
+                    &crf.to_string(),
                     "-preset",
                     "fast",
                     "-movflags",
@@ -260,7 +304,7 @@ impl FfmpegCli {
                     "-pix_fmt",
                     "yuv420p",
                     "-crf",
-                    &config.crf.to_string(),
+                    &crf.to_string(),
                 ]);
                 if audio_wav_path.is_some() {
                     cmd.args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
@@ -273,7 +317,7 @@ impl FfmpegCli {
                     "-pix_fmt",
                     "yuva420p",
                     "-crf",
-                    &config.crf.to_string(),
+                    &crf.to_string(),
                     "-b:v",
                     "0",
                 ]);
@@ -286,7 +330,7 @@ impl FfmpegCli {
             }
         }
 
-        cmd.arg(output_path)
+        cmd.arg(&safe_out)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -300,7 +344,7 @@ impl FfmpegCli {
         Ok(FfmpegExportSession {
             child,
             stdin: Some(stdin),
-            expected_frame_bytes: (config.width * config.height * 4) as usize,
+            expected_frame_bytes,
         })
     }
 }
@@ -313,7 +357,13 @@ pub struct FfmpegExportSession {
 
 impl FfmpegExportSession {
     pub fn write_rgba8_frame(&mut self, rgba: &[u8]) -> Result<(), MediaError> {
-        debug_assert_eq!(rgba.len(), self.expected_frame_bytes);
+        if rgba.len() != self.expected_frame_bytes {
+            return Err(MediaError::InvalidArgument(format!(
+                "frame buffer length mismatch: got {} bytes, expected {}",
+                rgba.len(),
+                self.expected_frame_bytes
+            )));
+        }
         if let Some(stdin) = self.stdin.as_mut() {
             stdin.write_all(rgba)?;
         }
@@ -403,5 +453,35 @@ mod tests {
 
         assert!(tmp.path().join("frame_0001.png").exists());
         assert!(tmp.path().join("frame_0003.png").exists());
+    }
+
+    #[test]
+    fn sanitizes_dash_prefixed_paths_and_rejects_invalid_bounds() {
+        assert_eq!(
+            sanitize_ffmpeg_path(Path::new("-malicious.mp4")),
+            PathBuf::from("./-malicious.mp4")
+        );
+        assert_eq!(
+            sanitize_ffmpeg_path(Path::new("normal.mp4")),
+            PathBuf::from("normal.mp4")
+        );
+
+        let cli = FfmpegCli::default();
+        assert!(matches!(
+            cli.decode_frame_rgba8(Path::new("in.mp4"), -1.0, 64, 64),
+            Err(MediaError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            cli.decode_frame_rgba8(Path::new("in.mp4"), f64::NAN, 64, 64),
+            Err(MediaError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            cli.decode_frame_rgba8(Path::new("in.mp4"), 0.0, 0, 64),
+            Err(MediaError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            cli.decode_frame_rgba8(Path::new("in.mp4"), 0.0, MAX_VIDEO_DIMENSION + 1, 64),
+            Err(MediaError::InvalidArgument(_))
+        ));
     }
 }

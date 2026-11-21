@@ -41,22 +41,29 @@ impl EffectPlugin for VignetteEffectPlugin {
         _time_sec: f64,
         params: &BTreeMap<String, f32>,
     ) {
+        let total = (width as usize).saturating_mul(height as usize);
+        if total == 0 || pixels.len() < total {
+            return;
+        }
         let strength = params
             .get("strength")
             .copied()
             .unwrap_or(0.55)
             .clamp(0.0, 2.0);
         let softness = params.get("softness").copied().unwrap_or(0.65).max(0.05);
-        let w = width.max(1) as f32;
-        let h = height.max(1) as f32;
+        let factor = (strength * 0.5) / (softness * softness);
+        let inv_w = 2.0 / width as f32;
+        let inv_h = 2.0 / height as f32;
 
         for y in 0..height {
-            let ny = ((y as f32 + 0.5) / h) * 2.0 - 1.0;
+            let ny = (y as f32 + 0.5) * inv_h - 1.0;
+            let ny2 = ny * ny;
+            let row = (y as usize) * (width as usize);
             for x in 0..width {
-                let nx = ((x as f32 + 0.5) / w) * 2.0 - 1.0;
-                let dist = (nx * nx + ny * ny).sqrt();
-                let atten = (1.0 - (dist / softness).powf(2.0) * strength * 0.5).clamp(0.0, 1.0);
-                let px = &mut pixels[(y * width + x) as usize];
+                let nx = (x as f32 + 0.5) * inv_w - 1.0;
+                let dist_sq = nx * nx + ny2;
+                let atten = (1.0 - dist_sq * factor).clamp(0.0, 1.0);
+                let px = &mut pixels[row + x as usize];
                 px[0] *= atten;
                 px[1] *= atten;
                 px[2] *= atten;

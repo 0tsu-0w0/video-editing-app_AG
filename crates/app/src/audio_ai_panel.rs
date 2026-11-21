@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 use ve_ai::{
-    ApiProvider, CloudUploadGuard, CredentialStore, LocalTtsClient, LocalWhisperTranscriber,
-    OsCredentialStore, SubtitleSegment, TtsEngine, import_tts_file_pair,
+    ApiProvider, CloudUploadGuard, CredentialStore, GeminiTranscriber, LocalTtsClient,
+    LocalWhisperTranscriber, OsCredentialStore, SubtitleSegment, TtsEngine, import_tts_file_pair,
     segments_to_subtitle_items,
 };
 use ve_audio::{WaveformBucket, WaveformPeaks};
@@ -456,7 +456,7 @@ impl AudioAi3DPanel {
                 format!("外部送信・概算コスト確認済み ({})", est.summary_message),
             );
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("ローカル Whisper 実行").clicked() {
                     let wt = LocalWhisperTranscriber {
                         model_path: if self.whisper_model_path.trim().is_empty() {
@@ -482,6 +482,45 @@ impl AudioAi3DPanel {
                             self.status_msg = format!("Whisper 字幕 {count} 件を配置しました");
                         }
                         Err(e) => self.status_msg = format!("Whisper 実行エラー: {e}"),
+                    }
+                }
+                if ui.button("☁ Gemini 書き起こし実行").clicked() {
+                    let wav_path = PathBuf::from(self.transcribe_wav_path.trim());
+                    match std::fs::read(&wav_path) {
+                        Ok(bytes) => {
+                            let duration_sec = decode_audio_file(&wav_path)
+                                .map(|b| b.duration_sec())
+                                .unwrap_or(60.0);
+                            let gemini = GeminiTranscriber {
+                                guard: self.guard.clone(),
+                                ..Default::default()
+                            };
+                            match gemini.transcribe_audio_bytes(
+                                &self.cred_store,
+                                &bytes,
+                                "audio/wav",
+                                duration_sec,
+                                self.cloud_confirm_checked,
+                            ) {
+                                Ok(segs) => {
+                                    let items = segments_to_subtitle_items(&segs, 44.0, 560.0);
+                                    let count = items.len();
+                                    let _ = session.bus.execute(
+                                        &mut session.project,
+                                        EditCommand::ImportSubtitles {
+                                            layer_index: 1,
+                                            items,
+                                        },
+                                        CommandSource::Gui,
+                                        None,
+                                    );
+                                    self.status_msg =
+                                        format!("Gemini 字幕 {count} 件を配置しました");
+                                }
+                                Err(e) => self.status_msg = format!("Gemini 実行エラー: {e}"),
+                            }
+                        }
+                        Err(e) => self.status_msg = format!("WAV 読み込みエラー: {e}"),
                     }
                 }
                 if ui.button("サンプル字幕生成 (テスト)").clicked() {

@@ -7,10 +7,20 @@ use ve_ai::{ApiProvider, CloudUploadGuard, import_tts_file_pair};
 use ve_core::{
     AssetRef, Camera3D, CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode,
     FrameRate, Interpolation, ItemKind, Keyframe, LipSyncMode, MediaKind, RationalTime, RgbaColor,
-    ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode,
+    ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode, base64_encode,
 };
 use ve_plugin_api::PluginRegistry;
 use ve_render::{RenderGraph, validate_wgsl};
+
+const MAX_BATCH_COMMANDS: usize = 500;
+const ALLOWED_TTS_AUDIO_EXTS: &[&str] = &["wav", "mp3", "flac", "ogg", "m4a", "aac"];
+
+fn finite_clamped(val: Option<&Value>, default: f64, min: f64, max: f64) -> f64 {
+    match val.and_then(Value::as_f64) {
+        Some(v) if v.is_finite() => v.clamp(min, max),
+        _ => default,
+    }
+}
 
 pub fn tool_definitions() -> Value {
     json!([
@@ -432,19 +442,15 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
         }
         "render_frame_preview" => {
             let t = parse_time_arg(args, "frame", "seconds", fps, guard.playhead);
-            let scale = args
-                .get("scale")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.5)
-                .clamp(0.1, 1.0);
+            let scale = finite_clamped(args.get("scale"), 0.5, 0.1, 1.0);
             let mut proj_clone = guard.project.clone();
             let active_id = proj_clone.active_scene_id;
             let (out_w, out_h) = {
                 let s = proj_clone
                     .active_scene_mut()
                     .ok_or_else(|| "no active scene".to_string())?;
-                s.width = ((s.width as f64) * scale).round().max(16.0) as u32;
-                s.height = ((s.height as f64) * scale).round().max(16.0) as u32;
+                s.width = ((s.width as f64) * scale).round().clamp(16.0, 4096.0) as u32;
+                s.height = ((s.height as f64) * scale).round().clamp(16.0, 4096.0) as u32;
                 (s.width, s.height)
             };
             drop(guard);
@@ -476,20 +482,24 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 .and_then(Value::as_str)
                 .unwrap_or("AI Object")
                 .to_string();
-            let start = RationalTime::from_seconds(
-                args.get("start_sec").and_then(Value::as_f64).unwrap_or(0.0),
-            );
-            let duration = RationalTime::from_seconds(
-                args.get("duration_sec")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(2.0),
-            );
+            let start = RationalTime::from_seconds(finite_clamped(
+                args.get("start_sec"),
+                0.0,
+                0.0,
+                86_400.0,
+            ));
+            let duration = RationalTime::from_seconds(finite_clamped(
+                args.get("duration_sec"),
+                2.0,
+                0.01,
+                86_400.0,
+            ));
             let kind_str = args.get("kind").and_then(Value::as_str).unwrap_or("text");
             let kind = match kind_str {
                 "shape" => ItemKind::Shape {
                     shape: ShapeKind::Rectangle,
-                    width: args.get("width").and_then(Value::as_f64).unwrap_or(200.0) as f32,
-                    height: args.get("height").and_then(Value::as_f64).unwrap_or(100.0) as f32,
+                    width: finite_clamped(args.get("width"), 200.0, 1.0, 8192.0) as f32,
+                    height: finite_clamped(args.get("height"), 100.0, 1.0, 8192.0) as f32,
                     color: RgbaColor::WHITE,
                 },
                 _ => ItemKind::Text {
@@ -499,10 +509,7 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                         .unwrap_or("テキスト")
                         .to_string(),
                     font_family: "sans-serif".to_string(),
-                    font_size: args
-                        .get("font_size")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(48.0) as f32,
+                    font_size: finite_clamped(args.get("font_size"), 48.0, 4.0, 512.0) as f32,
                     color: RgbaColor::WHITE,
                     animator: TextAnimator::default(),
                 },
@@ -836,17 +843,23 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                     arr[2].as_f64().unwrap_or(0.0) as f32,
                 ];
             }
-            if let Some(fov) = args.get("fov_deg").and_then(Value::as_f64) {
-                cam.fov_deg = fov as f32;
+            if let Some(fov) = args.get("fov_deg").and_then(Value::as_f64)
+                && fov.is_finite()
+            {
+                cam.fov_deg = fov.clamp(5.0, 150.0) as f32;
             }
             if let Some(dof) = args.get("dof_enabled").and_then(Value::as_bool) {
                 cam.dof_enabled = dof;
             }
-            if let Some(fd) = args.get("focus_distance").and_then(Value::as_f64) {
-                cam.focus_distance = fd as f32;
+            if let Some(fd) = args.get("focus_distance").and_then(Value::as_f64)
+                && fd.is_finite()
+            {
+                cam.focus_distance = fd.clamp(1.0, 100_000.0) as f32;
             }
-            if let Some(ap) = args.get("aperture").and_then(Value::as_f64) {
-                cam.aperture = ap as f32;
+            if let Some(ap) = args.get("aperture").and_then(Value::as_f64)
+                && ap.is_finite()
+            {
+                cam.aperture = ap.clamp(0.0, 1.0) as f32;
             }
             let sess = &mut *guard;
             sess.bus
@@ -877,14 +890,18 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 Some("vowel_phoneme") => LipSyncMode::VowelPhoneme,
                 _ => LipSyncMode::default(),
             };
-            let start = RationalTime::from_seconds(
-                args.get("start_sec").and_then(Value::as_f64).unwrap_or(0.0),
-            );
-            let duration = RationalTime::from_seconds(
-                args.get("duration_sec")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(5.0),
-            );
+            let start = RationalTime::from_seconds(finite_clamped(
+                args.get("start_sec"),
+                0.0,
+                0.0,
+                86_400.0,
+            ));
+            let duration = RationalTime::from_seconds(finite_clamped(
+                args.get("duration_sec"),
+                5.0,
+                0.01,
+                86_400.0,
+            ));
             let item = TimelineItem::new(
                 name,
                 start,
@@ -920,6 +937,16 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 .get("wav_path")
                 .and_then(Value::as_str)
                 .ok_or("missing wav_path")?;
+            let wav_path = PathBuf::from(wav_str);
+            let ext_ok = wav_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| ALLOWED_TTS_AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()));
+            if !ext_ok || !wav_path.is_file() {
+                return Err(format!(
+                    "wav_path must point to an existing audio file ({ALLOWED_TTS_AUDIO_EXTS:?})"
+                ));
+            }
             let audio_layer = args
                 .get("audio_layer_index")
                 .and_then(Value::as_u64)
@@ -928,24 +955,24 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 .get("subtitle_layer_index")
                 .and_then(Value::as_u64)
                 .unwrap_or(1) as usize;
-            let start = RationalTime::from_seconds(
-                args.get("start_sec")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_else(|| guard.playhead.as_seconds()),
-            );
+            let start = RationalTime::from_seconds(finite_clamped(
+                args.get("start_sec"),
+                guard.playhead.as_seconds(),
+                0.0,
+                86_400.0,
+            ));
 
-            let bundle =
-                import_tts_file_pair(&PathBuf::from(wav_str)).map_err(|e| e.to_string())?;
+            let bundle = import_tts_file_pair(&wav_path).map_err(|e| e.to_string())?;
             let asset_id = Uuid::new_v4();
             guard.project.assets.push(AssetRef {
                 id: asset_id,
-                name: PathBuf::from(wav_str)
+                name: wav_path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "voice.wav".into()),
                 kind: MediaKind::Audio,
                 relative_path: None,
-                fallback_absolute_path: Some(PathBuf::from(wav_str)),
+                fallback_absolute_path: Some(wav_path),
                 collected: false,
             });
 
@@ -1010,10 +1037,7 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 Some("claude") => ApiProvider::Claude,
                 _ => ApiProvider::Gemini,
             };
-            let duration_sec = args
-                .get("duration_sec")
-                .and_then(Value::as_f64)
-                .unwrap_or(60.0);
+            let duration_sec = finite_clamped(args.get("duration_sec"), 60.0, 0.0, 86_400.0);
             let est =
                 CloudUploadGuard::default().estimate_audio_transcription(provider, duration_sec);
             let text = serde_json::to_string_pretty(&est).unwrap_or_default();
@@ -1056,6 +1080,11 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 .clone();
             let commands: Vec<EditCommand> =
                 serde_json::from_value(raw_cmds).map_err(|e| format!("invalid commands: {e}"))?;
+            if commands.len() > MAX_BATCH_COMMANDS {
+                return Err(format!(
+                    "batch_execute exceeds max limit of {MAX_BATCH_COMMANDS} commands"
+                ));
+            }
             let count = commands.len();
             let sess = &mut *guard;
             sess.bus
@@ -1084,28 +1113,4 @@ fn encode_rgba8_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, 
         writer.write_image_data(rgba).map_err(|e| e.to_string())?;
     }
     Ok(buf)
-}
-
-fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[(n & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
 }
