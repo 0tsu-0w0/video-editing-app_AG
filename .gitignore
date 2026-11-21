@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+Thumbs.db
+*.mp4
+*.webm
+*.wav
+!tests/fixtures/**

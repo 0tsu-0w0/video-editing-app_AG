@@ -1,0 +1,20 @@
+[package]
+name = "ve-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ve-core.workspace = true
+ve-media.workspace = true
+ve-audio.workspace = true
+ve-render.workspace = true
+egui.workspace = true
+eframe.workspace = true
+egui-wgpu.workspace = true
+egui_dock.workspace = true
+wgpu.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

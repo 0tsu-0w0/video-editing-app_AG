@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/media",
+    "crates/audio",
+    "crates/render",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# Internal crates
+ve-core = { path = "crates/core" }
+ve-media = { path = "crates/media" }
+ve-audio = { path = "crates/audio" }
+ve-render = { path = "crates/render" }
+
+# Serialization & Core utilities
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.16", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Media & Audio
+symphonia = { version = "0.6", features = ["all"] }
+cpal = "0.15"
+
+# Rendering & Text
+wgpu = "30.0"
+cosmic-text = "0.19"
+half = { version = "2.6", features = ["bytemuck"] }
+
+# GUI
+egui = "0.37"
+eframe = "0.37"
+egui-wgpu = "0.37"
+egui_dock = "0.22"
+
+# Testing
+tempfile = "3.19"
