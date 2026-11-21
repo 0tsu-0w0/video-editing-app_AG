@@ -5,8 +5,9 @@ use crate::lipsync::CharacterSpriteConfig;
 use crate::preset::ColorPalette;
 use crate::project::{
     AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BezierMask, BlendMode, EffectId,
-    EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, Project, RgbaColor, Scene, SceneId,
-    TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, Transform2D, TransitionKind,
+    EffectNode, FilterTargetScope, ItemId, ItemKind, Layer, Project, RgbaColor, Scene,
+    SceneColorGrade, SceneId, TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte,
+    Transform2D, TransitionKind,
 };
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -282,6 +283,10 @@ pub enum EditCommand {
         label: String,
         color: RgbaColor,
     },
+    /// v0.8 #13: シーン全体のカラーグレーディング＆.cube 3D LUT 設定を更新する
+    SetSceneColorGrade {
+        grade: SceneColorGrade,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -339,6 +344,7 @@ impl EditCommand {
             Self::SetGroupControl { .. } => "set_group_control",
             Self::SetAudioSpectrum { .. } => "set_audio_spectrum",
             Self::UpdateMarker { .. } => "update_marker",
+            Self::SetSceneColorGrade { .. } => "set_scene_color_grade",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -796,6 +802,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 master_audio_effects: Vec::new(),
                 target_lufs: None,
                 audio_ducking: AudioDuckingConfig::default(),
+                color_grade: SceneColorGrade::default(),
                 markers: Vec::new(),
                 layers: new_layers,
             };
@@ -1255,6 +1262,29 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 m.label = label.clone();
                 m.color = *color;
             }
+            Ok(())
+        }
+        EditCommand::SetSceneColorGrade { grade } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut g = grade.clone();
+            g.exposure = g.exposure.clamp(-3.0, 3.0);
+            g.contrast = g.contrast.clamp(0.2, 2.5);
+            g.saturation = g.saturation.clamp(0.0, 2.5);
+            g.temperature = g.temperature.clamp(-1.0, 1.0);
+            g.tint = g.tint.clamp(-1.0, 1.0);
+            g.lut_intensity = g.lut_intensity.clamp(0.0, 1.0);
+            for ch in &mut g.lift {
+                *ch = ch.clamp(-0.5, 0.5);
+            }
+            for ch in &mut g.gamma {
+                *ch = ch.clamp(-0.5, 0.5);
+            }
+            for ch in &mut g.gain {
+                *ch = ch.clamp(0.2, 2.5);
+            }
+            scene.color_grade = g;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

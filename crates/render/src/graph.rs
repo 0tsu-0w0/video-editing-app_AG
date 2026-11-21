@@ -1,4 +1,5 @@
 use crate::color::{LinearImage, LinearPremul};
+use crate::color_grading::{CubeLut3D, apply_scene_color_grade};
 use crate::hot_shader::ShaderHotReloader;
 use crate::psd_sprite::PsdCharacterAsset;
 use crate::sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
@@ -32,7 +33,7 @@ type VideoStreamKey = (Uuid, u32, u32, bool);
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
 /// 1. 各オブジェクトのキーフレーム評価・実動画/画像デコード・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
 /// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）・シーンチェンジ適用
-/// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）
+/// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）＋ シーンカラーグレーディング＆`.cube` 3D LUT
 pub struct RenderGraph {
     text_renderer: TextRenderer,
     mem_precomp_cache: HashMap<String, (u64, LinearImage)>,
@@ -48,6 +49,8 @@ pub struct RenderGraph {
     video_streams: HashMap<VideoStreamKey, VideoStreamDecoder>,
     png_cache: HashMap<PathBuf, LinearImage>,
     psd_cache: HashMap<PathBuf, PsdCharacterAsset>,
+    /// v0.8 #13: `.cube` 3D LUT メモリキャッシュ
+    lut_cache: HashMap<String, Option<CubeLut3D>>,
     /// 音声アセットIDごとの事前解析波形（立ち絵の音量連動口パク参照用）
     pub asset_waveforms: HashMap<Uuid, WaveformPeaks>,
     /// Phase 4: OSS プラグインレジストリ（ビネット・セピア・外部プラグイン）
@@ -80,6 +83,7 @@ impl RenderGraph {
             video_streams: HashMap::new(),
             png_cache: HashMap::new(),
             psd_cache: HashMap::new(),
+            lut_cache: HashMap::new(),
             asset_waveforms: HashMap::new(),
             plugins: PluginRegistry::with_builtins(),
             hot_shaders: ShaderHotReloader::new(),
@@ -98,6 +102,7 @@ impl RenderGraph {
 
     pub fn set_project_folder(&mut self, folder: Option<ProjectFolder>) {
         self.project_folder = folder;
+        self.lut_cache.clear();
     }
 
     pub fn register_proxy(&mut self, asset_id: Uuid, proxy_path: PathBuf) {
@@ -123,7 +128,49 @@ impl RenderGraph {
         self.video_streams.clear();
         self.png_cache.clear();
         self.psd_cache.clear();
+        self.lut_cache.clear();
         self.proxy_paths.clear();
+    }
+
+    /// `.cube` 3D LUT を組み込みプリセット / プロジェクト `luts/` / 絶対パスから解決してキャッシュする
+    fn resolve_lut(&mut self, spec: &str) -> Option<CubeLut3D> {
+        let key = spec.trim();
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(cached) = self.lut_cache.get(key) {
+            return cached.clone();
+        }
+        let loaded = if key.starts_with("builtin:") {
+            CubeLut3D::builtin_preset(key)
+        } else {
+            let raw_path = PathBuf::from(key);
+            let candidate = if raw_path.is_absolute() && raw_path.exists() {
+                Some(raw_path)
+            } else if let Some(folder) = self.project_folder.as_ref() {
+                let p1 = folder.root().join(key);
+                let p2 = folder.luts_dir().join(key);
+                if p1.exists() {
+                    Some(p1)
+                } else if p2.exists() {
+                    Some(p2)
+                } else if raw_path.exists() {
+                    Some(raw_path)
+                } else {
+                    None
+                }
+            } else if raw_path.exists() {
+                Some(raw_path)
+            } else {
+                None
+            };
+            candidate.and_then(|p| CubeLut3D::load_file(&p).ok())
+        };
+        if self.lut_cache.len() >= 16 {
+            self.lut_cache.clear();
+        }
+        self.lut_cache.insert(key.to_string(), loaded.clone());
+        loaded
     }
 
     pub fn mem_precomp_cache_len(&self) -> usize {
@@ -551,6 +598,16 @@ impl RenderGraph {
 
         for (_, layer_img, blend_mode, _) in draw_list {
             canvas.blend_with_mode(&layer_img, 0, 0, 1.0, blend_mode);
+        }
+
+        // v0.8 #13: シーン全体の非破壊カラーグレーディング（3-Way + .cube 3D LUT）
+        if scene.color_grade.enabled {
+            let lut = scene
+                .color_grade
+                .lut_path
+                .as_deref()
+                .and_then(|p| self.resolve_lut(p));
+            apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_ref());
         }
 
         canvas

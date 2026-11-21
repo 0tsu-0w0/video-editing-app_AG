@@ -963,6 +963,169 @@ pub fn wrap_subtitle_japanese(text: &str, max_chars_per_line: usize) -> String {
     out_lines.join("\n")
 }
 
+/// v0.8 #12: 選択クリップ群をビート時刻で一括自動分割する（1ステップ Undo）
+pub fn build_beat_cut_commands(
+    scene: &Scene,
+    item_ids: &[ItemId],
+    beat_times_sec: &[f64],
+) -> Option<(usize, EditCommand)> {
+    if item_ids.is_empty() || beat_times_sec.is_empty() {
+        return None;
+    }
+    let selected: HashSet<ItemId> = item_ids.iter().copied().collect();
+    let mut beats: Vec<f64> = beat_times_sec
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .collect();
+    beats.sort_by(|a, b| a.total_cmp(b));
+    beats.dedup_by(|a, b| (*a - *b).abs() < 0.02);
+
+    let mut commands = Vec::new();
+    let mut cuts = 0usize;
+    for layer in &scene.layers {
+        for item in &layer.items {
+            if !selected.contains(&item.id) {
+                continue;
+            }
+            let min_sec = item.start.as_seconds() + 0.05;
+            let max_sec = item.end().as_seconds() - 0.05;
+            let mut cur_id = item.id;
+            let mut cur_start = min_sec;
+            for &b_sec in &beats {
+                if b_sec > cur_start && b_sec < max_sec {
+                    let right_id = Uuid::new_v4();
+                    commands.push(EditCommand::SplitObject {
+                        item_id: cur_id,
+                        split_at: RationalTime::from_seconds(b_sec),
+                        new_right_id: right_id,
+                    });
+                    cur_id = right_id;
+                    cur_start = b_sec + 0.05;
+                    cuts += 1;
+                }
+            }
+        }
+    }
+
+    if commands.is_empty() {
+        None
+    } else {
+        Some((
+            cuts,
+            EditCommand::Batch {
+                label: "beat_auto_cut".into(),
+                commands,
+            },
+        ))
+    }
+}
+
+/// v0.8 #12: 選択クリップの開始位置を最寄りのビート位置へスナップ整列する（1ステップ Undo）
+pub fn build_snap_to_beats_commands(
+    scene: &Scene,
+    item_ids: &[ItemId],
+    beat_times_sec: &[f64],
+) -> Option<EditCommand> {
+    if item_ids.is_empty() || beat_times_sec.is_empty() {
+        return None;
+    }
+    let selected: HashSet<ItemId> = item_ids.iter().copied().collect();
+    let mut commands = Vec::new();
+    for (l_idx, layer) in scene.layers.iter().enumerate() {
+        for item in &layer.items {
+            if !selected.contains(&item.id) {
+                continue;
+            }
+            let s = item.start.as_seconds();
+            if let Some(&nearest) = beat_times_sec
+                .iter()
+                .filter(|t| t.is_finite() && **t >= 0.0)
+                .min_by(|a, b| (s - **a).abs().total_cmp(&(s - **b).abs()))
+            {
+                let target = RationalTime::from_seconds(nearest);
+                if target != item.start {
+                    commands.push(EditCommand::MoveObject {
+                        item_id: item.id,
+                        target_layer_index: l_idx,
+                        new_start: target,
+                    });
+                }
+            }
+        }
+    }
+    if commands.is_empty() {
+        None
+    } else {
+        Some(EditCommand::Batch {
+            label: "snap_to_beats".into(),
+            commands,
+        })
+    }
+}
+
+/// v0.8 #12: 検出されたビート位置（`(time_sec, is_downbeat)`）をタイムラインマーカーとして一括配置する
+pub fn build_beat_markers_command(
+    beats: &[(f64, bool)],
+    downbeats_only: bool,
+) -> Option<EditCommand> {
+    use crate::project::{RgbaColor, TimelineMarker};
+    let gold = RgbaColor {
+        r: 0.98,
+        g: 0.80,
+        b: 0.22,
+        a: 1.0,
+    };
+    let cyan = RgbaColor {
+        r: 0.25,
+        g: 0.82,
+        b: 0.98,
+        a: 1.0,
+    };
+
+    let mut commands = Vec::new();
+    let mut bar = 0usize;
+    let mut beat_in_bar = 0usize;
+    for &(t, is_downbeat) in beats {
+        if !t.is_finite() || t < 0.0 {
+            continue;
+        }
+        if is_downbeat {
+            bar += 1;
+            beat_in_bar = 1;
+        } else {
+            if bar == 0 {
+                bar = 1;
+            }
+            beat_in_bar += 1;
+        }
+        if downbeats_only && !is_downbeat {
+            continue;
+        }
+        let label = if is_downbeat {
+            format!("♩ Bar {bar}")
+        } else {
+            format!("· {bar}.{beat_in_bar}")
+        };
+        commands.push(EditCommand::AddMarker {
+            marker: TimelineMarker {
+                id: Uuid::new_v4(),
+                time: RationalTime::from_seconds(t),
+                label,
+                color: if is_downbeat { gold } else { cyan },
+            },
+        });
+    }
+    if commands.is_empty() {
+        None
+    } else {
+        Some(EditCommand::Batch {
+            label: "add_beat_markers".into(),
+            commands,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,5 +1393,49 @@ mod tests {
         );
         assert!(wrapped.contains('\n'));
         assert!(wrapped.lines().all(|l| l.chars().count() <= 18));
+    }
+
+    #[test]
+    fn beat_auto_cut_snap_and_markers_work_with_single_undo() {
+        let mut proj = Project::new("BeatOpsTest", ProjectSettings::default());
+        let mut bus = CommandBus::new();
+        let clip = make_text_item("LongClip", 0.12, 2.5, "音ハメ");
+        let clip_id = clip.id;
+        proj.active_scene_mut().unwrap().layers[1].items.push(clip);
+
+        let beats = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5];
+        let snap_cmd =
+            build_snap_to_beats_commands(proj.active_scene().unwrap(), &[clip_id], &beats).unwrap();
+        bus.execute(&mut proj, snap_cmd, CommandSource::Gui, None)
+            .unwrap();
+        assert!(
+            (proj.active_scene().unwrap().layers[1].items[0]
+                .start
+                .as_seconds()
+                - 0.0)
+                .abs()
+                < 1e-6
+        );
+
+        let (cuts, cut_cmd) =
+            build_beat_cut_commands(proj.active_scene().unwrap(), &[clip_id], &beats).unwrap();
+        assert_eq!(cuts, 4);
+        bus.execute(&mut proj, cut_cmd, CommandSource::Gui, None)
+            .unwrap();
+        assert_eq!(proj.active_scene().unwrap().layers[1].items.len(), 5);
+
+        let beat_pairs: Vec<(f64, bool)> = beats
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| (t, i % 4 == 0))
+            .collect();
+        let mk_cmd = build_beat_markers_command(&beat_pairs, true).unwrap();
+        bus.execute(&mut proj, mk_cmd, CommandSource::Gui, None)
+            .unwrap();
+        assert_eq!(proj.active_scene().unwrap().markers.len(), 2);
+        assert_eq!(proj.active_scene().unwrap().markers[0].label, "♩ Bar 1");
+
+        assert!(bus.undo(&mut proj));
+        assert!(proj.active_scene().unwrap().markers.is_empty());
     }
 }

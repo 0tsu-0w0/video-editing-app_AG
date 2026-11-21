@@ -85,6 +85,28 @@ impl ProjectFolder {
         self.presets_dir().join("text_styles")
     }
 
+    pub fn luts_dir(&self) -> PathBuf {
+        self.root.join("luts")
+    }
+
+    /// プロジェクト内 `luts/` 配下の `.cube` 3D LUT ファイル一覧を名前順で返す
+    pub fn list_luts(&self) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(self.luts_dir()) else {
+            return Vec::new();
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("cube"))
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
     pub fn cache_precomp_dir(&self) -> PathBuf {
         self.root.join("cache").join("precomp")
     }
@@ -111,6 +133,7 @@ impl ProjectFolder {
         fs::create_dir_all(self.aliases_dir())?;
         fs::create_dir_all(self.effect_presets_dir())?;
         fs::create_dir_all(self.text_style_presets_dir())?;
+        fs::create_dir_all(self.luts_dir())?;
         fs::create_dir_all(self.cache_precomp_dir())?;
         fs::create_dir_all(self.cache_waveforms_dir())?;
         fs::create_dir_all(self.cache_proxy_dir())?;

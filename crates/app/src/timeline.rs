@@ -1,13 +1,16 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use ve_audio::{AudioGraph, WaveformPeaks};
+use ve_audio::{
+    AudioGraph, BeatDetectionConfig, WaveformPeaks, detect_audio_beats, detect_beats_from_waveform,
+};
 use ve_core::{
     AlignMode, CommandSource, EditCommand, FilterTargetScope, ItemId, ItemKind, JumpCutConfig,
     RationalTime, RgbaColor, SceneId, SelectDirection, TextAnimator, TimelineItem, TimelineMarker,
-    Transform2D, TransitionKind, build_align_commands, build_close_gaps_commands,
-    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_replace_text_commands,
-    build_ripple_delete_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
+    Transform2D, TransitionKind, build_align_commands, build_beat_cut_commands,
+    build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
+    build_jump_cut_commands, build_replace_text_commands, build_ripple_delete_commands,
+    build_snap_to_beats_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
     search_text_items, select_items_from_time, select_layer_items,
 };
 use ve_mcp::EditorSession;
@@ -47,6 +50,17 @@ pub struct TimelineState {
     pub jump_cut_pad_after_sec: f64,
     pub jump_cut_linked_layers: BTreeSet<usize>,
     pub jump_cut_status: String,
+    // v0.8 #12: BGM ビート自動検出 ＆ ビートスナップ編集
+    pub show_beat_bar: bool,
+    pub beat_audio_layer: usize,
+    pub beat_min_bpm: f32,
+    pub beat_max_bpm: f32,
+    pub beat_sensitivity: f32,
+    pub beat_per_bar: usize,
+    pub detected_bpm: f32,
+    pub beat_grid: Vec<(f64, bool)>,
+    pub beat_snap_enabled: bool,
+    pub beat_status: String,
     // B-1: アルティメットプラグイン風 整列・隙間詰め・長さフィット
     pub distribute_gap_sec: f64,
     pub fit_reference_layer: usize,
@@ -100,6 +114,16 @@ impl Default for TimelineState {
             jump_cut_pad_after_sec: 0.12,
             jump_cut_linked_layers: [0, 1, 2].into_iter().collect(),
             jump_cut_status: String::new(),
+            show_beat_bar: false,
+            beat_audio_layer: 3,
+            beat_min_bpm: 70.0,
+            beat_max_bpm: 180.0,
+            beat_sensitivity: 1.35,
+            beat_per_bar: 4,
+            detected_bpm: 0.0,
+            beat_grid: Vec::new(),
+            beat_snap_enabled: true,
+            beat_status: String::new(),
             distribute_gap_sec: 0.25,
             fit_reference_layer: 3,
             show_search_bar: false,
@@ -520,6 +544,7 @@ impl TimelineState {
 
             ui.separator();
             ui.toggle_value(&mut self.show_jump_cut_bar, "⚡ 無音カット");
+            ui.toggle_value(&mut self.show_beat_bar, "🥁 ビート検出");
             ui.toggle_value(&mut self.show_search_bar, "🔍 検索/置換 (Ctrl+F)");
             if ui
                 .button("🚩 マーカー (M)")
@@ -648,6 +673,9 @@ impl TimelineState {
         if layer_count > 0 && self.jump_cut_audio_layer >= layer_count {
             self.jump_cut_audio_layer = layer_count - 1;
         }
+        if layer_count > 0 && self.beat_audio_layer >= layer_count {
+            self.beat_audio_layer = layer_count - 1;
+        }
 
         // ===== 2B. 無音区間自動カット（ジェットカット）設定バー（v0.4 #3） =====
         if self.show_jump_cut_bar {
@@ -724,6 +752,128 @@ impl TimelineState {
                     }
                     if !self.jump_cut_status.is_empty() {
                         ui.colored_label(Color32::from_rgb(255, 224, 128), &self.jump_cut_status);
+                    }
+                });
+            });
+        }
+
+        // ===== 2C. BGM ビート自動検出 ＆ ビートスナップ編集バー（v0.8 #12） =====
+        if self.show_beat_bar {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong("🥁 BGM ビート自動検出 (音ハメ編集):");
+                    ui.label("参照:");
+                    egui::ComboBox::from_id_salt("beat_audio_layer")
+                        .width(64.0)
+                        .selected_text(format!("L{}", self.beat_audio_layer))
+                        .show_ui(ui, |ui| {
+                            for idx in 0..layer_count {
+                                ui.selectable_value(
+                                    &mut self.beat_audio_layer,
+                                    idx,
+                                    format!("L{idx}"),
+                                );
+                            }
+                        });
+                    ui.label("BPM帯:");
+                    ui.add(egui::DragValue::new(&mut self.beat_min_bpm).range(40.0..=180.0));
+                    ui.label("〜");
+                    ui.add(egui::DragValue::new(&mut self.beat_max_bpm).range(80.0..=240.0));
+                    ui.label("拍子:");
+                    ui.add(egui::DragValue::new(&mut self.beat_per_bar).range(1..=8));
+                    if ui.button("🔍 BPM・ビート解析").clicked() {
+                        self.execute_beat_detection(session, waveforms);
+                    }
+                    ui.checkbox(&mut self.beat_snap_enabled, "🧲 ビート吸着");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let has_beats = !self.beat_grid.is_empty();
+                    if self.detected_bpm > 0.0 {
+                        ui.monospace(format!(
+                            "{:.1} BPM ({}拍)",
+                            self.detected_bpm,
+                            self.beat_grid.len()
+                        ));
+                    }
+                    if ui
+                        .add_enabled(has_beats, egui::Button::new("🚩 小節マーカー配置").small())
+                        .clicked()
+                        && let Some(cmd) = build_beat_markers_command(&self.beat_grid, true)
+                        && session
+                            .bus
+                            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                            .is_ok()
+                    {
+                        self.beat_status = "小節頭マーカーを一括配置しました (Ctrl+Z可)".into();
+                    }
+                    if ui
+                        .add_enabled(has_beats, egui::Button::new("🚩 全拍マーカー").small())
+                        .clicked()
+                        && let Some(cmd) = build_beat_markers_command(&self.beat_grid, false)
+                        && session
+                            .bus
+                            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                            .is_ok()
+                    {
+                        self.beat_status = "全ビートマーカーを一括配置しました (Ctrl+Z可)".into();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_beats && has_sel,
+                            egui::Button::new("✂ 選択クリップをビートでカット").small(),
+                        )
+                        .clicked()
+                        && let Some(scene) = session.project.active_scene().cloned()
+                    {
+                        let beat_secs: Vec<f64> = self.beat_grid.iter().map(|(t, _)| *t).collect();
+                        if let Some((cuts, cmd)) =
+                            build_beat_cut_commands(&scene, &session.selected_items, &beat_secs)
+                        {
+                            if session
+                                .bus
+                                .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                                .is_ok()
+                            {
+                                self.beat_status = format!(
+                                    "ビート位置で {cuts} 箇所を自動カットしました (Ctrl+Z可)"
+                                );
+                            }
+                        } else {
+                            self.beat_status =
+                                "選択クリップ内にカット可能なビート位置がありません".into();
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            has_beats && has_sel,
+                            egui::Button::new("📐 ビートへ整列").small(),
+                        )
+                        .clicked()
+                        && let Some(scene) = session.project.active_scene().cloned()
+                    {
+                        let beat_secs: Vec<f64> = self.beat_grid.iter().map(|(t, _)| *t).collect();
+                        if let Some(cmd) = build_snap_to_beats_commands(
+                            &scene,
+                            &session.selected_items,
+                            &beat_secs,
+                        ) && session
+                            .bus
+                            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                            .is_ok()
+                        {
+                            self.beat_status = "選択クリップを最寄りビートへ整列しました".into();
+                        }
+                    }
+                    if ui
+                        .add_enabled(has_beats, egui::Button::new("🧹 グリッド消去").small())
+                        .clicked()
+                    {
+                        self.beat_grid.clear();
+                        self.detected_bpm = 0.0;
+                        self.beat_status.clear();
+                    }
+                    if !self.beat_status.is_empty() {
+                        ui.colored_label(Color32::from_rgb(132, 232, 255), &self.beat_status);
                     }
                 });
             });
@@ -1130,6 +1280,35 @@ impl TimelineState {
             }
         }
 
+        // v0.8 #12: 検出済み BGM ビートグリッド縦線（小節頭=ゴールド、拍=薄シアン）
+        for &(b_sec, is_downbeat) in &self.beat_grid {
+            let bx = track_origin_x + (b_sec - scroll_sec) as f32 * pps;
+            if bx < track_origin_x || bx > canvas_rect.right() {
+                continue;
+            }
+            let (col, width) = if is_downbeat {
+                (Color32::from_rgba_unmultiplied(250, 200, 56, 115), 1.4)
+            } else {
+                (Color32::from_rgba_unmultiplied(72, 205, 248, 55), 1.0)
+            };
+            painter.line_segment(
+                [
+                    Pos2::new(bx, ruler_rect.bottom()),
+                    Pos2::new(bx, canvas_rect.bottom()),
+                ],
+                Stroke::new(width, col),
+            );
+            if is_downbeat {
+                painter.line_segment(
+                    [
+                        Pos2::new(bx, ruler_rect.bottom() - 7.0),
+                        Pos2::new(bx, ruler_rect.bottom()),
+                    ],
+                    Stroke::new(1.8, Color32::from_rgb(250, 200, 56)),
+                );
+            }
+        }
+
         // ルーラー上のタイムラインマーカー描画＆クリック操作（左クリック=ジャンプ＆編集、右クリック=削除）
         let mut jump_to_marker: Option<(Uuid, RationalTime)> = None;
         let mut remove_marker_id: Option<Uuid> = None;
@@ -1188,7 +1367,7 @@ impl TimelineState {
             }
         }
 
-        // スナップ候補時刻の収集（再生ヘッド＋マーカー＋ドラッグ対象外の全クリップ端）
+        // スナップ候補時刻の収集（再生ヘッド＋マーカー＋ビートグリッド＋ドラッグ対象外の全クリップ端）
         let dragged_ids: BTreeSet<ItemId> = match &self.dragging_item {
             Some(DragOp {
                 item_id,
@@ -1202,6 +1381,11 @@ impl TimelineState {
             None => BTreeSet::new(),
         };
         let mut snap_targets: Vec<f64> = vec![session.playhead.as_seconds()];
+        if self.beat_snap_enabled {
+            for &(b_sec, _) in &self.beat_grid {
+                snap_targets.push(b_sec);
+            }
+        }
         if let Some(scene) = session.project.active_scene() {
             for m in &scene.markers {
                 snap_targets.push(m.time.as_seconds());
@@ -2286,6 +2470,88 @@ impl TimelineState {
             None => {
                 self.jump_cut_status = "カット可能な無音区間はありませんでした".into();
             }
+        }
+    }
+
+    fn execute_beat_detection(
+        &mut self,
+        session: &EditorSession,
+        waveforms: &BTreeMap<Uuid, WaveformPeaks>,
+    ) {
+        let Some(scene) = session.project.active_scene() else {
+            self.beat_status = "アクティブシーンがありません".into();
+            return;
+        };
+        let total_dur = scene.total_duration();
+        if total_dur.as_seconds() < 0.5 {
+            self.beat_status = "解析対象の音声クリップがありません".into();
+            return;
+        }
+        let cfg = BeatDetectionConfig {
+            min_bpm: self.beat_min_bpm,
+            max_bpm: self.beat_max_bpm,
+            sensitivity: self.beat_sensitivity,
+            beats_per_bar: self.beat_per_bar.max(1),
+        };
+        let sr = session.project.settings.audio_sample_rate.max(8_000);
+        let graph = AudioGraph::from_project_scene(
+            &session.project,
+            session.project.active_scene_id,
+            session.folder.as_ref(),
+            sr,
+        );
+        let mut res = if !graph.clips.is_empty() {
+            let capped = total_dur.min(RationalTime::from_seconds(300.0));
+            let pcm = graph.render_range(RationalTime::ZERO, capped);
+            detect_audio_beats(&pcm, sr, &cfg)
+        } else {
+            ve_audio::BeatAnalysisResult {
+                bpm: 0.0,
+                confidence: 0.0,
+                beats: Vec::new(),
+                onset_times_sec: Vec::new(),
+            }
+        };
+
+        // 実ファイル未ロード（デモ波形等）の場合は指定レイヤーの WaveformPeaks からフォールバック検出
+        if res.beats.is_empty()
+            && let Some(layer) = scene.layers.get(self.beat_audio_layer)
+        {
+            for item in &layer.items {
+                if let ItemKind::Audio { asset_id, .. } = &item.kind
+                    && let Some(wf) = waveforms.get(asset_id)
+                {
+                    let mut wf_res = detect_beats_from_waveform(wf, &cfg);
+                    let offset = item.start.as_seconds();
+                    for b in &mut wf_res.beats {
+                        b.time_sec += offset;
+                    }
+                    if !wf_res.beats.is_empty() {
+                        res = wf_res;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if res.beats.is_empty() {
+            self.beat_grid.clear();
+            self.detected_bpm = 0.0;
+            self.beat_status =
+                "ビートを検出できませんでした（BGM/音声ファイルを配置してください）".into();
+        } else {
+            self.detected_bpm = res.bpm;
+            self.beat_grid = res
+                .beats
+                .iter()
+                .map(|b| (b.time_sec, b.is_downbeat))
+                .collect();
+            self.beat_status = format!(
+                "検出完了: {:.1} BPM（{} 拍 / 信頼度 {:.0}%）",
+                res.bpm,
+                res.beats.len(),
+                res.confidence * 100.0
+            );
         }
     }
 }

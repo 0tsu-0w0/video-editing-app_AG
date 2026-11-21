@@ -1,9 +1,14 @@
+pub mod beats;
 pub mod clock;
 pub mod dsp;
 pub mod mixer;
 pub mod output;
 pub mod waveform;
 
+pub use beats::{
+    BeatAnalysisResult, BeatDetectionConfig, BeatPoint, detect_audio_beats,
+    detect_beats_from_waveform,
+};
 pub use clock::AudioMasterClock;
 pub use dsp::{
     AtomicAudioMeter, AudioMeterSnapshot, SpectrumSnapshot, analyze_spectrum_bands,

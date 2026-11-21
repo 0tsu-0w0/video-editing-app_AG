@@ -1,5 +1,5 @@
 use egui::Ui;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use uuid::Uuid;
 use ve_ai::{
@@ -13,7 +13,9 @@ use ve_core::{
     HighlightConfig, ItemId, ItemKind, LipSyncMode, MediaKind, MouthShape, PhonemeSegment,
     PsdCharacterConfig, RationalTime, RgbaColor, ScriptBuildConfig, TextAnimator, TimelineItem,
     Transform2D, build_script_timeline_commands, build_shorts_clip_scene_command,
-    export_ass_subtitles, export_otio_json, export_srt_subtitles, extract_highlight_candidates,
+    build_strip_filler_words_commands, build_text_based_delete_commands,
+    build_text_based_reorder_commands, export_ass_subtitles, export_otio_json,
+    export_srt_subtitles, extract_highlight_candidates, extract_transcript_entries,
     parse_ass_subtitles, parse_aviutl_exo, parse_script_auto, parse_srt_subtitles,
     subtitle_entries_to_commands, wrap_subtitle_japanese,
 };
@@ -55,6 +57,9 @@ pub struct AudioAi3DPanel {
     highlight_clip_sec: f64,
     highlight_audio_layer: usize,
     highlight_candidates: Vec<HighlightCandidate>,
+    // v0.8 #11: テキストベース編集（文字起こし連動リップルカット・並べ替え・フィラー除去）
+    text_edit_selected: BTreeSet<ItemId>,
+    text_edit_linked_layers: BTreeSet<usize>,
     status_msg: String,
 }
 
@@ -74,7 +79,7 @@ impl Default for AudioAi3DPanel {
             tts_engine: TtsEngine::Voicevox,
             tts_speaker_id: 3,
             tts_text: "こんにちは！次世代ハイブリッド動画編集ソフトです。".to_string(),
-            script_text: "**霊夢** [smile]: 今日は v0.6 の新機能を解説するよ！\n**魔理沙** [surprise]: 台本から自動で字幕タイムラインが組めるのかぜ！？\n**霊夢**: 話者ごとに自動で色分けされて、Undoも1発だよ。".to_string(),
+            script_text: "**霊夢** [smile]: 今日は v0.8 の新機能を解説するよ！\n**魔理沙** [surprise]: 台本から自動で字幕タイムラインが組めるのかぜ！？\n**霊夢**: 話者ごとに自動で色分けされて、Undoも1発だよ。".to_string(),
             script_chars_per_sec: 6.5,
             script_pause_gap_sec: 0.25,
             script_show_speaker: false,
@@ -84,6 +89,8 @@ impl Default for AudioAi3DPanel {
             highlight_clip_sec: 15.0,
             highlight_audio_layer: 3,
             highlight_candidates: Vec::new(),
+            text_edit_selected: BTreeSet::new(),
+            text_edit_linked_layers: [0, 1, 2, 3].into_iter().collect(),
             status_msg: "待機中".to_string(),
         }
     }
@@ -867,6 +874,224 @@ impl AudioAi3DPanel {
                             }
                             Err(e) => self.status_msg = format!("ショート生成エラー: {e}"),
                         }
+                    }
+                }
+            }
+
+            // ===== 9. テキストベース編集（文字起こし連動リップルカット・並べ替え・フィラー除去 / v0.8 #11） =====
+            ui.separator();
+            ui.heading("9. テキストベース編集（文字起こし連動カット＆フィラー除去 / v0.8）");
+            ui.weak(
+                "字幕テキストを選んで削除・並べ替えすると、連動する映像・音声レイヤーも 1 ステップ Undo で自動リップル編集されます。",
+            );
+            let layer_count = session
+                .project
+                .active_scene()
+                .map(|s| s.layers.len())
+                .unwrap_or(0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("連動リップルレイヤー:");
+                for idx in 0..layer_count {
+                    let mut linked = self.text_edit_linked_layers.contains(&idx);
+                    if ui.checkbox(&mut linked, format!("L{idx}")).changed() {
+                        if linked {
+                            self.text_edit_linked_layers.insert(idx);
+                        } else {
+                            self.text_edit_linked_layers.remove(&idx);
+                        }
+                    }
+                }
+            });
+
+            let entries = session
+                .project
+                .active_scene()
+                .map(|s| extract_transcript_entries(s, None, None))
+                .unwrap_or_default();
+            let filler_only_ids: Vec<ItemId> = entries
+                .iter()
+                .filter(|e| e.is_filler_only)
+                .map(|e| e.item_id)
+                .collect();
+            let linked_vec: Vec<usize> = self
+                .text_edit_linked_layers
+                .iter()
+                .copied()
+                .filter(|&l| l < layer_count)
+                .collect();
+
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        !filler_only_ids.is_empty(),
+                        egui::Button::new(format!(
+                            "🗑 フィラー区間を一括カット ({}件)",
+                            filler_only_ids.len()
+                        ))
+                        .small(),
+                    )
+                    .clicked()
+                    && let Some(scene) = session.project.active_scene().cloned()
+                    && let Some(res) =
+                        build_text_based_delete_commands(&scene, &filler_only_ids, &linked_vec)
+                    && session
+                        .bus
+                        .execute(&mut session.project, res.command, CommandSource::Gui, None)
+                        .is_ok()
+                {
+                    self.text_edit_selected.clear();
+                    self.status_msg = format!(
+                        "フィラー {} 区間（計 {:.2}s）を連動リップルカットしました (Ctrl+Z可)",
+                        res.removed_ranges, res.removed_sec
+                    );
+                }
+                if ui
+                    .small_button("🧹 セリフ内のフィラー語句を掃除")
+                    .on_hover_text("「えーと、」「あのー、」等の語句を字幕テキスト内から一括除去")
+                    .clicked()
+                    && let Some(scene) = session.project.active_scene().cloned()
+                {
+                    if let Some((cnt, cmd)) = build_strip_filler_words_commands(&scene, None, None) {
+                        if session
+                            .bus
+                            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                            .is_ok()
+                        {
+                            self.status_msg = format!("字幕 {cnt} 件からフィラー語句を掃除しました");
+                        }
+                    } else {
+                        self.status_msg = "除去対象のフィラー語句は見つかりませんでした".into();
+                    }
+                }
+                let sel_ids: Vec<ItemId> = self.text_edit_selected.iter().copied().collect();
+                if ui
+                    .add_enabled(
+                        !sel_ids.is_empty(),
+                        egui::Button::new(format!("✂ 選択行を一括カット ({}件)", sel_ids.len()))
+                            .small(),
+                    )
+                    .clicked()
+                    && let Some(scene) = session.project.active_scene().cloned()
+                    && let Some(res) =
+                        build_text_based_delete_commands(&scene, &sel_ids, &linked_vec)
+                    && session
+                        .bus
+                        .execute(&mut session.project, res.command, CommandSource::Gui, None)
+                        .is_ok()
+                {
+                    self.text_edit_selected.clear();
+                    self.status_msg = format!(
+                        "選択 {} 区間（計 {:.2}s）を連動リップルカットしました",
+                        res.removed_ranges, res.removed_sec
+                    );
+                }
+            });
+
+            if entries.is_empty() {
+                ui.weak("（文字起こし・字幕テキストがありません）");
+            } else {
+                let mut delete_one: Option<ItemId> = None;
+                let mut reorder_req: Option<(ItemId, bool)> = None;
+                let total_rows = entries.len();
+                egui::ScrollArea::vertical()
+                    .id_salt("text_based_edit_scroll")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        for (row_idx, entry) in entries.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let mut checked = self.text_edit_selected.contains(&entry.item_id);
+                                if ui.checkbox(&mut checked, "").changed() {
+                                    if checked {
+                                        self.text_edit_selected.insert(entry.item_id);
+                                    } else {
+                                        self.text_edit_selected.remove(&entry.item_id);
+                                    }
+                                }
+                                let ts = entry.start.as_seconds();
+                                let mins = (ts / 60.0).floor() as u32;
+                                let secs = ts - f64::from(mins) * 60.0;
+                                if ui
+                                    .small_button(format!("{mins:02}:{secs:04.1}"))
+                                    .on_hover_text("クリックで再生ヘッドを移動＆選択")
+                                    .clicked()
+                                {
+                                    session.playhead = entry.start;
+                                    session.selected_items = vec![entry.item_id];
+                                }
+                                if entry.is_filler_only {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(255, 178, 72),
+                                        "[フィラー]",
+                                    );
+                                } else if !entry.matched_fillers.is_empty() {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(230, 210, 110),
+                                        "[語句有]",
+                                    );
+                                }
+                                let preview: String = entry.clean_text.chars().take(28).collect();
+                                if ui.selectable_label(false, preview).clicked() {
+                                    session.playhead = entry.start;
+                                    session.selected_items = vec![entry.item_id];
+                                }
+                                if ui
+                                    .add_enabled(row_idx > 0, egui::Button::new("⬆").small())
+                                    .on_hover_text("前の区間と入れ替え (連動音声/映像も移動)")
+                                    .clicked()
+                                {
+                                    reorder_req = Some((entry.item_id, true));
+                                }
+                                if ui
+                                    .add_enabled(
+                                        row_idx + 1 < total_rows,
+                                        egui::Button::new("⬇").small(),
+                                    )
+                                    .on_hover_text("次の区間と入れ替え (連動音声/映像も移動)")
+                                    .clicked()
+                                {
+                                    reorder_req = Some((entry.item_id, false));
+                                }
+                                if ui
+                                    .small_button("✂")
+                                    .on_hover_text("この区間を映像・音声ごとリップルカット")
+                                    .clicked()
+                                {
+                                    delete_one = Some(entry.item_id);
+                                }
+                            });
+                        }
+                    });
+
+                if let Some(id) = delete_one
+                    && let Some(scene) = session.project.active_scene().cloned()
+                    && let Some(res) = build_text_based_delete_commands(&scene, &[id], &linked_vec)
+                    && session
+                        .bus
+                        .execute(&mut session.project, res.command, CommandSource::Gui, None)
+                        .is_ok()
+                {
+                    self.text_edit_selected.remove(&id);
+                    self.status_msg = format!(
+                        "テキスト区間（{:.2}s）を連動リップルカットしました",
+                        res.removed_sec
+                    );
+                } else if let Some((id, move_up)) = reorder_req
+                    && let Some(scene) = session.project.active_scene().cloned()
+                {
+                    if let Some(cmd) =
+                        build_text_based_reorder_commands(&scene, id, move_up, &linked_vec)
+                    {
+                        if session
+                            .bus
+                            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+                            .is_ok()
+                        {
+                            self.status_msg =
+                                "テキスト区間と連動クリップを入れ替えました (Ctrl+Z可)".into();
+                        }
+                    } else {
+                        self.status_msg =
+                            "重複している区間同士のため入れ替えできませんでした".into();
                     }
                 }
             }

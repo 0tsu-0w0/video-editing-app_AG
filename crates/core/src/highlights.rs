@@ -348,6 +348,7 @@ pub fn build_shorts_clip_scene_command(
         audio_ducking: AudioDuckingConfig {
             ..src.audio_ducking
         },
+        color_grade: src.color_grade.clone(),
         markers: Vec::new(),
         layers: new_layers,
     };
