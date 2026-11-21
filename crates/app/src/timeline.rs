@@ -4,7 +4,7 @@ use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{
     CommandSource, EditCommand, FilterTargetScope, ItemId, ItemKind, RationalTime, RgbaColor,
-    Transform2D,
+    SceneId, TextAnimator, TimelineItem, Transform2D,
 };
 use ve_mcp::EditorSession;
 
@@ -56,16 +56,16 @@ impl TimelineState {
         });
 
         // ツールバー
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(session.bus.can_undo(), egui::Button::new("↶ Undo (Ctrl+Z)"))
+                .add_enabled(session.bus.can_undo(), egui::Button::new("↶ Undo"))
                 .clicked()
                 || undo_key
             {
                 session.bus.undo(&mut session.project);
             }
             if ui
-                .add_enabled(session.bus.can_redo(), egui::Button::new("↷ Redo (Ctrl+Y)"))
+                .add_enabled(session.bus.can_redo(), egui::Button::new("↷ Redo"))
                 .clicked()
                 || redo_key
             {
@@ -79,33 +79,41 @@ impl TimelineState {
             if ui
                 .add_enabled(
                     !session.selected_items.is_empty(),
-                    egui::Button::new("🗑 削除 (Del)"),
+                    egui::Button::new("🗑 削除"),
                 )
                 .clicked()
                 || delete_key
             {
                 self.delete_selected(session);
             }
+            if ui
+                .add_enabled(
+                    !session.selected_items.is_empty(),
+                    egui::Button::new("📦 ワンクリック結合 (Precompose)"),
+                )
+                .clicked()
+            {
+                self.precompose_selected(session);
+            }
             ui.separator();
 
-            if ui.button("＋ 字幕追加").clicked() {
-                let item = ve_core::TimelineItem {
-                    id: Uuid::new_v4(),
-                    name: "新規字幕".to_string(),
-                    start: session.playhead,
-                    duration: RationalTime::from_seconds(2.0),
-                    transform: Transform2D {
-                        x: 160.0,
-                        y: 480.0,
-                        ..Default::default()
-                    },
-                    effect_chain: vec![],
-                    kind: ItemKind::Text {
+            if ui.button("＋ 字幕").clicked() {
+                let mut item = TimelineItem::new(
+                    "新規字幕",
+                    session.playhead,
+                    RationalTime::from_seconds(2.0),
+                    ItemKind::Text {
                         content: "新しい字幕テキスト".to_string(),
                         font_family: "sans-serif".to_string(),
                         font_size: 44.0,
                         color: RgbaColor::WHITE,
+                        animator: TextAnimator::default(),
                     },
+                );
+                item.transform = Transform2D {
+                    x: 160.0,
+                    y: 480.0,
+                    ..Default::default()
                 };
                 let new_id = item.id;
                 if session
@@ -124,22 +132,19 @@ impl TimelineState {
                     session.selected_items = vec![new_id];
                 }
             }
-            if ui.button("＋ フィルタ追加").clicked() {
+            if ui.button("＋ フィルタ").clicked() {
                 let mut params = BTreeMap::new();
                 params.insert("gain".to_string(), 1.3);
-                let item = ve_core::TimelineItem {
-                    id: Uuid::new_v4(),
-                    name: "明るさフィルタ".to_string(),
-                    start: session.playhead,
-                    duration: RationalTime::from_seconds(2.0),
-                    transform: Transform2D::default(),
-                    effect_chain: vec![],
-                    kind: ItemKind::FilterObject {
+                let item = TimelineItem::new(
+                    "明るさフィルタ",
+                    session.playhead,
+                    RationalTime::from_seconds(2.0),
+                    ItemKind::FilterObject {
                         effect_type: "brightness".to_string(),
                         scope: FilterTargetScope::ImmediateLayer,
                         params,
                     },
-                };
+                );
                 let _ = session.bus.execute(
                     &mut session.project,
                     EditCommand::AddObject {
@@ -149,6 +154,32 @@ impl TimelineState {
                     CommandSource::Gui,
                     None,
                 );
+            }
+            if ui.button("＋ グループ制御").clicked() {
+                let item = TimelineItem::new(
+                    "グループ制御 (2レイヤー)",
+                    session.playhead,
+                    RationalTime::from_seconds(3.0),
+                    ItemKind::GroupControl {
+                        target_layer_count: 2,
+                    },
+                );
+                let new_id = item.id;
+                if session
+                    .bus
+                    .execute(
+                        &mut session.project,
+                        EditCommand::AddObject {
+                            layer_index: 2,
+                            item,
+                        },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    session.selected_items = vec![new_id];
+                }
             }
 
             ui.separator();
@@ -166,7 +197,7 @@ impl TimelineState {
             .active_scene()
             .map(|s| s.layers.len())
             .unwrap_or(0);
-        let header_w = 110.0;
+        let header_w = 130.0;
         let ruler_h = 24.0;
         let track_h = 36.0;
         let total_h = ruler_h + track_h * (layer_count.max(1) as f32) + 8.0;
@@ -181,7 +212,7 @@ impl TimelineState {
         let track_origin_x = canvas_rect.left() + header_w;
         let pps = self.pixels_per_second;
 
-        // ルーラー描画＆クリックでシーク
+        // ルーラー描画
         let ruler_rect = Rect::from_min_max(
             Pos2::new(track_origin_x, canvas_rect.top()),
             Pos2::new(canvas_rect.right(), canvas_rect.top() + ruler_h),
@@ -202,7 +233,7 @@ impl TimelineState {
                 egui::Align2::LEFT_TOP,
                 format!(
                     "{sec}s ({}f)",
-                    RationalTime::from_seconds(sec as f64).to_frame_round(fps)
+                    RationalTime::from_seconds(f64::from(sec)).to_frame_round(fps)
                 ),
                 egui::FontId::monospace(10.0),
                 Color32::from_gray(185),
@@ -224,6 +255,8 @@ impl TimelineState {
 
         // レイヤー行＆クリップ描画
         let mut clicked_item: Option<(ItemId, DragMode)> = None;
+        let mut enter_precomp_scene: Option<SceneId> = None;
+
         if let Some(scene) = session.project.active_scene() {
             for (layer_idx, layer) in scene.layers.iter().enumerate() {
                 let y0 = canvas_rect.top() + ruler_h + layer_idx as f32 * track_h;
@@ -236,11 +269,16 @@ impl TimelineState {
                     Pos2::new(track_origin_x - 2.0, y0 + track_h - 2.0),
                 );
                 painter.rect_filled(header_rect, 2.0, Color32::from_rgb(38, 42, 52));
+                let matte_badge = if layer.track_matte.is_some() {
+                    " [M]"
+                } else {
+                    ""
+                };
                 painter.text(
                     Pos2::new(header_rect.left() + 8.0, header_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    format!("L{layer_idx} {}", layer.name),
-                    egui::FontId::proportional(12.0),
+                    format!("L{layer_idx} {}{matte_badge}", layer.name),
+                    egui::FontId::proportional(11.5),
                     if layer.visible {
                         Color32::WHITE
                     } else {
@@ -267,6 +305,8 @@ impl TimelineState {
                     let fill = match &item.kind {
                         ItemKind::Text { .. } => Color32::from_rgb(72, 130, 196),
                         ItemKind::FilterObject { .. } => Color32::from_rgb(165, 102, 185),
+                        ItemKind::GroupControl { .. } => Color32::from_rgb(196, 140, 56),
+                        ItemKind::Precomp { .. } => Color32::from_rgb(42, 152, 148),
                         ItemKind::Audio { .. } => Color32::from_rgb(64, 152, 108),
                         _ => Color32::from_rgb(88, 104, 138),
                     };
@@ -277,6 +317,20 @@ impl TimelineState {
                         && let Some(wf) = waveforms.get(asset_id)
                     {
                         draw_waveform(&painter, clip_rect, wf);
+                    }
+
+                    // キーフレームマーカー（ひし形点）
+                    for kfs in item.keyframes.values() {
+                        for kf in kfs {
+                            let kx = x0 + kf.time.as_seconds() as f32 * pps;
+                            if kx >= clip_rect.left() && kx <= clip_rect.right() {
+                                painter.circle_filled(
+                                    Pos2::new(kx, clip_rect.bottom() - 5.0),
+                                    2.5,
+                                    Color32::from_rgb(255, 232, 92),
+                                );
+                            }
+                        }
                     }
 
                     painter.rect_stroke(
@@ -292,13 +346,28 @@ impl TimelineState {
                         ),
                         StrokeKind::Inside,
                     );
+                    let label = match &item.kind {
+                        ItemKind::Precomp { .. } => {
+                            format!("📦 {} (ダブルクリック編集)", item.name)
+                        }
+                        _ => item.name.clone(),
+                    };
                     painter.text(
                         Pos2::new(clip_rect.left() + 6.0, clip_rect.center().y),
                         egui::Align2::LEFT_CENTER,
-                        &item.name,
+                        label,
                         egui::FontId::proportional(11.0),
                         Color32::WHITE,
                     );
+
+                    // ダブルクリックで Precomp シーンへ非破壊再編集遷移
+                    if response.double_clicked()
+                        && let Some(pos) = response.interact_pointer_pos()
+                        && clip_rect.contains(pos)
+                        && let ItemKind::Precomp { scene_id } = item.kind
+                    {
+                        enter_precomp_scene = Some(scene_id);
+                    }
 
                     // クリック／ドラッグ開始の当たり判定
                     if (response.drag_started() || response.clicked())
@@ -318,6 +387,17 @@ impl TimelineState {
                     }
                 }
             }
+        }
+
+        if let Some(scene_id) = enter_precomp_scene {
+            let _ = session.bus.execute(
+                &mut session.project,
+                EditCommand::SwitchScene { scene_id },
+                CommandSource::Gui,
+                None,
+            );
+            session.selected_items.clear();
+            return;
         }
 
         // ポインタ操作の処理（選択・ドラッグ移動・伸縮・ルーラーシーク）
@@ -413,6 +493,29 @@ impl TimelineState {
                 ],
                 Stroke::new(2.0, Color32::from_rgb(235, 72, 72)),
             );
+        }
+    }
+
+    fn precompose_selected(&self, session: &mut EditorSession) {
+        if session.selected_items.is_empty() {
+            return;
+        }
+        let new_scene_id = Uuid::new_v4();
+        let precomp_item_id = Uuid::new_v4();
+        let next_num = session.project.scenes.len();
+        let cmd = EditCommand::PrecomposeSelection {
+            item_ids: session.selected_items.clone(),
+            new_scene_id,
+            precomp_name: format!("Precomp {next_num}"),
+            precomp_item_id,
+            target_layer_index: 0,
+        };
+        if session
+            .bus
+            .execute(&mut session.project, cmd, CommandSource::Gui, None)
+            .is_ok()
+        {
+            session.selected_items = vec![precomp_item_id];
         }
     }
 

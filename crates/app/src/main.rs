@@ -1,8 +1,10 @@
+mod graph_editor;
 mod ime_poc;
 mod timeline;
 
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
+use graph_editor::GraphEditorState;
 use ime_poc::ImePocPanel;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -11,24 +13,59 @@ use timeline::TimelineState;
 use uuid::Uuid;
 use ve_audio::{AudioEngineState, WaveformPeaks};
 use ve_core::{
-    AssetResolution, CommandSource, EditCommand, FilterTargetScope, FrameRate, ItemKind, Project,
-    ProjectSettings, RationalTime, RgbaColor, ShapeKind, TimelineItem, Transform2D,
+    AssetResolution, BlendMode, CommandSource, CubicBezier, EditCommand, EffectNode,
+    FilterTargetScope, FrameRate, Interpolation, ItemKind, Keyframe, Project, ProjectSettings,
+    RationalTime, RgbaColor, ShapeKind, TextAnimator, TimelineItem, TrackMatte, TrackMatteMode,
+    Transform2D,
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, FfmpegCli};
 use ve_render::{RenderGraph, WgpuPreviewPipeline};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceMode {
+    /// メイン編集空間（AviUtl2ライク: カット・配置中心）
+    MainEdit,
+    /// モーション合成空間（AEライク: グラフエディタ・マット・エフェクトチェーン）
+    MotionComposite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pane {
     Preview,
     Timeline,
-    InspectorIme,
+    GraphEditor,
+    Inspector,
+}
+
+fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
+    match mode {
+        WorkspaceMode::MainEdit => {
+            let mut dock = DockState::new(vec![Pane::Preview]);
+            let surface = dock.main_surface_mut();
+            let [top, _bottom] =
+                surface.split_below(egui_dock::NodeIndex::root(), 0.58, vec![Pane::Timeline]);
+            let [_left, _right] = surface.split_right(top, 0.68, vec![Pane::Inspector]);
+            dock
+        }
+        WorkspaceMode::MotionComposite => {
+            let mut dock = DockState::new(vec![Pane::Preview]);
+            let surface = dock.main_surface_mut();
+            let [top, bottom] =
+                surface.split_below(egui_dock::NodeIndex::root(), 0.50, vec![Pane::Timeline]);
+            let [_left, _right] = surface.split_right(top, 0.62, vec![Pane::Inspector]);
+            let [_tl, _ge] = surface.split_right(bottom, 0.52, vec![Pane::GraphEditor]);
+            dock
+        }
+    }
 }
 
 struct EditorApp {
+    workspace_mode: WorkspaceMode,
     session: SharedEditorSession,
     mcp_server: Option<EmbeddedMcpServer>,
     timeline_state: TimelineState,
+    graph_editor: GraphEditorState,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
     preview_pipeline: Option<WgpuPreviewPipeline>,
@@ -39,6 +76,7 @@ struct EditorApp {
     dock_state: DockState<Pane>,
     ime_panel: ImePocPanel,
     relink_inputs: BTreeMap<Uuid, String>,
+    export_format: ExportFormat,
     export_status: String,
     preview_scale: u32,
 }
@@ -52,21 +90,14 @@ impl EditorApp {
             ..Default::default()
         };
 
-        let mut project = Project::new("Phase 1b NLE + MCP Project", settings.clone());
+        let mut project = Project::new("Phase 2 Hybrid Motion Project", settings.clone());
         let mut initial_selected = Vec::new();
         if let Some(scene) = project.active_scene_mut() {
-            scene.layers[0].items.push(TimelineItem {
-                id: Uuid::new_v4(),
-                name: "背景パネル".to_string(),
-                start: RationalTime::ZERO,
-                duration: RationalTime::from_seconds(5.0),
-                transform: Transform2D {
-                    x: 80.0,
-                    y: 80.0,
-                    ..Default::default()
-                },
-                effect_chain: vec![],
-                kind: ItemKind::Shape {
+            let mut bg = TimelineItem::new(
+                "背景パネル",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(5.0),
+                ItemKind::Shape {
                     shape: ShapeKind::Rectangle,
                     width: 1120.0,
                     height: 560.0,
@@ -77,44 +108,65 @@ impl EditorApp {
                         a: 1.0,
                     },
                 },
-            });
+            );
+            bg.transform = Transform2D {
+                x: 80.0,
+                y: 80.0,
+                ..Default::default()
+            };
+            scene.layers[0].items.push(bg);
 
-            let title_id = Uuid::new_v4();
-            initial_selected.push(title_id);
-            scene.layers[1].items.push(TimelineItem {
-                id: title_id,
-                name: "タイトル字幕".to_string(),
-                start: RationalTime::ZERO,
-                duration: RationalTime::from_seconds(5.0),
-                transform: Transform2D {
-                    x: 140.0,
-                    y: 260.0,
-                    ..Default::default()
-                },
-                effect_chain: vec![],
-                kind: ItemKind::Text {
-                    content: "次世代ハイブリッド動画編集ソフト\nPhase 1b NLE + 内蔵MCP".to_string(),
+            let mut title = TimelineItem::new(
+                "タイトル字幕",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(5.0),
+                ItemKind::Text {
+                    content: "次世代ハイブリッド動画編集ソフト\nPhase 2 AE融合＆ワンクリック結合"
+                        .to_string(),
                     font_family: "sans-serif".to_string(),
-                    font_size: 56.0,
+                    font_size: 52.0,
                     color: RgbaColor::WHITE,
+                    animator: TextAnimator {
+                        enabled: true,
+                        ..Default::default()
+                    },
                 },
-            });
+            );
+            title.transform = Transform2D {
+                x: 120.0,
+                y: 250.0,
+                ..Default::default()
+            };
+            title.keyframes.insert(
+                "y".to_string(),
+                vec![
+                    Keyframe {
+                        time: RationalTime::ZERO,
+                        value: 290.0,
+                        interpolation: Interpolation::Bezier(CubicBezier::EASE_OUT),
+                    },
+                    Keyframe {
+                        time: RationalTime::from_seconds(1.0),
+                        value: 250.0,
+                        interpolation: Interpolation::Linear,
+                    },
+                ],
+            );
+            initial_selected.push(title.id);
+            scene.layers[1].items.push(title);
 
             let mut params = BTreeMap::new();
-            params.insert("gain".to_string(), 1.25);
-            scene.layers[2].items.push(TimelineItem {
-                id: Uuid::new_v4(),
-                name: "明るさフィルタ (AviUtl2方式)".to_string(),
-                start: RationalTime::ZERO,
-                duration: RationalTime::from_seconds(5.0),
-                transform: Transform2D::default(),
-                effect_chain: vec![],
-                kind: ItemKind::FilterObject {
+            params.insert("gain".to_string(), 1.15);
+            scene.layers[2].items.push(TimelineItem::new(
+                "明るさフィルタ (AviUtl2方式)",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(5.0),
+                ItemKind::FilterObject {
                     effect_type: "brightness".to_string(),
                     scope: FilterTargetScope::ImmediateLayer,
                     params,
                 },
-            });
+            ));
         }
 
         let mut editor_session = EditorSession::new(project);
@@ -139,16 +191,15 @@ impl EditorApp {
                 (None, None)
             };
 
-        let mut dock_state = DockState::new(vec![Pane::Preview]);
-        let surface = dock_state.main_surface_mut();
-        let [top, _bottom] =
-            surface.split_below(egui_dock::NodeIndex::root(), 0.58, vec![Pane::Timeline]);
-        let [_left, _right] = surface.split_right(top, 0.66, vec![Pane::InspectorIme]);
+        let workspace_mode = WorkspaceMode::MainEdit;
+        let dock_state = build_dock_state(workspace_mode);
 
         Self {
+            workspace_mode,
             session,
             mcp_server,
             timeline_state: TimelineState::default(),
+            graph_editor: GraphEditorState::default(),
             waveforms: BTreeMap::new(),
             render_graph: RenderGraph::new(),
             preview_pipeline,
@@ -159,37 +210,56 @@ impl EditorApp {
             dock_state,
             ime_panel: ImePocPanel::new(),
             relink_inputs: BTreeMap::new(),
+            export_format: ExportFormat::Mp4H264,
             export_status: "待機中".to_string(),
             preview_scale: 2,
         }
     }
 
-    fn export_mp4_poc(&mut self) {
-        let scene = {
+    fn switch_workspace(&mut self, mode: WorkspaceMode) {
+        if self.workspace_mode != mode {
+            self.workspace_mode = mode;
+            self.dock_state = build_dock_state(mode);
+        }
+    }
+
+    fn export_current_scene(&mut self) {
+        let mut proj_clone = {
             let guard = self.session.lock().unwrap();
-            guard.project.active_scene().cloned()
+            guard.project.clone()
         };
-        let Some(mut scaled_scene) = scene else {
-            return;
+        let active_id = proj_clone.active_scene_id;
+        let (out_path, transparent_bg) = match self.export_format {
+            ExportFormat::Mp4H264 => (PathBuf::from("phase2_export_h264.mp4"), false),
+            ExportFormat::Mp4H265 => (PathBuf::from("phase2_export_h265.mp4"), false),
+            ExportFormat::WebmVp9Alpha => (PathBuf::from("phase2_export_alpha.webm"), true),
+            ExportFormat::PngSequence => (PathBuf::from("phase2_frame_%04d.png"), true),
         };
-        let out_path = PathBuf::from("phase1b_export.mp4");
-        let cli = FfmpegCli::default();
+
         let config = ExportConfig {
             width: 640,
             height: 360,
             fps: FrameRate::FPS_30,
-            format: ExportFormat::Mp4H264,
+            format: self.export_format,
             crf: 20,
         };
-        scaled_scene.width = config.width;
-        scaled_scene.height = config.height;
+        if let Some(s) = proj_clone.active_scene_mut() {
+            s.width = config.width;
+            s.height = config.height;
+        }
 
+        let cli = FfmpegCli::default();
         match cli.start_export(&out_path, &config, None) {
             Ok(mut session) => {
                 for frame_idx in 0..60 {
                     let t = RationalTime::from_frame(frame_idx, config.fps);
-                    let linear = self.render_graph.render_scene(&scaled_scene, t);
-                    if let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb()) {
+                    if let Some(linear) = self.render_graph.render_project_scene(
+                        &proj_clone,
+                        active_id,
+                        t,
+                        transparent_bg,
+                    ) && let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb())
+                    {
                         self.export_status = format!("書き出しエラー: {e}");
                         return;
                     }
@@ -218,8 +288,12 @@ impl TabViewer for EditorTabViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             Pane::Preview => "プレビュー (wgpu Linear f16)".into(),
-            Pane::Timeline => "タイムライン (AviUtl2 NLE)".into(),
-            Pane::InspectorIme => "インスペクタ / MCP / 日本語IME".into(),
+            Pane::Timeline => "タイムライン".into(),
+            Pane::GraphEditor => "グラフエディタ (値 / 速度)".into(),
+            Pane::Inspector => match self.app.workspace_mode {
+                WorkspaceMode::MainEdit => "インスペクタ / MCP / 日本語IME".into(),
+                WorkspaceMode::MotionComposite => "AEモーション・エフェクト・マット".into(),
+            },
         }
     }
 
@@ -246,7 +320,7 @@ impl TabViewer for EditorTabViewer<'_> {
                     let frame = sess.playhead.to_frame_floor(fps);
                     let secs = sess.playhead.as_seconds();
 
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let is_playing = self.app.audio_state.clock.read().unwrap().is_playing();
                         if ui
                             .button(if is_playing {
@@ -278,7 +352,38 @@ impl TabViewer for EditorTabViewer<'_> {
                             fps.as_f64()
                         ));
                         ui.separator();
-                        if ui.button("MP4 書き出し").clicked() {
+
+                        let fmt_label = match self.app.export_format {
+                            ExportFormat::Mp4H264 => "MP4 (H.264)",
+                            ExportFormat::Mp4H265 => "MP4 (H.265)",
+                            ExportFormat::WebmVp9Alpha => "WebM (VP9+透過)",
+                            ExportFormat::PngSequence => "PNG連番 (透過)",
+                        };
+                        egui::ComboBox::from_id_salt("export_format_combo")
+                            .selected_text(fmt_label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.app.export_format,
+                                    ExportFormat::Mp4H264,
+                                    "MP4 (H.264)",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.export_format,
+                                    ExportFormat::Mp4H265,
+                                    "MP4 (H.265)",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.export_format,
+                                    ExportFormat::WebmVp9Alpha,
+                                    "WebM (VP9+透過)",
+                                );
+                                ui.selectable_value(
+                                    &mut self.app.export_format,
+                                    ExportFormat::PngSequence,
+                                    "PNG連番 (透過)",
+                                );
+                            });
+                        if ui.button("書き出し").clicked() {
                             export_clicked = true;
                         }
                         ui.label(&self.app.export_status);
@@ -289,7 +394,6 @@ impl TabViewer for EditorTabViewer<'_> {
                         .timeline_state
                         .show(ui, &mut sess, &self.app.waveforms);
 
-                    // タイムライン上の手動シークをクロックへ同期
                     if !self.app.audio_state.clock.read().unwrap().is_playing() {
                         self.app
                             .audio_state
@@ -300,63 +404,214 @@ impl TabViewer for EditorTabViewer<'_> {
                     }
                 }
                 if export_clicked {
-                    self.app.export_mp4_poc();
+                    self.app.export_current_scene();
                 }
             }
-            Pane::InspectorIme => {
+            Pane::GraphEditor => {
+                let mut sess = self.app.session.lock().unwrap();
+                self.app.graph_editor.show(ui, &mut sess);
+            }
+            Pane::Inspector => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    // 内蔵 MCP サーバーステータス
-                    ui.heading("内蔵 MCP サーバー (Streamable HTTP)");
+                    // 内蔵 MCP ステータス
+                    ui.heading("内蔵 MCP (Streamable HTTP)");
                     if let Some(mcp) = &self.app.mcp_server {
                         let url = mcp.endpoint_url();
                         ui.horizontal(|ui| {
                             ui.monospace(&url);
-                            if ui.button("URLコピー").clicked() {
+                            if ui.button("URL").clicked() {
                                 ui.ctx().copy_text(url);
                             }
-                            if ui.button("トークンコピー").clicked() {
+                            if ui.button("トークン").clicked() {
                                 ui.ctx().copy_text(mcp.bearer_token().to_string());
                             }
                         });
-                    } else {
-                        ui.colored_label(egui::Color32::RED, "MCPサーバー起動失敗");
                     }
                     ui.separator();
 
-                    // 選択中テキストオブジェクトの CommandBus 経由編集 + 日本語IME PoC
-                    let mut text_edit_state: Option<(Uuid, String)> = None;
-                    {
+                    // 選択中アイテムの詳細（ブレンドモード / 文字ごとアニメーター / エフェクトチェーン）
+                    let selected_snapshot = {
                         let sess = self.app.session.lock().unwrap();
-                        if let Some(&sel_id) = sess.selected_items.first()
-                            && let Some(scene) = sess.project.active_scene()
-                        {
-                            for layer in &scene.layers {
-                                if let Some(item) = layer.items.iter().find(|i| i.id == sel_id)
-                                    && let ItemKind::Text { content, .. } = &item.kind
-                                {
-                                    text_edit_state = Some((sel_id, content.clone()));
-                                }
-                            }
-                        }
-                    }
+                        sess.selected_items.first().copied().and_then(|sel_id| {
+                            sess.project.active_scene().and_then(|scene| {
+                                scene.layers.iter().enumerate().find_map(|(l_idx, layer)| {
+                                    layer
+                                        .items
+                                        .iter()
+                                        .find(|i| i.id == sel_id)
+                                        .map(|it| (l_idx, layer.track_matte, it.clone()))
+                                })
+                            })
+                        })
+                    };
 
-                    if let Some((item_id, mut content)) = text_edit_state {
-                        let before = content.clone();
-                        self.app.ime_panel.ui(ui, &mut content);
-                        if content != before {
-                            let mut sess_guard = self.app.session.lock().unwrap();
-                            let sess = &mut *sess_guard;
-                            let _ = sess.bus.execute(
-                                &mut sess.project,
-                                EditCommand::SetTextContent { item_id, content },
+                    if let Some((layer_idx, track_matte, item)) = selected_snapshot {
+                        ui.heading(format!("選択中: {}", item.name));
+
+                        // ブレンドモード
+                        let mut blend = item.blend_mode;
+                        egui::ComboBox::from_label("ブレンドモード")
+                            .selected_text(format!("{blend:?}"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut blend, BlendMode::Normal, "Normal");
+                                ui.selectable_value(&mut blend, BlendMode::Add, "Add");
+                                ui.selectable_value(&mut blend, BlendMode::Multiply, "Multiply");
+                                ui.selectable_value(&mut blend, BlendMode::Screen, "Screen");
+                            });
+                        if blend != item.blend_mode {
+                            let mut g = self.app.session.lock().unwrap();
+                            let s = &mut *g;
+                            let _ = s.bus.execute(
+                                &mut s.project,
+                                EditCommand::SetBlendMode {
+                                    item_id: item.id,
+                                    blend_mode: blend,
+                                },
                                 CommandSource::Gui,
-                                Some("inspector_text_edit"),
+                                None,
                             );
                         }
+
+                        // レイヤーのトラックマット設定
+                        let mut matte_choice = track_matte.map(|m| m.mode);
+                        egui::ComboBox::from_label(format!("L{layer_idx} トラックマット"))
+                            .selected_text(
+                                matte_choice
+                                    .map(|m| format!("{m:?}"))
+                                    .unwrap_or_else(|| "なし".into()),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut matte_choice, None, "なし");
+                                ui.selectable_value(
+                                    &mut matte_choice,
+                                    Some(TrackMatteMode::Alpha),
+                                    "Alpha (上レイヤー)",
+                                );
+                                ui.selectable_value(
+                                    &mut matte_choice,
+                                    Some(TrackMatteMode::AlphaInverted),
+                                    "Alpha反転",
+                                );
+                                ui.selectable_value(
+                                    &mut matte_choice,
+                                    Some(TrackMatteMode::Luma),
+                                    "Luma (輝度)",
+                                );
+                                ui.selectable_value(
+                                    &mut matte_choice,
+                                    Some(TrackMatteMode::LumaInverted),
+                                    "Luma反転",
+                                );
+                            });
+                        if matte_choice != track_matte.map(|m| m.mode) {
+                            let mut g = self.app.session.lock().unwrap();
+                            let s = &mut *g;
+                            let new_matte = matte_choice.map(|mode| TrackMatte {
+                                mode,
+                                source_layer_index: layer_idx + 1,
+                            });
+                            let _ = s.bus.execute(
+                                &mut s.project,
+                                EditCommand::SetTrackMatte {
+                                    layer_index: layer_idx,
+                                    matte: new_matte,
+                                },
+                                CommandSource::Gui,
+                                None,
+                            );
+                        }
+
+                        // WGSL エフェクトチェーン追加
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("エフェクト追加:");
+                            for (label, eff_type, k, v) in [
+                                ("ブラー", "blur", "radius", 3.0),
+                                ("グロー", "glow", "intensity", 1.2),
+                                ("色調補正", "color_grade", "exposure", 0.35),
+                                ("クリップ", "clip_rect", "left", 0.1),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    let mut params = BTreeMap::new();
+                                    params.insert(k.to_string(), v);
+                                    let mut g = self.app.session.lock().unwrap();
+                                    let s = &mut *g;
+                                    let _ = s.bus.execute(
+                                        &mut s.project,
+                                        EditCommand::AddEffect {
+                                            item_id: item.id,
+                                            effect: EffectNode {
+                                                id: Uuid::new_v4(),
+                                                effect_type: eff_type.to_string(),
+                                                enabled: true,
+                                                params,
+                                            },
+                                        },
+                                        CommandSource::Gui,
+                                        None,
+                                    );
+                                }
+                            }
+                        });
+                        if !item.effect_chain.is_empty() {
+                            for eff in &item.effect_chain {
+                                ui.monospace(format!("  • {} {:?}", eff.effect_type, eff.params));
+                            }
+                        }
+
+                        // テキストオブジェクトの場合は文字ごとアニメーター＋日本語IME
+                        if let ItemKind::Text {
+                            mut content,
+                            mut animator,
+                            ..
+                        } = item.kind
+                        {
+                            ui.separator();
+                            let prev_anim = animator;
+                            ui.checkbox(&mut animator.enabled, "文字ごとアニメーター有効");
+                            if animator.enabled {
+                                ui.add(
+                                    egui::Slider::new(&mut animator.delay_per_char_sec, 0.0..=0.3)
+                                        .text("文字ディレイ(秒)"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut animator.start_offset_y, -80.0..=80.0)
+                                        .text("出現Yオフセット"),
+                                );
+                            }
+                            if animator != prev_anim {
+                                let mut g = self.app.session.lock().unwrap();
+                                let s = &mut *g;
+                                let _ = s.bus.execute(
+                                    &mut s.project,
+                                    EditCommand::SetTextAnimator {
+                                        item_id: item.id,
+                                        animator,
+                                    },
+                                    CommandSource::Gui,
+                                    Some("text_animator_edit"),
+                                );
+                            }
+
+                            ui.separator();
+                            let before = content.clone();
+                            self.app.ime_panel.ui(ui, &mut content);
+                            if content != before {
+                                let mut g = self.app.session.lock().unwrap();
+                                let s = &mut *g;
+                                let _ = s.bus.execute(
+                                    &mut s.project,
+                                    EditCommand::SetTextContent {
+                                        item_id: item.id,
+                                        content,
+                                    },
+                                    CommandSource::Gui,
+                                    Some("inspector_text_edit"),
+                                );
+                            }
+                        }
                     } else {
-                        let mut dummy = String::from(
-                            "（タイムラインでテキストオブジェクトを選択してください）",
-                        );
+                        let mut dummy =
+                            String::from("（タイムラインでオブジェクトを選択してください）");
                         self.app.ime_panel.ui(ui, &mut dummy);
                     }
 
@@ -416,6 +671,63 @@ impl eframe::App for EditorApp {
         let ctx = ui.ctx().clone();
         self.ime_panel.capture_events(&ctx);
 
+        // 上部バー: Dual-Workspace UX 切替 + シーンパンくずリスト + Precomp キャッシュ統計
+        egui::Panel::top("workspace_switcher_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("空間切替:");
+                if ui
+                    .selectable_label(
+                        self.workspace_mode == WorkspaceMode::MainEdit,
+                        "🎬 メイン編集空間 (AviUtl2)",
+                    )
+                    .clicked()
+                {
+                    self.switch_workspace(WorkspaceMode::MainEdit);
+                }
+                if ui
+                    .selectable_label(
+                        self.workspace_mode == WorkspaceMode::MotionComposite,
+                        "✨ モーション合成空間 (AE)",
+                    )
+                    .clicked()
+                {
+                    self.switch_workspace(WorkspaceMode::MotionComposite);
+                }
+
+                ui.separator();
+                ui.label("シーン:");
+                let (scenes, active_id) = {
+                    let s = self.session.lock().unwrap();
+                    let list: Vec<(Uuid, String)> = s
+                        .project
+                        .scenes
+                        .iter()
+                        .map(|sc| (sc.id, sc.name.clone()))
+                        .collect();
+                    (list, s.project.active_scene_id)
+                };
+                for (sid, sname) in scenes {
+                    if ui.selectable_label(sid == active_id, sname).clicked() && sid != active_id {
+                        let mut g = self.session.lock().unwrap();
+                        let s = &mut *g;
+                        let _ = s.bus.execute(
+                            &mut s.project,
+                            EditCommand::SwitchScene { scene_id: sid },
+                            CommandSource::Gui,
+                            None,
+                        );
+                        s.selected_items.clear();
+                    }
+                }
+
+                ui.separator();
+                ui.weak(format!(
+                    "Precomp Cache: hit={} / miss={}",
+                    self.render_graph.cache_hits, self.render_graph.cache_misses
+                ));
+            });
+        });
+
         // 再生中の場合は音声マスタークロックから playhead を更新
         let current_time = {
             let clock = self.audio_state.clock.read().unwrap();
@@ -432,18 +744,23 @@ impl eframe::App for EditorApp {
             }
         };
 
-        // Render Graph 評価 → wgpu Linear f16 テクスチャへアップロード
+        // Render Graph 評価（Precomp + ハッシュキャッシュ） → wgpu Linear f16 テクスチャへアップロード
         if let (Some(wgpu_state), Some(pipe)) =
             (frame.wgpu_render_state(), self.preview_pipeline.as_ref())
         {
-            let scene_opt = {
+            let mut proj_clone = {
                 let sess = self.session.lock().unwrap();
-                sess.project.active_scene().cloned()
+                sess.project.clone()
             };
-            if let Some(mut preview_scene) = scene_opt {
-                preview_scene.width /= self.preview_scale.max(1);
-                preview_scene.height /= self.preview_scale.max(1);
-                let linear_img = self.render_graph.render_scene(&preview_scene, current_time);
+            let active_id = proj_clone.active_scene_id;
+            if let Some(s) = proj_clone.active_scene_mut() {
+                s.width /= self.preview_scale.max(1);
+                s.height /= self.preview_scale.max(1);
+            }
+            if let Some(linear_img) =
+                self.render_graph
+                    .render_project_scene(&proj_clone, active_id, current_time, false)
+            {
                 pipe.upload_and_present(&wgpu_state.device, &wgpu_state.queue, &linear_img);
             }
         }
@@ -464,8 +781,8 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 880.0])
-            .with_title("Next-Gen Hybrid Video Editor — Phase 1b (NLE + Command Bus + MCP)"),
+            .with_inner_size([1480.0, 900.0])
+            .with_title("Next-Gen Hybrid Video Editor — Phase 2 (Dual-Workspace + AE Fusion)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

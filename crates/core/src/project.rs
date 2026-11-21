@@ -1,3 +1,4 @@
+use crate::animation::{CubicBezier, Keyframe, evaluate_track};
 use crate::time::{FrameRate, RationalTime};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -59,6 +60,68 @@ impl Default for Transform2D {
             scale_y: 1.0,
             rotation_deg: 0.0,
             opacity: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Add,
+    Multiply,
+    Screen,
+}
+
+/// トラックマット（アルファ／ルミナンスおよび各反転）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackMatteMode {
+    Alpha,
+    AlphaInverted,
+    Luma,
+    LumaInverted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackMatte {
+    pub mode: TrackMatteMode,
+    pub source_layer_index: usize,
+}
+
+/// テキストの文字ごとアニメーター（仕様書 2.2）
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TextAnimator {
+    pub enabled: bool,
+    /// 各文字の出現前オフセット（出現完了時に 0 へ補間）
+    pub start_offset_x: f32,
+    pub start_offset_y: f32,
+    /// 各文字の出現前スケール（出現完了時に 1.0 へ補間）
+    pub start_scale: f32,
+    /// 各文字の出現前回転角（度）
+    pub start_rotation_deg: f32,
+    /// 各文字の出現前不透明度（出現完了時に 1.0 へ補間）
+    pub start_opacity: f32,
+    /// 1文字あたりの出現ディレイ（秒）
+    pub delay_per_char_sec: f32,
+    /// 1文字あたりのアニメーション時間（秒）
+    pub duration_per_char_sec: f32,
+    pub easing: CubicBezier,
+}
+
+impl Default for TextAnimator {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            start_offset_x: 0.0,
+            start_offset_y: 28.0,
+            start_scale: 0.7,
+            start_rotation_deg: 0.0,
+            start_opacity: 0.0,
+            delay_per_char_sec: 0.06,
+            duration_per_char_sec: 0.35,
+            easing: CubicBezier::EASE_OUT,
         }
     }
 }
@@ -133,6 +196,8 @@ pub enum ItemKind {
         font_family: String,
         font_size: f32,
         color: RgbaColor,
+        #[serde(default)]
+        animator: TextAnimator,
     },
     Shape {
         shape: ShapeKind,
@@ -146,6 +211,10 @@ pub enum ItemKind {
         scope: FilterTargetScope,
         params: BTreeMap<String, f32>,
     },
+    /// AviUtl2風グループ制御（指定レイヤー数分の位置・拡大率・回転・不透明度を一括制御）
+    GroupControl {
+        target_layer_count: usize,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -158,18 +227,61 @@ pub struct TimelineItem {
     pub start: RationalTime,
     pub duration: RationalTime,
     pub transform: Transform2D,
+    #[serde(default)]
+    pub blend_mode: BlendMode,
+    /// プロパティ名（"x", "y", "scale_x", "scale_y", "rotation_deg", "opacity"）ごとのキーフレーム列
+    #[serde(default)]
+    pub keyframes: BTreeMap<String, Vec<Keyframe>>,
     /// オブジェクト個別のAE風エフェクトチェーン
     pub effect_chain: Vec<EffectNode>,
     pub kind: ItemKind,
 }
 
 impl TimelineItem {
+    pub fn new(
+        name: impl Into<String>,
+        start: RationalTime,
+        duration: RationalTime,
+        kind: ItemKind,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            start,
+            duration,
+            transform: Transform2D::default(),
+            blend_mode: BlendMode::Normal,
+            keyframes: BTreeMap::new(),
+            effect_chain: Vec::new(),
+            kind,
+        }
+    }
+
     pub fn end(&self) -> RationalTime {
         self.start + self.duration
     }
 
     pub fn contains(&self, t: RationalTime) -> bool {
         t >= self.start && t < self.end()
+    }
+
+    /// 指定グローバル時刻でのアニメーション済み Transform2D を評価する
+    pub fn eval_transform(&self, global_time: RationalTime) -> Transform2D {
+        let local = global_time - self.start;
+        let eval = |prop: &str, base: f32| -> f32 {
+            self.keyframes
+                .get(prop)
+                .map(|kfs| evaluate_track(base, kfs, local))
+                .unwrap_or(base)
+        };
+        Transform2D {
+            x: eval("x", self.transform.x),
+            y: eval("y", self.transform.y),
+            scale_x: eval("scale_x", self.transform.scale_x),
+            scale_y: eval("scale_y", self.transform.scale_y),
+            rotation_deg: eval("rotation_deg", self.transform.rotation_deg),
+            opacity: eval("opacity", self.transform.opacity).clamp(0.0, 1.0),
+        }
     }
 }
 
@@ -179,6 +291,8 @@ pub struct Layer {
     pub name: String,
     pub visible: bool,
     pub muted: bool,
+    #[serde(default)]
+    pub track_matte: Option<TrackMatte>,
     pub items: Vec<TimelineItem>,
 }
 
@@ -189,6 +303,7 @@ impl Layer {
             name: name.into(),
             visible: true,
             muted: false,
+            track_matte: None,
             items: Vec::new(),
         }
     }
@@ -276,6 +391,10 @@ impl Project {
             scenes: vec![main_scene],
             active_scene_id,
         }
+    }
+
+    pub fn scene(&self, id: SceneId) -> Option<&Scene> {
+        self.scenes.iter().find(|s| s.id == id)
     }
 
     pub fn active_scene(&self) -> Option<&Scene> {

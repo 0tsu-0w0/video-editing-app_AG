@@ -1,5 +1,9 @@
+use crate::animation::Keyframe;
 use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
-use crate::project::{EffectId, EffectNode, ItemId, ItemKind, Project, TimelineItem, Transform2D};
+use crate::project::{
+    BlendMode, EffectId, EffectNode, ItemId, ItemKind, Layer, Project, Scene, SceneId,
+    TextAnimator, TimelineItem, TrackMatte, Transform2D,
+};
 use crate::time::RationalTime;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,6 +14,8 @@ use thiserror::Error;
 pub enum CommandError {
     #[error("Active scene not found")]
     NoActiveScene,
+    #[error("Scene not found: {0}")]
+    SceneNotFound(SceneId),
     #[error("Layer index out of bounds: {0}")]
     InvalidLayer(usize),
     #[error("Timeline item not found: {0}")]
@@ -18,6 +24,8 @@ pub enum CommandError {
     EffectNotFound(EffectId),
     #[error("Split position {0:?} is outside item bounds")]
     InvalidSplitPosition(RationalTime),
+    #[error("No items selected for precompose")]
+    EmptyPrecomposeSelection,
     #[error("GUI drag operation in progress; retry after release")]
     GuiDragLocked,
     #[error("Journal I/O error: {0}")]
@@ -72,9 +80,42 @@ pub enum EditCommand {
         item_id: ItemId,
         transform: Transform2D,
     },
+    SetBlendMode {
+        item_id: ItemId,
+        blend_mode: BlendMode,
+    },
     SetTextContent {
         item_id: ItemId,
         content: String,
+    },
+    SetTextAnimator {
+        item_id: ItemId,
+        animator: TextAnimator,
+    },
+    SetKeyframe {
+        item_id: ItemId,
+        property: String,
+        keyframe: Keyframe,
+    },
+    RemoveKeyframe {
+        item_id: ItemId,
+        property: String,
+        time: RationalTime,
+    },
+    SetTrackMatte {
+        layer_index: usize,
+        matte: Option<TrackMatte>,
+    },
+    /// ワンクリック結合（Smart Precompose）: 選択アイテムを新シーンへ移送し、Precomp クリップへ置換
+    PrecomposeSelection {
+        item_ids: Vec<ItemId>,
+        new_scene_id: SceneId,
+        precomp_name: String,
+        precomp_item_id: ItemId,
+        target_layer_index: usize,
+    },
+    SwitchScene {
+        scene_id: SceneId,
     },
     AddEffect {
         item_id: ItemId,
@@ -101,7 +142,14 @@ impl EditCommand {
             Self::TrimObject { .. } => "trim_object",
             Self::SplitObject { .. } => "split_object",
             Self::SetTransform { .. } => "set_transform",
+            Self::SetBlendMode { .. } => "set_blend_mode",
             Self::SetTextContent { .. } => "set_text_content",
+            Self::SetTextAnimator { .. } => "set_text_animator",
+            Self::SetKeyframe { .. } => "set_keyframe",
+            Self::RemoveKeyframe { .. } => "remove_keyframe",
+            Self::SetTrackMatte { .. } => "set_track_matte",
+            Self::PrecomposeSelection { .. } => "precompose_selection",
+            Self::SwitchScene { .. } => "switch_scene",
             Self::AddEffect { .. } => "add_effect",
             Self::UpdateEffectParams { .. } => "update_effect_params",
             Self::Batch { .. } => "batch_execute",
@@ -382,6 +430,14 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             item.transform = *transform;
             Ok(())
         }
+        EditCommand::SetBlendMode {
+            item_id,
+            blend_mode,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.blend_mode = *blend_mode;
+            Ok(())
+        }
         EditCommand::SetTextContent { item_id, content } => {
             let item = find_item_mut(project, *item_id)?;
             if let ItemKind::Text {
@@ -390,6 +446,147 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             {
                 *existing = content.clone();
             }
+            Ok(())
+        }
+        EditCommand::SetTextAnimator { item_id, animator } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::Text {
+                animator: existing, ..
+            } = &mut item.kind
+            {
+                *existing = *animator;
+            }
+            Ok(())
+        }
+        EditCommand::SetKeyframe {
+            item_id,
+            property,
+            keyframe,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let track = item.keyframes.entry(property.clone()).or_default();
+            if let Some(existing) = track.iter_mut().find(|k| k.time == keyframe.time) {
+                *existing = *keyframe;
+            } else {
+                track.push(*keyframe);
+                track.sort_by_key(|k| k.time);
+            }
+            Ok(())
+        }
+        EditCommand::RemoveKeyframe {
+            item_id,
+            property,
+            time,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let Some(track) = item.keyframes.get_mut(property) {
+                track.retain(|k| k.time != *time);
+            }
+            Ok(())
+        }
+        EditCommand::SetTrackMatte { layer_index, matte } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let layer = scene
+                .layers
+                .get_mut(*layer_index)
+                .ok_or(CommandError::InvalidLayer(*layer_index))?;
+            layer.track_matte = *matte;
+            Ok(())
+        }
+        EditCommand::PrecomposeSelection {
+            item_ids,
+            new_scene_id,
+            precomp_name,
+            precomp_item_id,
+            target_layer_index,
+        } => {
+            if item_ids.is_empty() {
+                return Err(CommandError::EmptyPrecomposeSelection);
+            }
+            let (width, height, fps) = {
+                let active = project.active_scene().ok_or(CommandError::NoActiveScene)?;
+                if *target_layer_index >= active.layers.len() {
+                    return Err(CommandError::InvalidLayer(*target_layer_index));
+                }
+                (active.width, active.height, active.fps)
+            };
+
+            // 選択アイテムを元シーンからレイヤー順を保って抽出
+            let mut extracted: Vec<(usize, TimelineItem)> = Vec::new();
+            {
+                let active = project
+                    .active_scene_mut()
+                    .ok_or(CommandError::NoActiveScene)?;
+                for (layer_idx, layer) in active.layers.iter_mut().enumerate() {
+                    let mut remaining = Vec::with_capacity(layer.items.len());
+                    for item in layer.items.drain(..) {
+                        if item_ids.contains(&item.id) {
+                            extracted.push((layer_idx, item));
+                        } else {
+                            remaining.push(item);
+                        }
+                    }
+                    layer.items = remaining;
+                }
+            }
+            if extracted.is_empty() {
+                return Err(CommandError::EmptyPrecomposeSelection);
+            }
+
+            let min_start = extracted
+                .iter()
+                .map(|(_, it)| it.start)
+                .min()
+                .unwrap_or(RationalTime::ZERO);
+            let max_end = extracted
+                .iter()
+                .map(|(_, it)| it.end())
+                .max()
+                .unwrap_or(min_start + RationalTime::from_seconds(1.0));
+            let precomp_duration = (max_end - min_start).max(RationalTime::from_ticks(1));
+
+            let max_layer_idx = extracted.iter().map(|(l, _)| *l).max().unwrap_or(0);
+            let mut new_layers: Vec<Layer> = (0..=max_layer_idx.max(2))
+                .map(|i| Layer::new(format!("Layer {}", i + 1)))
+                .collect();
+            for (layer_idx, mut item) in extracted {
+                item.start = item.start - min_start;
+                new_layers[layer_idx].items.push(item);
+            }
+
+            let new_scene = Scene {
+                id: *new_scene_id,
+                name: precomp_name.clone(),
+                width,
+                height,
+                fps,
+                layers: new_layers,
+            };
+            project.scenes.push(new_scene);
+
+            let mut precomp_clip = TimelineItem::new(
+                precomp_name.clone(),
+                min_start,
+                precomp_duration,
+                ItemKind::Precomp {
+                    scene_id: *new_scene_id,
+                },
+            );
+            precomp_clip.id = *precomp_item_id;
+
+            let active = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            active.layers[*target_layer_index].items.push(precomp_clip);
+            Ok(())
+        }
+        EditCommand::SwitchScene { scene_id } => {
+            if project.scene(*scene_id).is_none() {
+                return Err(CommandError::SceneNotFound(*scene_id));
+            }
+            project.active_scene_id = *scene_id;
             Ok(())
         }
         EditCommand::AddEffect { item_id, effect } => {
@@ -425,25 +622,23 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animation::{CubicBezier, Interpolation};
     use crate::project::{ProjectSettings, RgbaColor, ShapeKind};
     use tempfile::tempdir;
     use uuid::Uuid;
 
     fn sample_item(name: &str) -> TimelineItem {
-        TimelineItem {
-            id: Uuid::new_v4(),
-            name: name.to_string(),
-            start: RationalTime::ZERO,
-            duration: RationalTime::from_seconds(2.0),
-            transform: Transform2D::default(),
-            effect_chain: vec![],
-            kind: ItemKind::Shape {
+        TimelineItem::new(
+            name,
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
                 shape: ShapeKind::Rectangle,
                 width: 100.0,
                 height: 100.0,
                 color: RgbaColor::WHITE,
             },
-        }
+        )
     }
 
     #[test]
@@ -549,5 +744,95 @@ mod tests {
         let replayed = CommandBus::replay_history(&mut recovered, &history).unwrap();
         assert_eq!(replayed, 1);
         assert_eq!(recovered, live_project);
+    }
+
+    #[test]
+    fn smart_precompose_and_keyframe_are_undoable() {
+        let mut project = Project::new("PrecompTest", ProjectSettings::default());
+        let mut bus = CommandBus::new();
+
+        let mut a = sample_item("Layer0Rect");
+        a.start = RationalTime::from_seconds(1.0);
+        let mut b = sample_item("Layer1Rect");
+        b.start = RationalTime::from_seconds(1.5);
+        let a_id = a.id;
+        let b_id = b.id;
+
+        bus.execute(
+            &mut project,
+            EditCommand::Batch {
+                label: "Seed".into(),
+                commands: vec![
+                    EditCommand::AddObject {
+                        layer_index: 0,
+                        item: a,
+                    },
+                    EditCommand::AddObject {
+                        layer_index: 1,
+                        item: b,
+                    },
+                    EditCommand::SetKeyframe {
+                        item_id: a_id,
+                        property: "x".into(),
+                        keyframe: Keyframe {
+                            time: RationalTime::ZERO,
+                            value: 0.0,
+                            interpolation: Interpolation::Bezier(CubicBezier::EASE_IN_OUT),
+                        },
+                    },
+                    EditCommand::SetKeyframe {
+                        item_id: a_id,
+                        property: "x".into(),
+                        keyframe: Keyframe {
+                            time: RationalTime::from_seconds(1.0),
+                            value: 100.0,
+                            interpolation: Interpolation::Linear,
+                        },
+                    },
+                ],
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        // ワンクリック結合（Smart Precompose）
+        let new_scene_id = Uuid::new_v4();
+        let precomp_item_id = Uuid::new_v4();
+        bus.execute(
+            &mut project,
+            EditCommand::PrecomposeSelection {
+                item_ids: vec![a_id, b_id],
+                new_scene_id,
+                precomp_name: "Motion Comp 1".into(),
+                precomp_item_id,
+                target_layer_index: 0,
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(project.scenes.len(), 2);
+        let main_scene = project.active_scene().unwrap();
+        assert_eq!(main_scene.layers[0].items.len(), 1);
+        assert_eq!(main_scene.layers[1].items.len(), 0);
+        assert_eq!(
+            main_scene.layers[0].items[0].start,
+            RationalTime::from_seconds(1.0)
+        );
+
+        let nested = project.scene(new_scene_id).unwrap();
+        assert_eq!(nested.layers[0].items[0].start, RationalTime::ZERO);
+        assert_eq!(
+            nested.layers[1].items[0].start,
+            RationalTime::from_seconds(0.5)
+        );
+
+        // Undo で元の2レイヤー構成へ完全復元
+        assert!(bus.undo(&mut project));
+        assert_eq!(project.scenes.len(), 1);
+        assert_eq!(project.active_scene().unwrap().layers[0].items.len(), 1);
+        assert_eq!(project.active_scene().unwrap().layers[1].items.len(), 1);
     }
 }

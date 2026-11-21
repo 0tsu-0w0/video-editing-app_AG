@@ -1,5 +1,5 @@
 use half::f16;
-use ve_core::RgbaColor;
+use ve_core::{BlendMode, RgbaColor, TrackMatteMode};
 
 #[inline]
 pub fn srgb_to_linear(c: f32) -> f32 {
@@ -57,6 +57,12 @@ impl LinearPremul {
         })
     }
 
+    /// Rec.709 リニア輝度
+    #[inline]
+    pub fn luma(self) -> f32 {
+        (0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b).clamp(0.0, 1.0)
+    }
+
     /// Porter-Duff SrcOver（Linear Premultiplied Alpha）
     #[inline]
     pub fn over(self, dst: Self) -> Self {
@@ -66,6 +72,36 @@ impl LinearPremul {
             g: self.g + dst.g * inv_a,
             b: self.b + dst.b * inv_a,
             a: self.a + dst.a * inv_a,
+        }
+    }
+
+    /// ブレンドモード付き合成（Linear Premultiplied Alpha）
+    #[inline]
+    pub fn blend(self, dst: Self, mode: BlendMode) -> Self {
+        match mode {
+            BlendMode::Normal => self.over(dst),
+            BlendMode::Add => Self {
+                r: self.r + dst.r,
+                g: self.g + dst.g,
+                b: self.b + dst.b,
+                a: (self.a + dst.a * (1.0 - self.a)).clamp(0.0, 1.0),
+            },
+            BlendMode::Multiply => {
+                let inv_sa = 1.0 - self.a;
+                let inv_da = 1.0 - dst.a;
+                Self {
+                    r: self.r * dst.r + self.r * inv_da + dst.r * inv_sa,
+                    g: self.g * dst.g + self.g * inv_da + dst.g * inv_sa,
+                    b: self.b * dst.b + self.b * inv_da + dst.b * inv_sa,
+                    a: (self.a + dst.a * inv_sa).clamp(0.0, 1.0),
+                }
+            }
+            BlendMode::Screen => Self {
+                r: self.r + dst.r - self.r * dst.r,
+                g: self.g + dst.g - self.g * dst.g,
+                b: self.b + dst.b - self.b * dst.b,
+                a: (self.a + dst.a * (1.0 - self.a)).clamp(0.0, 1.0),
+            },
         }
     }
 
@@ -123,7 +159,7 @@ impl LinearImage {
         out
     }
 
-    /// `wgpu::TextureFormat::Rgba16Float` 転送用バイト列へ変換
+    /// `wgpu::TextureFormat::Rgba16Float` 転送・キャッシュ保存用バイト列へ変換
     pub fn to_rgba16f_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 8);
         for px in &self.pixels {
@@ -134,7 +170,39 @@ impl LinearImage {
         out
     }
 
+    /// キャッシュされた `Rgba16Float` バイト列から復元する
+    pub fn from_rgba16f_bytes(width: u32, height: u32, bytes: &[u8]) -> Option<Self> {
+        let expected = (width as usize) * (height as usize) * 8;
+        if bytes.len() != expected {
+            return None;
+        }
+        let mut pixels = Vec::with_capacity((width * height) as usize);
+        for chunk in bytes.as_chunks::<8>().0 {
+            let r = f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
+            let g = f16::from_le_bytes([chunk[2], chunk[3]]).to_f32();
+            let b = f16::from_le_bytes([chunk[4], chunk[5]]).to_f32();
+            let a = f16::from_le_bytes([chunk[6], chunk[7]]).to_f32();
+            pixels.push(LinearPremul { r, g, b, a });
+        }
+        Some(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
     pub fn blend_over(&mut self, src: &LinearImage, offset_x: i32, offset_y: i32, opacity: f32) {
+        self.blend_with_mode(src, offset_x, offset_y, opacity, BlendMode::Normal);
+    }
+
+    pub fn blend_with_mode(
+        &mut self,
+        src: &LinearImage,
+        offset_x: i32,
+        offset_y: i32,
+        opacity: f32,
+        mode: BlendMode,
+    ) {
         let opacity = opacity.clamp(0.0, 1.0);
         if opacity <= 0.0 {
             return;
@@ -156,7 +224,31 @@ impl LinearImage {
                 sp.a *= opacity;
 
                 let dst_idx = (dy as u32 * self.width + dx as u32) as usize;
-                self.pixels[dst_idx] = sp.over(self.pixels[dst_idx]);
+                self.pixels[dst_idx] = sp.blend(self.pixels[dst_idx], mode);
+            }
+        }
+    }
+
+    /// トラックマット適用（アルファ／ルミナンスおよび反転）
+    pub fn apply_track_matte(&mut self, matte: &LinearImage, mode: TrackMatteMode) {
+        let w = self.width.min(matte.width);
+        let h = self.height.min(matte.height);
+        for y in 0..h {
+            for x in 0..w {
+                let idx_dst = (y * self.width + x) as usize;
+                let idx_m = (y * matte.width + x) as usize;
+                let mp = matte.pixels[idx_m];
+                let factor = match mode {
+                    TrackMatteMode::Alpha => mp.a.clamp(0.0, 1.0),
+                    TrackMatteMode::AlphaInverted => (1.0 - mp.a).clamp(0.0, 1.0),
+                    TrackMatteMode::Luma => mp.luma(),
+                    TrackMatteMode::LumaInverted => (1.0 - mp.luma()).clamp(0.0, 1.0),
+                };
+                let dst = &mut self.pixels[idx_dst];
+                dst.r *= factor;
+                dst.g *= factor;
+                dst.b *= factor;
+                dst.a *= factor;
             }
         }
     }
@@ -180,5 +272,23 @@ mod tests {
         let rgba8 = blended.to_rgba8_srgb();
         assert!((rgba8[0] as i32 - 188).abs() <= 2, "got {:?}", rgba8);
         assert_eq!(rgba8[3], 255);
+    }
+
+    #[test]
+    fn rgba16f_cache_roundtrip() {
+        let img = LinearImage::new(
+            4,
+            4,
+            LinearPremul {
+                r: 0.25,
+                g: 0.5,
+                b: 0.75,
+                a: 1.0,
+            },
+        );
+        let bytes = img.to_rgba16f_bytes();
+        let restored = LinearImage::from_rgba16f_bytes(4, 4, &bytes).unwrap();
+        assert!((restored.pixels[0].r - 0.25).abs() < 1e-3);
+        assert!((restored.pixels[0].g - 0.5).abs() < 1e-3);
     }
 }
