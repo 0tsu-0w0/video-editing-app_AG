@@ -7,18 +7,21 @@ use ve_ai::{
     ApiProvider, ClaudeRefiner, CloudUploadGuard, OsCredentialStore, SubtitleSegment,
     import_tts_file_pair,
 };
-use ve_audio::AudioGraph;
+use ve_audio::{AudioGraph, BeatDetectionConfig, detect_audio_beats};
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, Camera3D,
     CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode, EffectPreset,
     FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, LipSyncMode,
     MaskMode, MaskVertex, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
-    ScriptBuildConfig, ShapeKind, TextAnimator, TextStylePreset, TimelineItem, TimelineMarker,
-    TrackMatte, TrackMatteMode, base64_encode, build_align_commands, build_close_gaps_commands,
+    SceneColorGrade, ScriptBuildConfig, ShapeKind, TextAnimator, TextStylePreset, TimelineItem,
+    TimelineMarker, TrackMatte, TrackMatteMode, base64_encode, build_align_commands,
+    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
     build_fit_duration_to_layer_commands, build_jump_cut_commands, build_motion_preset_commands,
     build_replace_text_commands, build_script_timeline_commands, build_shorts_clip_scene_command,
-    detect_speech_intervals_from_rms, export_ass_subtitles, export_otio_json, export_srt_subtitles,
-    extract_highlight_candidates, format_youtube_chapters, parse_ass_subtitles, parse_aviutl_exo,
+    build_strip_filler_words_commands, build_text_based_delete_commands,
+    build_text_based_reorder_commands, detect_speech_intervals_from_rms, export_ass_subtitles,
+    export_otio_json, export_srt_subtitles, extract_highlight_candidates,
+    extract_transcript_entries, format_youtube_chapters, parse_ass_subtitles, parse_aviutl_exo,
     parse_script_auto, parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
     wrap_subtitle_japanese,
 };
@@ -26,7 +29,7 @@ use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, decode_audio_file, write_wav_pcm16,
 };
 use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
-use ve_render::{RenderGraph, validate_wgsl};
+use ve_render::{RenderGraph, emit_sample_cube_luts, validate_wgsl};
 
 const MAX_BATCH_COMMANDS: usize = 500;
 const ALLOWED_TTS_AUDIO_EXTS: &[&str] = &["wav", "mp3", "flac", "ogg", "m4a", "aac"];
@@ -629,6 +632,68 @@ pub fn tool_definitions() -> Value {
         }
     ]) {
         tools.extend(v07_extra);
+    }
+    if let Value::Array(v08_extra) = json!([
+        {
+            "name": "text_based_edit",
+            "description": "テキストベース編集（文字起こし一覧・選択/検索句の連動リップルカット・フィラー自動除去・前後並べ替えを 1 ステップ Undo で実行）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "delete_segments", "remove_fillers", "reorder"]
+                    },
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                    "id": { "type": "string" },
+                    "query": { "type": "string" },
+                    "direction": { "type": "string", "enum": ["up", "down"], "default": "up" },
+                    "strip_words": { "type": "boolean", "default": false },
+                    "linked_layers": { "type": "array", "items": { "type": "integer" } }
+                }
+            }
+        },
+        {
+            "name": "detect_beats",
+            "description": "BGM/音声から BPM と拍・小節位置を自動検出し、任意でビートマーカー一括配置や選択クリップの音ハメ自動カットを行う（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "min_bpm": { "type": "number", "default": 70.0 },
+                    "max_bpm": { "type": "number", "default": 180.0 },
+                    "sensitivity": { "type": "number", "default": 1.35 },
+                    "beats_per_bar": { "type": "integer", "default": 4 },
+                    "add_markers": { "type": "boolean", "default": false },
+                    "downbeats_only": { "type": "boolean", "default": true },
+                    "cut_item_ids": { "type": "array", "items": { "type": "string" } }
+                }
+            }
+        },
+        {
+            "name": "set_color_grade",
+            "description": "アクティブシーンの 3-Way カラーグレーディング（露出/コントラスト/彩度/色温度/ティント/Lift/Gamma/Gain）および .cube 3D LUT を設定・リセットする（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "enabled": { "type": "boolean" },
+                    "reset": { "type": "boolean", "default": false },
+                    "exposure": { "type": "number" },
+                    "contrast": { "type": "number" },
+                    "saturation": { "type": "number" },
+                    "temperature": { "type": "number" },
+                    "tint": { "type": "number" },
+                    "lift": { "type": "array", "items": { "type": "number" } },
+                    "gamma": { "type": "array", "items": { "type": "number" } },
+                    "gain": { "type": "array", "items": { "type": "number" } },
+                    "lut_path": { "type": "string" },
+                    "lut_intensity": { "type": "number" },
+                    "emit_sample_luts": { "type": "boolean", "default": false }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v08_extra);
     }
     Value::Array(tools)
 }
@@ -2957,6 +3022,374 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 other => Err(format!("unknown preset action: {other}")),
             }
         }
+        "text_based_edit" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            let linked_layers: Vec<usize> = args
+                .get("linked_layers")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as usize))
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    let cnt = guard
+                        .project
+                        .active_scene()
+                        .map(|s| s.layers.len())
+                        .unwrap_or(4);
+                    (0..cnt).collect()
+                });
+            match action {
+                "list" => {
+                    let scene = guard.project.active_scene().ok_or("no active scene")?;
+                    let entries = extract_transcript_entries(scene, None, None);
+                    let rows: Vec<Value> = entries
+                        .iter()
+                        .map(|e| {
+                            json!({
+                                "item_id": e.item_id,
+                                "layer_index": e.layer_index,
+                                "start_sec": e.start.as_seconds(),
+                                "end_sec": e.end.as_seconds(),
+                                "text": e.clean_text,
+                                "is_filler_only": e.is_filler_only,
+                                "matched_fillers": e.matched_fillers,
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({"entries": rows}).to_string() }]
+                    }))
+                }
+                "delete_segments" => {
+                    let mut target_ids: Vec<Uuid> = Vec::new();
+                    if let Some(arr) = args.get("ids").and_then(Value::as_array) {
+                        for v in arr {
+                            if let Some(s) = v.as_str()
+                                && let Ok(id) = Uuid::parse_str(s)
+                            {
+                                target_ids.push(id);
+                            }
+                        }
+                    }
+                    if let Some(q) = args
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let scene = guard.project.active_scene().ok_or("no active scene")?;
+                        for e in extract_transcript_entries(scene, None, None) {
+                            if e.clean_text.contains(q) && !target_ids.contains(&e.item_id) {
+                                target_ids.push(e.item_id);
+                            }
+                        }
+                    }
+                    let scene_clone = guard
+                        .project
+                        .active_scene()
+                        .cloned()
+                        .ok_or("no active scene")?;
+                    let res =
+                        build_text_based_delete_commands(&scene_clone, &target_ids, &linked_layers)
+                            .ok_or("削除対象のテキスト区間が見つかりませんでした")?;
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, res.command, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "removed_ranges": res.removed_ranges,
+                                "removed_sec": res.removed_sec
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "remove_fillers" => {
+                    let strip_words = args
+                        .get("strip_words")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let scene_clone = guard
+                        .project
+                        .active_scene()
+                        .cloned()
+                        .ok_or("no active scene")?;
+                    if strip_words {
+                        let (count, cmd) =
+                            build_strip_filler_words_commands(&scene_clone, None, None)
+                                .ok_or("除去対象のフィラー語句は見つかりませんでした")?;
+                        let sess = &mut *guard;
+                        sess.bus
+                            .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                            .map_err(|e| e.to_string())?;
+                        Ok(json!({
+                            "content": [{ "type": "text", "text": json!({"stripped_items": count}).to_string() }]
+                        }))
+                    } else {
+                        let filler_ids: Vec<Uuid> =
+                            extract_transcript_entries(&scene_clone, None, None)
+                                .into_iter()
+                                .filter(|e| e.is_filler_only)
+                                .map(|e| e.item_id)
+                                .collect();
+                        let res = build_text_based_delete_commands(
+                            &scene_clone,
+                            &filler_ids,
+                            &linked_layers,
+                        )
+                        .ok_or("フィラーのみの区間は見つかりませんでした")?;
+                        let sess = &mut *guard;
+                        sess.bus
+                            .execute(&mut sess.project, res.command, CommandSource::Mcp, None)
+                            .map_err(|e| e.to_string())?;
+                        Ok(json!({
+                            "content": [{
+                                "type": "text",
+                                "text": json!({
+                                    "removed_filler_ranges": res.removed_ranges,
+                                    "removed_sec": res.removed_sec
+                                }).to_string()
+                            }]
+                        }))
+                    }
+                }
+                "reorder" => {
+                    let id = parse_uuid(args, "id")?;
+                    let move_up = args
+                        .get("direction")
+                        .and_then(Value::as_str)
+                        .unwrap_or("up")
+                        != "down";
+                    let scene_clone = guard
+                        .project
+                        .active_scene()
+                        .cloned()
+                        .ok_or("no active scene")?;
+                    let cmd = build_text_based_reorder_commands(
+                        &scene_clone,
+                        id,
+                        move_up,
+                        &linked_layers,
+                    )
+                    .ok_or("並べ替え対象または隣接区間が見つかりません")?;
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({"reordered": id, "direction": if move_up { "up" } else { "down" }}).to_string() }]
+                    }))
+                }
+                other => Err(format!("unknown text_based_edit action: {other}")),
+            }
+        }
+        "detect_beats" => {
+            let cfg = BeatDetectionConfig {
+                min_bpm: finite_clamped(args.get("min_bpm"), 70.0, 40.0, 220.0) as f32,
+                max_bpm: finite_clamped(args.get("max_bpm"), 180.0, 50.0, 260.0) as f32,
+                sensitivity: finite_clamped(args.get("sensitivity"), 1.35, 0.8, 3.5) as f32,
+                beats_per_bar: (args
+                    .get("beats_per_bar")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(4) as usize)
+                    .clamp(1, 12),
+            };
+            let scene_id = guard.project.active_scene_id;
+            let total_dur = guard
+                .project
+                .active_scene()
+                .map(|s| s.total_duration())
+                .ok_or("no active scene")?;
+            let sr = guard.project.settings.audio_sample_rate.max(8_000);
+            let graph =
+                AudioGraph::from_project_scene(&guard.project, scene_id, guard.folder.as_ref(), sr);
+            let capped = total_dur.min(RationalTime::from_seconds(300.0));
+            let pcm = if graph.clips.is_empty() {
+                Vec::new()
+            } else {
+                graph.render_range(RationalTime::ZERO, capped)
+            };
+            let result = detect_audio_beats(&pcm, sr, &cfg);
+
+            let mut markers_added = 0usize;
+            if args
+                .get("add_markers")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && !result.beats.is_empty()
+            {
+                let downbeats_only = args
+                    .get("downbeats_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let pairs: Vec<(f64, bool)> = result
+                    .beats
+                    .iter()
+                    .map(|b| (b.time_sec, b.is_downbeat))
+                    .collect();
+                if let Some(cmd) = build_beat_markers_command(&pairs, downbeats_only) {
+                    if let EditCommand::Batch { ref commands, .. } = cmd {
+                        markers_added = commands.len();
+                    }
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            let mut cuts_performed = 0usize;
+            if let Some(arr) = args.get("cut_item_ids").and_then(Value::as_array)
+                && !result.beats.is_empty()
+            {
+                let ids: Vec<Uuid> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                    .collect();
+                let beat_secs: Vec<f64> = result.beats.iter().map(|b| b.time_sec).collect();
+                let scene_clone = guard
+                    .project
+                    .active_scene()
+                    .cloned()
+                    .ok_or("no active scene")?;
+                if let Some((cuts, cmd)) = build_beat_cut_commands(&scene_clone, &ids, &beat_secs) {
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    cuts_performed = cuts;
+                }
+            }
+
+            let beats_json: Vec<Value> = result
+                .beats
+                .iter()
+                .map(|b| {
+                    json!({
+                        "time_sec": b.time_sec,
+                        "strength": b.strength,
+                        "is_downbeat": b.is_downbeat,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "bpm": result.bpm,
+                        "confidence": result.confidence,
+                        "beat_count": result.beats.len(),
+                        "markers_added": markers_added,
+                        "cuts_performed": cuts_performed,
+                        "beats": beats_json,
+                    }).to_string()
+                }]
+            }))
+        }
+        "set_color_grade" => {
+            let mut emitted_luts: Vec<String> = Vec::new();
+            if args
+                .get("emit_sample_luts")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let dir = guard
+                    .folder
+                    .as_ref()
+                    .map(|f| f.luts_dir())
+                    .unwrap_or_else(|| std::env::temp_dir().join("ve_mcp_luts"));
+                let paths = emit_sample_cube_luts(&dir)?;
+                emitted_luts = paths.into_iter().map(|p| p.display().to_string()).collect();
+            }
+
+            let mut grade = if args.get("reset").and_then(Value::as_bool).unwrap_or(false) {
+                SceneColorGrade::default()
+            } else {
+                guard
+                    .project
+                    .active_scene()
+                    .map(|s| s.color_grade.clone())
+                    .ok_or("no active scene")?
+            };
+            if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                grade.enabled = en;
+            } else if !args.get("reset").and_then(Value::as_bool).unwrap_or(false) {
+                grade.enabled = true;
+            }
+            if args.get("exposure").is_some() {
+                grade.exposure = finite_clamped(args.get("exposure"), 0.0, -3.0, 3.0) as f32;
+            }
+            if args.get("contrast").is_some() {
+                grade.contrast = finite_clamped(args.get("contrast"), 1.0, 0.2, 2.5) as f32;
+            }
+            if args.get("saturation").is_some() {
+                grade.saturation = finite_clamped(args.get("saturation"), 1.0, 0.0, 2.5) as f32;
+            }
+            if args.get("temperature").is_some() {
+                grade.temperature = finite_clamped(args.get("temperature"), 0.0, -1.0, 1.0) as f32;
+            }
+            if args.get("tint").is_some() {
+                grade.tint = finite_clamped(args.get("tint"), 0.0, -1.0, 1.0) as f32;
+            }
+            let parse_vec3 = |key: &str, lo: f64, hi: f64| -> Option<[f32; 3]> {
+                let arr = args.get(key)?.as_array()?;
+                if arr.len() != 3 {
+                    return None;
+                }
+                Some([
+                    finite_clamped(arr.first(), 0.0, lo, hi) as f32,
+                    finite_clamped(arr.get(1), 0.0, lo, hi) as f32,
+                    finite_clamped(arr.get(2), 0.0, lo, hi) as f32,
+                ])
+            };
+            if let Some(v) = parse_vec3("lift", -0.5, 0.5) {
+                grade.lift = v;
+            }
+            if let Some(v) = parse_vec3("gamma", -0.5, 0.5) {
+                grade.gamma = v;
+            }
+            if let Some(v) = parse_vec3("gain", 0.2, 2.5) {
+                grade.gain = v;
+            }
+            if let Some(lp) = args.get("lut_path").and_then(Value::as_str) {
+                grade.lut_path = if lp.trim().is_empty() {
+                    None
+                } else {
+                    Some(lp.trim().to_string())
+                };
+            }
+            if args.get("lut_intensity").is_some() {
+                grade.lut_intensity =
+                    finite_clamped(args.get("lut_intensity"), 1.0, 0.0, 1.0) as f32;
+            }
+
+            let sess = &mut *guard;
+            sess.bus
+                .execute(
+                    &mut sess.project,
+                    EditCommand::SetSceneColorGrade {
+                        grade: grade.clone(),
+                    },
+                    CommandSource::Mcp,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "color_grade": grade,
+                        "emitted_luts": emitted_luts
+                    }).to_string()
+                }]
+            }))
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -3365,6 +3798,91 @@ mod tests {
             let it = &g.project.active_scene().unwrap().layers[1].items[0];
             assert!(it.text_style.box_enabled);
             assert_eq!(it.effect_chain.len(), 2);
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v08_mcp_tools_text_edit_beats_and_color_grade() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v08_{}", Uuid::new_v4()));
+        let mut proj = Project::new("McpV08", ProjectSettings::default());
+        let mk_sub = |name: &str, s: f64, d: f64, txt: &str| {
+            TimelineItem::new(
+                name,
+                RationalTime::from_seconds(s),
+                RationalTime::from_seconds(d),
+                ItemKind::Text {
+                    content: txt.into(),
+                    font_family: "sans-serif".into(),
+                    font_size: 44.0,
+                    color: RgbaColor::WHITE,
+                    animator: TextAnimator::default(),
+                },
+            )
+        };
+        proj.active_scene_mut().unwrap().layers[1].items.extend([
+            mk_sub("T1", 0.0, 2.0, "えーと…"),
+            mk_sub("T2", 2.0, 2.0, "本編スタート！"),
+            mk_sub("T3", 4.0, 2.0, "まとめです"),
+        ]);
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let mut ed = EditorSession::new(proj);
+        ed.folder = Some(folder);
+        let session = Arc::new(Mutex::new(ed));
+
+        // 1. text_based_edit list + remove_fillers
+        let listed = call_tool(&session, "text_based_edit", &json!({"action": "list"})).unwrap();
+        assert!(
+            listed["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"is_filler_only\":true")
+        );
+        call_tool(
+            &session,
+            "text_based_edit",
+            &json!({"action": "remove_fillers"}),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            let items = &g.project.active_scene().unwrap().layers[1].items;
+            assert_eq!(items.len(), 2);
+            assert!((items[0].start.as_seconds() - 0.0).abs() < 1e-6);
+        }
+
+        // 2. detect_beats (no audio -> safe zero result)
+        let beats = call_tool(&session, "detect_beats", &json!({})).unwrap();
+        assert!(
+            beats["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"beat_count\":0")
+        );
+
+        // 3. set_color_grade + emit_sample_luts + builtin LUT
+        let cg = call_tool(
+            &session,
+            "set_color_grade",
+            &json!({
+                "enabled": true,
+                "exposure": 0.35,
+                "temperature": 0.25,
+                "gain": [1.1, 1.0, 0.9],
+                "lut_path": "builtin:teal_orange",
+                "lut_intensity": 0.75,
+                "emit_sample_luts": true
+            }),
+        )
+        .unwrap();
+        let cg_txt = cg["content"][0]["text"].as_str().unwrap();
+        assert!(cg_txt.contains("teal_orange_cinema.cube"));
+        {
+            let g = session.lock().unwrap();
+            let grade = &g.project.active_scene().unwrap().color_grade;
+            assert!(grade.enabled);
+            assert_eq!(grade.lut_path.as_deref(), Some("builtin:teal_orange"));
+            assert!((grade.exposure - 0.35).abs() < 1e-4);
         }
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

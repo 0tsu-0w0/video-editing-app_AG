@@ -10,6 +10,7 @@ pub mod lipsync;
 pub mod preset;
 pub mod project;
 pub mod script_import;
+pub mod text_edit;
 pub mod time;
 pub mod timeline_ops;
 
@@ -37,19 +38,25 @@ pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
     BezierMask, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer,
     LayerId, MaskMode, MaskVertex, MediaKind, MotionTrackConfig, PlaybackSettings, Project,
-    ProjectSettings, RgbaColor, Scene, SceneId, ScenePreset, ShapeKind, TextAnimator, TextStyle,
-    TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode, TrackPointSample, Transform2D,
-    TransitionKind,
+    ProjectSettings, RgbaColor, Scene, SceneColorGrade, SceneId, ScenePreset, ShapeKind,
+    TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
+    TrackPointSample, Transform2D, TransitionKind,
 };
 pub use script_import::{
     ScriptBuildConfig, ScriptLine, build_script_timeline_commands, parse_script_auto,
     parse_script_csv, parse_script_markdown,
 };
+pub use text_edit::{
+    DEFAULT_FILLERS, TextEditCutResult, TranscriptEntry, analyze_fillers,
+    build_strip_filler_words_commands, build_text_based_delete_commands,
+    build_text_based_reorder_commands, extract_transcript_entries, strip_control_tags,
+};
 pub use time::{FrameRate, RationalTime, TICKS_PER_SECOND, TimeInput};
 pub use timeline_ops::{
     AlignMode, JumpCutConfig, MotionPreset, SelectDirection, SpeechInterval, TextSearchMatch,
-    build_align_commands, build_close_gaps_commands, build_fit_duration_to_layer_commands,
-    build_jump_cut_commands, build_motion_preset_commands, build_replace_text_commands,
-    build_ripple_delete_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
+    build_align_commands, build_beat_cut_commands, build_beat_markers_command,
+    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_jump_cut_commands,
+    build_motion_preset_commands, build_replace_text_commands, build_ripple_delete_commands,
+    build_snap_to_beats_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
     search_text_items, select_items_from_time, select_layer_items, wrap_subtitle_japanese,
 };

@@ -1,5 +1,6 @@
 mod asset_browser;
 mod audio_ai_panel;
+mod color_scopes;
 mod exporter;
 mod font_picker;
 mod graph_editor;
@@ -15,6 +16,7 @@ mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
 use audio_ai_panel::AudioAi3DPanel;
+use color_scopes::ColorScopesState;
 use eframe::egui_wgpu;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
 use exporter::{ExportJobHandle, ExportJobRequest, ExportProgressSnapshot};
@@ -41,8 +43,8 @@ use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, VideoEncoder};
 use ve_plugin_api::WasmPluginManager;
 use ve_render::{
-    GpuPostProcessPass, RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, register_shader_dir,
-    track_point_in_scene,
+    GpuPostProcessPass, RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, compute_video_scopes,
+    register_shader_dir, track_point_in_scene,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +108,7 @@ struct EditorApp {
     asset_browser: AssetBrowserPanel,
     font_picker: FontPickerState,
     inspector_extras: InspectorExtrasState,
+    color_scopes: ColorScopesState,
     audio_ai_panel: AudioAi3DPanel,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
@@ -296,6 +299,7 @@ impl EditorApp {
             asset_browser: AssetBrowserPanel::new(),
             font_picker: FontPickerState::new(),
             inspector_extras: InspectorExtrasState::default(),
+            color_scopes: ColorScopesState::default(),
             audio_ai_panel: AudioAi3DPanel::default(),
             waveforms: BTreeMap::new(),
             render_graph,
@@ -590,14 +594,32 @@ impl TabViewer for EditorTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             Pane::Preview => {
-                let mut sess = self.app.session.lock().unwrap();
-                if self.app.preview_canvas.show(
-                    ui,
-                    self.app.preview_tex_id,
-                    &mut sess,
-                    self.app.last_ram_cached_hit,
-                ) {
-                    self.app.preview_dirty = true;
+                if self.app.color_scopes.show_scopes {
+                    let scopes_h = 170.0;
+                    let total_h = ui.available_height();
+                    let preview_h = (total_h - scopes_h).max(160.0);
+                    ui.allocate_ui(egui::Vec2::new(ui.available_width(), preview_h), |ui| {
+                        let mut sess = self.app.session.lock().unwrap();
+                        if self.app.preview_canvas.show(
+                            ui,
+                            self.app.preview_tex_id,
+                            &mut sess,
+                            self.app.last_ram_cached_hit,
+                        ) {
+                            self.app.preview_dirty = true;
+                        }
+                    });
+                    self.app.color_scopes.show_video_scopes_panel(ui);
+                } else {
+                    let mut sess = self.app.session.lock().unwrap();
+                    if self.app.preview_canvas.show(
+                        ui,
+                        self.app.preview_tex_id,
+                        &mut sess,
+                        self.app.last_ram_cached_hit,
+                    ) {
+                        self.app.preview_dirty = true;
+                    }
                 }
             }
             Pane::Timeline => {
@@ -1317,6 +1339,15 @@ impl TabViewer for EditorTabViewer<'_> {
                     }
 
                     ui.separator();
+                    {
+                        let mut g = self.app.session.lock().unwrap();
+                        if self.app.color_scopes.show_color_grading_ui(ui, &mut g) {
+                            self.app.ram_preview.clear();
+                            self.app.preview_dirty = true;
+                        }
+                    }
+
+                    ui.separator();
                     ui.heading("アセット管理・オフライン再リンク");
                     let mut sess = self.app.session.lock().unwrap();
                     if sess.project.assets.is_empty() {
@@ -1819,6 +1850,14 @@ impl eframe::App for EditorApp {
                     self.ram_preview.clear();
                     self.preview_dirty = true;
                 }
+                if ui
+                    .toggle_value(&mut self.color_scopes.show_scopes, "📊 スコープ")
+                    .on_hover_text("Waveform / RGBパレード / ベクトルスコープ / ヒストグラムを表示")
+                    .changed()
+                    && self.color_scopes.show_scopes
+                {
+                    self.preview_dirty = true;
+                }
                 ui.weak(format!(
                     "Precomp: {}/{} | Proxy={}",
                     self.render_graph.cache_hits,
@@ -2099,6 +2138,9 @@ impl eframe::App for EditorApp {
                     };
 
                     if let Some(linear_img) = rendered {
+                        if self.color_scopes.show_scopes {
+                            self.color_scopes.latest_scopes = compute_video_scopes(&linear_img);
+                        }
                         pipe.upload_process_and_present(
                             &wgpu_state.device,
                             &wgpu_state.queue,

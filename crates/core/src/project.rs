@@ -986,6 +986,52 @@ impl TimelineMarker {
     }
 }
 
+/// v0.8 #13: 非破壊シーンカラーグレーディング（3-Way Lift/Gamma/Gain・色温度/ティント・.cube 3D LUT）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneColorGrade {
+    pub enabled: bool,
+    /// 露出補正 (EV: -3.0..=3.0)
+    pub exposure: f32,
+    /// コントラスト (0.2..=2.5, 既定 1.0)
+    pub contrast: f32,
+    /// 彩度 (0.0..=2.5, 既定 1.0)
+    pub saturation: f32,
+    /// 色温度 (-1.0 青〜+1.0 暖色)
+    pub temperature: f32,
+    /// ティント (-1.0 緑〜+1.0 マゼンタ)
+    pub tint: f32,
+    /// 3-Way カラーホイール Lift（シャドウ RGB オフセット -0.5..=0.5）
+    pub lift: [f32; 3],
+    /// 3-Way カラーホイール Gamma（ミッドトーン RGB オフセット -0.5..=0.5）
+    pub gamma: [f32; 3],
+    /// 3-Way カラーホイール Gain（ハイライト RGB 乗算 0.2..=2.5, 既定 [1,1,1]）
+    pub gain: [f32; 3],
+    /// 適用する `.cube` 3D LUT（ファイルパスまたは `builtin:<id>`）
+    #[serde(default)]
+    pub lut_path: Option<String>,
+    /// 3D LUT 適用強度 (0.0..=1.0)
+    #[serde(default = "default_one_f32")]
+    pub lut_intensity: f32,
+}
+
+impl Default for SceneColorGrade {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+            lift: [0.0, 0.0, 0.0],
+            gamma: [0.0, 0.0, 0.0],
+            gain: [1.0, 1.0, 1.0],
+            lut_path: None,
+            lut_intensity: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     pub id: SceneId,
@@ -1004,6 +1050,9 @@ pub struct Scene {
     /// v0.6 #4: 発話レイヤー連動 BGM 自動ダッキング設定
     #[serde(default)]
     pub audio_ducking: AudioDuckingConfig,
+    /// v0.8 #13: シーン全体のカラーグレーディング＆`.cube` 3D LUT 設定
+    #[serde(default)]
+    pub color_grade: SceneColorGrade,
     /// タイムラインマーカー一覧（YouTube チャプター生成対応）
     #[serde(default)]
     pub markers: Vec<TimelineMarker>,
@@ -1022,6 +1071,7 @@ impl Scene {
             master_audio_effects: Vec::new(),
             target_lufs: None,
             audio_ducking: AudioDuckingConfig::default(),
+            color_grade: SceneColorGrade::default(),
             markers: Vec::new(),
             layers: vec![
                 Layer::new("Layer 1"),

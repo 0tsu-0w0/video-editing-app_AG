@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0] - 2026-11-21
+
+爆速カット・音ハメ編集・プロ級カラーグレーディングを統合する v0.8 ロードマップ（#11〜#13）をすべて実装しました。
+
+### #11 テキストベース編集（文字起こし連動リップルカット ＆ フィラー自動除去）
+* `ve-core`: `text_edit` モジュールを追加（`extract_transcript_entries`・日本語/英語フィラー検出 `analyze_fillers`・語句掃除 `build_strip_filler_words_commands`・連動レイヤー一括リップルカット `build_text_based_delete_commands`・隣接区間スワップ並べ替え `build_text_based_reorder_commands`、すべて 1 ステップ Undo 対応）
+* `ve-app`: `AudioAi3DPanel` に「9. テキストベース編集」パネルを追加（クリックシーク、複数選択一括カット、⬆/⬇ 区間入替、フィラー一括カット＆セリフ内語句掃除）
+* `ve-mcp`: MCP ツール `text_based_edit` を追加
+
+### #12 BGM ビート自動検出 ＆ ビートスナップ編集
+* `ve-audio`: Pure-Rust オンセット包絡＋自己相関 BPM 推定＋位相アライメント（`detect_audio_beats` / `detect_beats_from_waveform`）を実装
+* `ve-core`: ビート自動カット（`build_beat_cut_commands`）・最寄りビート整列（`build_snap_to_beats_commands`）・小節/全拍マーカー配置（`build_beat_markers_command`）を実装
+* `ve-app` / `ve-mcp`: タイムライン「🥁 ビート検出」バー・ビートグリッド縦線描画（小節頭ゴールド / 拍シアン）・ドラッグ/トリムのビート自動吸着、および MCP ツール `detect_beats` を追加
+
+### #13 `.cube` 3D LUT 対応 ＆ 3-Way カラーグレーディング ＆ リアルタイムビデオスコープ
+* `ve-core`: 非破壊 `SceneColorGrade`（露出・コントラスト・彩度・色温度・ティント・3-Way Lift/Gamma/Gain・`.cube` LUT パス/強度）と `EditCommand::SetSceneColorGrade`、`ProjectFolder::luts_dir()` を追加
+* `ve-render`: Adobe / DaVinci 標準 `.cube` 3D LUT パーサ＆四面体補間 `CubeLut3D::sample_tetrahedral`、組み込みシネマルック 3 種＋サンプル `.cube` 生成 `emit_sample_cube_luts`、`RenderGraph` 最終段への統合（プレビュー／RAM／書き出し／MCP 完全一致）、および高速ビデオスコープ解析 `compute_video_scopes`（Waveform / RGB Parade / Vectorscope / RGBY Histogram）を実装
+* `ve-app` / `ve-mcp`: ドラッグ操作可能な 3-Way カラーホイール＆`.cube` ピッカー UI、プレビュー連動リアルタイム 4 分割ビデオスコープパネル、および MCP ツール `set_color_grade` を追加（全 47 MCP ツール）
+
 ## [0.7.1] - 2026-11-21
 
 v0.3〜v0.4 の残課題（プリセット管理・専用インスペクタ・ショートカット・マーカー編集・UI 残骸整理・ドキュメント最新化）をすべて補完しました。

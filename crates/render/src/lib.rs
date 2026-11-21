@@ -1,4 +1,5 @@
 pub mod color;
+pub mod color_grading;
 pub mod graph;
 pub mod hot_shader;
 pub mod mask_tracker;
@@ -8,6 +9,11 @@ pub mod sprite;
 pub mod text;
 
 pub use color::{LinearImage, LinearPremul, linear_to_srgb, srgb_to_linear};
+pub use color_grading::{
+    BUILTIN_LUT_PRESETS, CubeLut3D, HIST_BINS, PARADE_BINS, PARADE_COLS, VECTORSCOPE_SIZE,
+    VideoScopeData, WAVEFORM_BINS, WAVEFORM_COLS, apply_scene_color_grade, compute_video_scopes,
+    emit_sample_cube_luts,
+};
 pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph};
 pub use hot_shader::{
     HotShaderEntry, ShaderHotReloader, ShaderReloadStatus, register_shader_dir, validate_wgsl,
