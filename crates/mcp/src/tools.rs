@@ -11,19 +11,22 @@ use ve_audio::{AudioGraph, BeatDetectionConfig, detect_audio_beats};
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, Camera3D,
     CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode, EffectPreset,
-    FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, LipSyncMode,
-    MaskMode, MaskVertex, MediaKind, MotionPreset, PsdCharacterConfig, RationalTime, RgbaColor,
-    SceneColorGrade, ScriptBuildConfig, ShapeKind, TextAnimator, TextStylePreset, TimelineItem,
-    TimelineMarker, TrackMatte, TrackMatteMode, base64_encode, build_align_commands,
-    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
-    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_motion_preset_commands,
+    FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, Light3DType,
+    LipSyncMode, MaskMode, MaskVertex, MediaKind, MotionPreset, ParticleConfig, ParticlePreset,
+    ProjectTemplate, PsdCharacterConfig, RationalTime, RgbaColor, SceneColorGrade,
+    ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem,
+    TimelineMarker, TrackMatte, TrackMatteMode, VectorShapeConfig, base64_encode,
+    build_align_commands, build_bake_expression_command, build_beat_cut_commands,
+    build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
+    build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
     build_replace_text_commands, build_script_timeline_commands, build_shorts_clip_scene_command,
     build_strip_filler_words_commands, build_text_based_delete_commands,
-    build_text_based_reorder_commands, detect_speech_intervals_from_rms, export_ass_subtitles,
-    export_otio_json, export_srt_subtitles, extract_highlight_candidates,
-    extract_transcript_entries, format_youtube_chapters, parse_ass_subtitles, parse_aviutl_exo,
-    parse_script_auto, parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
-    wrap_subtitle_japanese,
+    build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
+    compile_expression, detect_speech_intervals_from_rms, evaluate_item_property,
+    export_ass_subtitles, export_otio_json, export_srt_subtitles, extract_highlight_candidates,
+    extract_motion_template_from_scene, extract_transcript_entries, format_youtube_chapters,
+    parse_ass_subtitles, parse_aviutl_exo, parse_script_auto, parse_srt_subtitles,
+    search_text_items, subtitle_entries_to_commands, wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, decode_audio_file, write_wav_pcm16,
@@ -695,6 +698,91 @@ pub fn tool_definitions() -> Value {
     ]) {
         tools.extend(v08_extra);
     }
+    if let Value::Array(v09_extra) = json!([
+        {
+            "name": "set_expression",
+            "description": "Pure-Rust エクスプレッション（式アニメーション: wiggle/loopOut/audio_band/layer参照等）の設定・解除・一覧・即時評価・キーフレーム焼き込み(Bake)を行う（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action", "id"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set", "clear", "list", "evaluate", "bake"]
+                    },
+                    "id": { "type": "string" },
+                    "property": { "type": "string" },
+                    "expression": { "type": "string" },
+                    "time_sec": { "type": "number" },
+                    "step_frames": { "type": "integer", "default": 3 }
+                }
+            }
+        },
+        {
+            "name": "manage_templates",
+            "description": "モーショングラフィックス テンプレート（.mogrt 相当・レスポンシブ時間伸縮）およびプロジェクトテンプレートの一覧・配置・公開パラメータ更新・現シーン保存を行う（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "instantiate", "update_instance", "save_from_scene", "list_project_templates", "save_project_template"]
+                    },
+                    "template_id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "category": { "type": "string" },
+                    "layer_index": { "type": "integer", "default": 1 },
+                    "start_sec": { "type": "number", "default": 0.0 },
+                    "duration_sec": { "type": "number" },
+                    "intro_sec": { "type": "number", "default": 0.45 },
+                    "outro_sec": { "type": "number", "default": 0.45 },
+                    "item_id": { "type": "string" },
+                    "values": { "type": "object" }
+                }
+            }
+        },
+        {
+            "name": "set_scene_motion_blur",
+            "description": "シャッター角度ベースモーションブラー、3D ディレクショナル／ポイントライト＆ドロップシャドウキャッチャー、およびパーティクル／ベクターシェイプ設定を操作する（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "set_motion_blur", "set_light_3d", "set_particle", "set_vector_shape"]
+                    },
+                    "enabled": { "type": "boolean" },
+                    "shutter_angle_deg": { "type": "number" },
+                    "shutter_phase_deg": { "type": "number" },
+                    "preview_samples": { "type": "integer" },
+                    "export_samples": { "type": "integer" },
+                    "light_type": { "type": "string", "enum": ["directional", "point"] },
+                    "position": { "type": "array", "items": { "type": "number" } },
+                    "intensity": { "type": "number" },
+                    "ambient": { "type": "number" },
+                    "cast_shadow": { "type": "boolean" },
+                    "shadow_softness": { "type": "number" },
+                    "shadow_opacity": { "type": "number" },
+                    "item_id": { "type": "string" },
+                    "preset": { "type": "string" },
+                    "count": { "type": "integer" },
+                    "seed": { "type": "integer" },
+                    "speed": { "type": "number" },
+                    "size_px": { "type": "number" },
+                    "trim_start": { "type": "number" },
+                    "trim_end": { "type": "number" },
+                    "trim_offset": { "type": "number" },
+                    "stroke_width": { "type": "number" },
+                    "dash_length": { "type": "number" },
+                    "dash_gap": { "type": "number" }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v09_extra);
+    }
     Value::Array(tools)
 }
 
@@ -894,6 +982,34 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                     height: finite_clamped(args.get("height"), 100.0, 1.0, 8192.0) as f32,
                     color: RgbaColor::WHITE,
                 },
+                "particle_emitter" => {
+                    let preset = match args
+                        .get("preset")
+                        .and_then(Value::as_str)
+                        .unwrap_or("confetti")
+                    {
+                        "snow" => ParticlePreset::Snow,
+                        "sparks" => ParticlePreset::Sparks,
+                        "light_orbs" => ParticlePreset::LightOrbs,
+                        "speed_lines" => ParticlePreset::SpeedLines,
+                        "action_lines" => ParticlePreset::ActionLines,
+                        _ => ParticlePreset::Confetti,
+                    };
+                    ItemKind::ParticleEmitter {
+                        config: ParticleConfig::for_preset(preset),
+                    }
+                }
+                "vector_shape" => {
+                    let config = match args.get("preset").and_then(Value::as_str).unwrap_or("star")
+                    {
+                        "arrow" => VectorShapeConfig::arrow(),
+                        "underline_wave" => VectorShapeConfig::underline_wave(RgbaColor::WHITE),
+                        "speech_bubble" => VectorShapeConfig::speech_bubble(),
+                        "circle_ring" => VectorShapeConfig::circle_ring(),
+                        _ => VectorShapeConfig::star(),
+                    };
+                    ItemKind::VectorShape { config }
+                }
                 _ => ItemKind::Text {
                     content: args
                         .get("content")
@@ -3390,8 +3506,625 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 }]
             }))
         }
+        "set_expression" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing action")?;
+            let id = parse_uuid(args, "id")?;
+            match action {
+                "list" => {
+                    let scene = guard.project.active_scene().ok_or("no active scene")?;
+                    let item = scene
+                        .layers
+                        .iter()
+                        .flat_map(|l| l.items.iter())
+                        .find(|i| i.id == id)
+                        .ok_or_else(|| format!("object not found: {id}"))?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": id,
+                                "expressions": item.expressions
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "set" | "clear" => {
+                    let property = args
+                        .get("property")
+                        .and_then(Value::as_str)
+                        .ok_or("missing property")?
+                        .to_string();
+                    let expr = if action == "clear" {
+                        None
+                    } else {
+                        let s = args
+                            .get("expression")
+                            .and_then(Value::as_str)
+                            .ok_or("missing expression")?;
+                        compile_expression(s).map_err(|e| e.to_string())?;
+                        Some(s.to_string())
+                    };
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetExpression {
+                                item_id: id,
+                                property: property.clone(),
+                                expression: expr.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": id,
+                                "property": property,
+                                "expression": expr
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "evaluate" => {
+                    let property = args
+                        .get("property")
+                        .and_then(Value::as_str)
+                        .ok_or("missing property")?;
+                    let t = args
+                        .get("time_sec")
+                        .and_then(Value::as_f64)
+                        .map(RationalTime::from_seconds)
+                        .unwrap_or(guard.playhead);
+                    let scene = guard.project.active_scene().ok_or("no active scene")?;
+                    let (l_idx, item) = scene
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .find_map(|(li, l)| l.items.iter().find(|i| i.id == id).map(|it| (li, it)))
+                        .ok_or_else(|| format!("object not found: {id}"))?;
+                    let val = evaluate_item_property(scene, l_idx, item, property, t, [0.0; 4]);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": id,
+                                "property": property,
+                                "time_sec": t.as_seconds(),
+                                "value": val
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "bake" => {
+                    let property = args
+                        .get("property")
+                        .and_then(Value::as_str)
+                        .ok_or("missing property")?;
+                    let step_frames = args
+                        .get("step_frames")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(3)
+                        .clamp(1, 60) as u32;
+                    let cmd = {
+                        let scene = guard.project.active_scene().ok_or("no active scene")?;
+                        let (l_idx, item) = scene
+                            .layers
+                            .iter()
+                            .enumerate()
+                            .find_map(|(li, l)| {
+                                l.items.iter().find(|i| i.id == id).map(|it| (li, it))
+                            })
+                            .ok_or_else(|| format!("object not found: {id}"))?;
+                        build_bake_expression_command(
+                            scene,
+                            l_idx,
+                            item,
+                            property,
+                            step_frames,
+                            |_| [0.0; 4],
+                        )?
+                    };
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "baked": true,
+                                "item_id": id,
+                                "property": property,
+                                "step_frames": step_frames
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown set_expression action: {other}")),
+            }
+        }
+        "manage_templates" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing action")?;
+            let all_motion_templates = || {
+                let mut list = builtin_motion_templates();
+                if let Some(folder) = guard.folder.as_ref() {
+                    list.extend(folder.load_motion_templates());
+                }
+                list
+            };
+            match action {
+                "list" => {
+                    let list = all_motion_templates();
+                    let summary: Vec<Value> = list
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "id": t.id,
+                                "name": t.name,
+                                "category": t.category,
+                                "description": t.description,
+                                "default_duration_sec": t.responsive_time.default_duration_sec,
+                                "exposed_params": t.exposed_params
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "templates": summary }).to_string() }]
+                    }))
+                }
+                "instantiate" => {
+                    let tpl_id = args
+                        .get("template_id")
+                        .and_then(Value::as_str)
+                        .ok_or("missing template_id")?;
+                    let list = all_motion_templates();
+                    let tpl = list
+                        .iter()
+                        .find(|t| t.id == tpl_id || t.name == tpl_id)
+                        .ok_or_else(|| format!("template not found: {tpl_id}"))?
+                        .clone();
+                    let layer_index =
+                        args.get("layer_index").and_then(Value::as_u64).unwrap_or(1) as usize;
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        guard.playhead.as_seconds(),
+                        0.0,
+                        86_400.0,
+                    ));
+                    let dur_opt = args.get("duration_sec").and_then(Value::as_f64);
+                    let overrides = parse_template_param_values(args.get("values"));
+                    let cmd = build_instantiate_template_command(
+                        &tpl,
+                        layer_index,
+                        start,
+                        dur_opt,
+                        &overrides,
+                    );
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    let created_id = sess
+                        .project
+                        .active_scene()
+                        .and_then(|s| s.layers.get(layer_index))
+                        .and_then(|l| l.items.last())
+                        .map(|i| i.id);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "instantiated": tpl.id,
+                                "created_item_id": created_id
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "update_instance" => {
+                    let item_id = parse_uuid(args, "item_id")?;
+                    let values = parse_template_param_values(args.get("values"));
+                    let duration_sec = args.get("duration_sec").and_then(Value::as_f64);
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::UpdateTemplateInstance {
+                                item_id,
+                                values,
+                                duration_sec,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "updated": item_id }).to_string() }]
+                    }))
+                }
+                "save_from_scene" => {
+                    let folder = guard
+                        .folder
+                        .as_ref()
+                        .ok_or("project folder not initialized")?
+                        .clone();
+                    let scene = guard
+                        .project
+                        .active_scene()
+                        .ok_or("no active scene")?
+                        .clone();
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("カスタムテンプレート");
+                    let category = args
+                        .get("category")
+                        .and_then(Value::as_str)
+                        .unwrap_or("カスタム");
+                    let intro = finite_clamped(args.get("intro_sec"), 0.45, 0.0, 10.0);
+                    let outro = finite_clamped(args.get("outro_sec"), 0.45, 0.0, 10.0);
+                    let tpl =
+                        extract_motion_template_from_scene(&scene, name, category, intro, outro);
+                    let saved = folder
+                        .save_motion_template(&tpl)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "saved_path": saved.display().to_string(),
+                                "template_id": tpl.id,
+                                "exposed_count": tpl.exposed_params.len()
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "list_project_templates" => {
+                    let mut list = builtin_project_templates();
+                    if let Some(folder) = guard.folder.as_ref() {
+                        list.extend(folder.load_project_templates());
+                    }
+                    let summary: Vec<Value> = list
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "id": t.id,
+                                "name": t.name,
+                                "description": t.description
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "project_templates": summary }).to_string() }]
+                    }))
+                }
+                "save_project_template" => {
+                    let folder = guard
+                        .folder
+                        .as_ref()
+                        .ok_or("project folder not initialized")?
+                        .clone();
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("プロジェクト雛形");
+                    let tpl = ProjectTemplate {
+                        id: format!("proj_custom_{}", &Uuid::new_v4().simple().to_string()[..6]),
+                        name: name.to_string(),
+                        description: "プロジェクトから保存された雛形".to_string(),
+                        project: guard.project.clone(),
+                    };
+                    let saved = folder
+                        .save_project_template(&tpl)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "saved_path": saved.display().to_string(),
+                                "id": tpl.id
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown manage_templates action: {other}")),
+            }
+        }
+        "set_scene_motion_blur" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing action")?;
+            match action {
+                "get" => {
+                    let scene = guard.project.active_scene().ok_or("no active scene")?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "motion_blur": scene.motion_blur,
+                                "light": scene.camera.light
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "set_motion_blur" => {
+                    let mut mb = guard
+                        .project
+                        .active_scene()
+                        .ok_or("no active scene")?
+                        .motion_blur;
+                    if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                        mb.enabled = en;
+                    }
+                    if args.get("shutter_angle_deg").is_some() {
+                        mb.shutter_angle_deg =
+                            finite_clamped(args.get("shutter_angle_deg"), 180.0, 0.0, 360.0) as f32;
+                    }
+                    if args.get("shutter_phase_deg").is_some() {
+                        mb.shutter_phase_deg =
+                            finite_clamped(args.get("shutter_phase_deg"), -90.0, -180.0, 180.0)
+                                as f32;
+                    }
+                    if let Some(ps) = args.get("preview_samples").and_then(Value::as_u64) {
+                        mb.preview_samples = ps.clamp(1, 8) as u32;
+                    }
+                    if let Some(es) = args.get("export_samples").and_then(Value::as_u64) {
+                        mb.export_samples = es.clamp(1, 16) as u32;
+                    }
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetMotionBlur { motion_blur: mb },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "motion_blur": mb }).to_string() }]
+                    }))
+                }
+                "set_light_3d" => {
+                    let mut cam = guard
+                        .project
+                        .active_scene()
+                        .ok_or("no active scene")?
+                        .camera;
+                    if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                        cam.light.enabled = en;
+                        if en {
+                            cam.enabled = true;
+                        }
+                    }
+                    if let Some(lt) = args.get("light_type").and_then(Value::as_str) {
+                        cam.light.light_type = match lt {
+                            "point" => Light3DType::Point,
+                            _ => Light3DType::Directional,
+                        };
+                    }
+                    if let Some(arr) = args.get("position").and_then(Value::as_array)
+                        && arr.len() >= 3
+                    {
+                        cam.light.position = [
+                            finite_clamped(
+                                Some(&arr[0]),
+                                cam.light.position[0] as f64,
+                                -5000.0,
+                                5000.0,
+                            ) as f32,
+                            finite_clamped(
+                                Some(&arr[1]),
+                                cam.light.position[1] as f64,
+                                -5000.0,
+                                5000.0,
+                            ) as f32,
+                            finite_clamped(
+                                Some(&arr[2]),
+                                cam.light.position[2] as f64,
+                                -5000.0,
+                                5000.0,
+                            ) as f32,
+                        ];
+                    }
+                    if args.get("intensity").is_some() {
+                        cam.light.intensity =
+                            finite_clamped(args.get("intensity"), 1.15, 0.0, 3.0) as f32;
+                    }
+                    if args.get("ambient").is_some() {
+                        cam.light.ambient =
+                            finite_clamped(args.get("ambient"), 0.35, 0.0, 1.5) as f32;
+                    }
+                    if let Some(cs) = args.get("cast_shadow").and_then(Value::as_bool) {
+                        cam.light.cast_shadow = cs;
+                    }
+                    if args.get("shadow_softness").is_some() {
+                        cam.light.shadow_softness =
+                            finite_clamped(args.get("shadow_softness"), 8.0, 0.0, 24.0) as f32;
+                    }
+                    if args.get("shadow_opacity").is_some() {
+                        cam.light.shadow_opacity =
+                            finite_clamped(args.get("shadow_opacity"), 0.45, 0.0, 1.0) as f32;
+                    }
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetCamera3D { camera: cam },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "light": cam.light }).to_string() }]
+                    }))
+                }
+                "set_particle" => {
+                    let item_id = parse_uuid(args, "item_id")?;
+                    let mut cfg = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| {
+                            s.layers.iter().flat_map(|l| l.items.iter()).find_map(|i| {
+                                if i.id == item_id
+                                    && let ItemKind::ParticleEmitter { config } = i.kind
+                                {
+                                    return Some(config);
+                                }
+                                None
+                            })
+                        })
+                        .ok_or_else(|| format!("particle item not found: {item_id}"))?;
+                    if let Some(p) = args.get("preset").and_then(Value::as_str) {
+                        let preset = match p {
+                            "snow" => ParticlePreset::Snow,
+                            "sparks" => ParticlePreset::Sparks,
+                            "light_orbs" => ParticlePreset::LightOrbs,
+                            "speed_lines" => ParticlePreset::SpeedLines,
+                            "action_lines" => ParticlePreset::ActionLines,
+                            _ => ParticlePreset::Confetti,
+                        };
+                        cfg = ParticleConfig::for_preset(preset);
+                    }
+                    if let Some(c) = args.get("count").and_then(Value::as_u64) {
+                        cfg.count = c.clamp(1, 600) as u32;
+                    }
+                    if let Some(sd) = args.get("seed").and_then(Value::as_u64) {
+                        cfg.seed = sd;
+                    }
+                    if args.get("speed").is_some() {
+                        cfg.speed =
+                            finite_clamped(args.get("speed"), cfg.speed as f64, 0.0, 4000.0) as f32;
+                    }
+                    if args.get("size_px").is_some() {
+                        cfg.size_px =
+                            finite_clamped(args.get("size_px"), cfg.size_px as f64, 1.0, 200.0)
+                                as f32;
+                    }
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetParticleConfig {
+                                item_id,
+                                config: cfg,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "particle": cfg }).to_string() }]
+                    }))
+                }
+                "set_vector_shape" => {
+                    let item_id = parse_uuid(args, "item_id")?;
+                    let mut cfg = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| {
+                            s.layers.iter().flat_map(|l| l.items.iter()).find_map(|i| {
+                                if i.id == item_id
+                                    && let ItemKind::VectorShape { config } = &i.kind
+                                {
+                                    return Some(config.clone());
+                                }
+                                None
+                            })
+                        })
+                        .ok_or_else(|| format!("vector_shape item not found: {item_id}"))?;
+                    if args.get("trim_start").is_some() {
+                        cfg.trim_start =
+                            finite_clamped(args.get("trim_start"), cfg.trim_start as f64, 0.0, 1.0)
+                                as f32;
+                    }
+                    if args.get("trim_end").is_some() {
+                        cfg.trim_end =
+                            finite_clamped(args.get("trim_end"), cfg.trim_end as f64, 0.0, 1.0)
+                                as f32;
+                    }
+                    if args.get("trim_offset").is_some() {
+                        cfg.trim_offset = finite_clamped(
+                            args.get("trim_offset"),
+                            cfg.trim_offset as f64,
+                            -10.0,
+                            10.0,
+                        ) as f32;
+                    }
+                    if args.get("stroke_width").is_some() {
+                        cfg.stroke_width = finite_clamped(
+                            args.get("stroke_width"),
+                            cfg.stroke_width as f64,
+                            0.0,
+                            128.0,
+                        ) as f32;
+                    }
+                    if args.get("dash_length").is_some() {
+                        cfg.dash_length = finite_clamped(
+                            args.get("dash_length"),
+                            cfg.dash_length as f64,
+                            0.0,
+                            500.0,
+                        ) as f32;
+                    }
+                    if args.get("dash_gap").is_some() {
+                        cfg.dash_gap =
+                            finite_clamped(args.get("dash_gap"), cfg.dash_gap as f64, 0.0, 500.0)
+                                as f32;
+                    }
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetVectorShape {
+                                item_id,
+                                config: cfg.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "vector_shape": cfg }).to_string() }]
+                    }))
+                }
+                other => Err(format!("unknown set_scene_motion_blur action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
+}
+
+fn parse_template_param_values(val: Option<&Value>) -> BTreeMap<String, TemplateParamValue> {
+    let mut out = BTreeMap::new();
+    let Some(obj) = val.and_then(Value::as_object) else {
+        return out;
+    };
+    for (k, v) in obj {
+        if let Some(s) = v.as_str() {
+            if s.starts_with('#')
+                && (s.len() == 7 || s.len() == 9)
+                && let Some(col) = RgbaColor::from_hex(s)
+            {
+                out.insert(k.clone(), TemplateParamValue::Color(col));
+                continue;
+            }
+            out.insert(k.clone(), TemplateParamValue::Text(s.to_string()));
+        } else if let Some(n) = v.as_f64()
+            && n.is_finite()
+        {
+            out.insert(k.clone(), TemplateParamValue::Number(n as f32));
+        }
+    }
+    out
 }
 
 fn encode_rgba8_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
@@ -3884,6 +4617,143 @@ mod tests {
             assert_eq!(grade.lut_path.as_deref(), Some("builtin:teal_orange"));
             assert!((grade.exposure - 0.35).abs() < 1e-4);
         }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v09_mcp_tools_expressions_templates_and_fx() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v09_{}", Uuid::new_v4()));
+        let proj = Project::new("McpV09", ProjectSettings::default());
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let mut ed = EditorSession::new(proj);
+        ed.folder = Some(folder);
+        let session = Arc::new(Mutex::new(ed));
+
+        // 1. add_object particle_emitter & vector_shape
+        let p_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 0, "name": "SnowFX", "kind": "particle_emitter", "preset": "snow", "duration_sec": 4.0}),
+        )
+        .unwrap();
+        let p_id: String = serde_json::from_str::<Value>(
+            p_res["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let v_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 1, "name": "Wave", "kind": "vector_shape", "preset": "underline_wave", "duration_sec": 3.0}),
+        )
+        .unwrap();
+        let v_id: String = serde_json::from_str::<Value>(
+            v_res["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // 2. set_expression set + evaluate + bake
+        call_tool(
+            &session,
+            "set_expression",
+            &json!({"action": "set", "id": v_id, "property": "trim_end", "expression": "ease(local_time, 0, 1, 0, 1)"}),
+        )
+        .unwrap();
+        let eval = call_tool(
+            &session,
+            "set_expression",
+            &json!({"action": "evaluate", "id": v_id, "property": "trim_end", "time_sec": 0.5}),
+        )
+        .unwrap();
+        let eval_v = serde_json::from_str::<Value>(eval["content"][0]["text"].as_str().unwrap())
+            .unwrap()["value"]
+            .as_f64()
+            .unwrap();
+        assert!((eval_v - 0.5).abs() < 1e-2);
+        call_tool(
+            &session,
+            "set_expression",
+            &json!({"action": "bake", "id": v_id, "property": "trim_end", "step_frames": 15}),
+        )
+        .unwrap();
+
+        // 3. manage_templates list + instantiate + update_instance
+        let t_list = call_tool(&session, "manage_templates", &json!({"action": "list"})).unwrap();
+        assert!(
+            t_list["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("builtin_lower_third_news")
+        );
+        let inst = call_tool(
+            &session,
+            "manage_templates",
+            &json!({
+                "action": "instantiate",
+                "template_id": "builtin_lower_third_news",
+                "layer_index": 2,
+                "start_sec": 0.0,
+                "duration_sec": 6.0,
+                "values": { "title": "AI テンプレート速報" }
+            }),
+        )
+        .unwrap();
+        let inst_id = serde_json::from_str::<Value>(inst["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_item_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        call_tool(
+            &session,
+            "manage_templates",
+            &json!({
+                "action": "update_instance",
+                "item_id": inst_id,
+                "duration_sec": 8.0,
+                "values": { "title": "更新後見出し", "accent_color": "#ff4488" }
+            }),
+        )
+        .unwrap();
+
+        // 4. set_scene_motion_blur + set_light_3d + set_particle
+        call_tool(
+            &session,
+            "set_scene_motion_blur",
+            &json!({"action": "set_motion_blur", "enabled": true, "shutter_angle_deg": 240.0, "preview_samples": 4}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "set_scene_motion_blur",
+            &json!({"action": "set_light_3d", "enabled": true, "light_type": "point", "intensity": 1.6, "cast_shadow": true}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "set_scene_motion_blur",
+            &json!({"action": "set_particle", "item_id": p_id, "count": 180}),
+        )
+        .unwrap();
+
+        {
+            let g = session.lock().unwrap();
+            let s = g.project.active_scene().unwrap();
+            assert!(s.motion_blur.enabled);
+            assert!((s.motion_blur.shutter_angle_deg - 240.0).abs() < 1e-3);
+            assert!(s.camera.light.enabled);
+            assert_eq!(s.camera.light.light_type, Light3DType::Point);
+        }
+
+        // Verify exact MCP tool count = 50
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 50);
+
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

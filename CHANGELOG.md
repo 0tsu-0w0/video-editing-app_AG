@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0] - 2026-11-21
+
+AE 級プロシージャル演出・テンプレート量産・高度な 2D/3D 合成を実現する v0.9 ロードマップ（#14〜#16）をすべて実装しました。
+
+### #14 Pure-Rust エクスプレッションエンジン（式アニメーション）
+* `ve-core`: ゼロ `unsafe`・決定論的サンドボックス式パーサ＆バイトコード VM（`expression` モジュール：`time`, `local_time`, `duration`, `progress`, `fps`, `frame`, `value`, `wiggle(freq, amp[, octaves])`, `noise`, `random`, `sin`/`cos`/`pow`/`clamp`/`linear`/`ease`, `loopOut("cycle"|"pingpong"|"offset"|"continue")`, `audio_band("low"|"mid"|"high"|"rms")`, `layer("名前").prop`）およびキーフレーム焼き込み `build_bake_expression_command`、`EditCommand::SetExpression` を実装
+* `ve-render`: `RenderGraph` の全アイテム変形・トリムパス評価へエクスプレッションを統合（`audio_band` 遅延算出付き）
+* `ve-app` / `ve-mcp`: インスペクタの式エディタ（リアルタイム評価値＆構文エラー表示・スニペット・Bake ボタン）、グラフエディタの式カーブ可視化、および MCP ツール `set_expression` を追加
+
+### #15 モーショングラフィックス テンプレート（`.mogrt` 相当）＆ プロジェクトテンプレート
+* `ve-core`: `MotionTemplate` / `TemplateBinding` / `ProjectTemplate`、イントロ・アウトロ尺を保護し中間のみ伸縮するレスポンシブ時間伸縮 `apply_responsive_time_stretch`、組み込みモーショングラフィックス 3 種（ニュース風ローワーサード / キネティック OP タイトル / 告知 CTA カード）＆プロジェクト雛形 3 種、`ProjectFolder` の `templates/`・`templates/projects/` 永続化 CRUD、`EditCommand::UpdateTemplateInstance` を実装
+* `ve-app` / `ve-mcp`: テンプレートギャラリー、選択時に公開パラメータだけを表示する専用編集カード、現シーン保存・プロジェクト雛形新規作成 UI、および MCP ツール `manage_templates` を追加
+
+### #16 高度な 2D/3D 合成：パーティクル・自由ベクターシェイプ・3D ライト＆モーションブラー
+* `ve-core` / `ve-render`: 決定論的シード 2D/3D パーティクルエミッター `ItemKind::ParticleEmitter`（紙吹雪・雪・火花・光粒・集中線・スピードライン）、自由ベジェベクターシェイプ `ItemKind::VectorShape`（単色/線形グラデーション塗り・破線ストローク・トリムパスアニメーション）、3D カメラ空間のディレクショナル／ポイントライト＆ドロップシャドウキャッチャー（`Light3D`）、およびシャッター角度ベース サブフレーム合成モーションブラー（プレビュー軽量 / 書き出し高品質切替 `MotionBlurConfig`）を実装
+* `ve-app` / `ve-mcp`: タイムライン「＋ パーティクル」「＋ ベクター」ボタン、専用インスペクタ、3D ライト＆モーションブラー UI、`add_object` 拡張および MCP ツール `set_scene_motion_blur` を追加（全 **50 MCP ツール**）
+
 ## [0.8.0] - 2026-11-21
 
 爆速カット・音ハメ編集・プロ級カラーグレーディングを統合する v0.8 ロードマップ（#11〜#13）をすべて実装しました。

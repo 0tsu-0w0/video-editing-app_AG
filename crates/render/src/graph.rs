@@ -4,6 +4,9 @@ use crate::hot_shader::ShaderHotReloader;
 use crate::psd_sprite::PsdCharacterAsset;
 use crate::sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
 use crate::text::TextRenderer;
+use crate::v09_fx::{
+    apply_3d_lighting_tint, build_drop_shadow_image, render_particle_emitter, render_vector_shape,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -12,7 +15,8 @@ use ve_core::{
     AssetResolution, AudioReactiveBand, BlendMode, CharacterSpriteConfig, ColorPalette, EffectNode,
     FilterTargetScope, ItemKind, LipSyncMode, MouthShape, PrecompCacheManager, Project,
     ProjectFolder, RationalTime, RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D,
-    TransitionKind, content_hash_hex, evaluate_vowel_mouth, resolve_mouth_png, rms_to_mouth,
+    TransitionKind, content_hash_hex, evaluate_item_property, evaluate_item_transform,
+    evaluate_vowel_mouth, item_expressions_use_audio, resolve_mouth_png, rms_to_mouth,
 };
 use ve_media::{FfmpegCli, VideoStreamDecoder};
 use ve_plugin_api::PluginRegistry;
@@ -31,9 +35,9 @@ type VideoFrameCacheKey = (Uuid, i64, u32, u32, bool);
 type VideoStreamKey = (Uuid, u32, u32, bool);
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
-/// 1. 各オブジェクトのキーフレーム評価・実動画/画像デコード・立ち絵口パク(PNG/PSD)・3Dカメラ透視投影/DoF・個別エフェクト＆プラグイン適用
+/// 1. 各オブジェクトのキーフレーム／エクスプレッション評価・実動画/画像デコード・パーティクル・ベクターシェイプ・立ち絵口パク・3Dカメラ透視投影/照明/影/DoF・個別エフェクト＆プラグイン適用
 /// 2. トラックマット・グループ制御・AviUtl2風フィルタオブジェクト（指定レイヤー範囲）・シーンチェンジ適用
-/// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）＋ シーンカラーグレーディング＆`.cube` 3D LUT
+/// 3. レイヤー合成（Linear sRGB + Premultiplied Alpha + BlendMode + 3D Zソート）＋ シャッター角モーションブラー ＋ シーンカラーグレーディング＆`.cube` 3D LUT
 pub struct RenderGraph {
     text_renderer: TextRenderer,
     mem_precomp_cache: HashMap<String, (u64, LinearImage)>,
@@ -43,6 +47,8 @@ pub struct RenderGraph {
     ffmpeg: FfmpegCli,
     /// true のときプレビュー用に軽量プロキシ (`cache/proxy/`) を優先使用（書き出し時は false で原本参照）
     pub use_proxies: bool,
+    /// v0.9 #16: true のとき書き出し用高品質サブフレーム分割数でモーションブラーを合成（プレビュー時は false で軽量）
+    pub high_quality_motion_blur: bool,
     proxy_paths: HashMap<Uuid, PathBuf>,
     video_frame_cache: HashMap<VideoFrameCacheKey, (u64, LinearImage)>,
     video_frame_tick: u64,
@@ -77,6 +83,7 @@ impl RenderGraph {
             project_folder: None,
             ffmpeg: FfmpegCli::default(),
             use_proxies: true,
+            high_quality_motion_blur: false,
             proxy_paths: HashMap::new(),
             video_frame_cache: HashMap::new(),
             video_frame_tick: 0,
@@ -329,6 +336,13 @@ impl RenderGraph {
                         *width = (*width * sx).max(1.0);
                         *height = (*height * sy).max(1.0);
                     }
+                    ItemKind::VectorShape { config } => {
+                        config.width = (config.width * sx).max(4.0);
+                        config.height = (config.height * sy).max(4.0);
+                        config.stroke_width *= uniform;
+                        config.dash_length *= uniform;
+                        config.dash_gap *= uniform;
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -347,6 +361,87 @@ impl RenderGraph {
     }
 
     fn render_scene_inner(
+        &mut self,
+        project: Option<&Project>,
+        scene: &Scene,
+        time: RationalTime,
+        transparent_bg: bool,
+        depth: u8,
+    ) -> LinearImage {
+        let mut canvas =
+            if depth == 0 && scene.motion_blur.enabled && scene.motion_blur.shutter_angle_deg > 0.5
+            {
+                let samples = if self.high_quality_motion_blur {
+                    scene.motion_blur.export_samples
+                } else {
+                    scene.motion_blur.preview_samples
+                }
+                .clamp(1, 16);
+                if samples > 1 {
+                    let frame_dur = 1.0 / scene.fps.as_f64().max(1.0);
+                    let shutter_dur =
+                        frame_dur * (f64::from(scene.motion_blur.shutter_angle_deg) / 360.0);
+                    let phase_offset =
+                        frame_dur * (f64::from(scene.motion_blur.shutter_phase_deg) / 360.0);
+                    let base_sec = time.as_seconds();
+                    let mut acc: Option<LinearImage> = None;
+                    let inv = 1.0 / samples as f32;
+                    for s in 0..samples {
+                        let frac = (s as f64 + 0.5) / samples as f64;
+                        let sub_sec = (base_sec + phase_offset + shutter_dur * frac).max(0.0);
+                        let sub_time = RationalTime::from_seconds(sub_sec);
+                        let sub_img = self.render_scene_single_frame(
+                            project,
+                            scene,
+                            sub_time,
+                            transparent_bg,
+                            depth,
+                        );
+                        match acc.as_mut() {
+                            None => {
+                                let mut first = sub_img;
+                                for p in &mut first.pixels {
+                                    p.r *= inv;
+                                    p.g *= inv;
+                                    p.b *= inv;
+                                    p.a *= inv;
+                                }
+                                acc = Some(first);
+                            }
+                            Some(dst) => {
+                                for (dp, sp) in dst.pixels.iter_mut().zip(sub_img.pixels.iter()) {
+                                    dp.r += sp.r * inv;
+                                    dp.g += sp.g * inv;
+                                    dp.b += sp.b * inv;
+                                    dp.a += sp.a * inv;
+                                }
+                            }
+                        }
+                    }
+                    acc.unwrap_or_else(|| {
+                        self.render_scene_single_frame(project, scene, time, transparent_bg, depth)
+                    })
+                } else {
+                    self.render_scene_single_frame(project, scene, time, transparent_bg, depth)
+                }
+            } else {
+                self.render_scene_single_frame(project, scene, time, transparent_bg, depth)
+            };
+
+        // v0.8 #13: シーン全体の非破壊カラーグレーディング（3-Way + .cube 3D LUT）
+        if scene.color_grade.enabled {
+            let lut = scene
+                .color_grade
+                .lut_path
+                .as_deref()
+                .and_then(|p| self.resolve_lut(p));
+            apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_ref());
+        }
+
+        canvas
+    }
+
+    fn render_scene_single_frame(
         &mut self,
         project: Option<&Project>,
         scene: &Scene,
@@ -377,7 +472,31 @@ impl RenderGraph {
                 if !item.contains(time) {
                     continue;
                 }
-                let mut tf = item.eval_transform(time);
+                let expr_audio_bands = if item_expressions_use_audio(item) {
+                    let audio_layer = if item.audio_reactive.enabled {
+                        item.audio_reactive.linked_audio_layer
+                    } else {
+                        scene
+                            .layers
+                            .iter()
+                            .enumerate()
+                            .find_map(|(idx, l)| {
+                                l.items
+                                    .iter()
+                                    .any(|it| matches!(it.kind, ItemKind::Audio { .. }))
+                                    .then_some(idx)
+                            })
+                            .unwrap_or(0)
+                    };
+                    let (_, low, mid, high, rms) =
+                        self.evaluate_audio_reactive_bands(scene, audio_layer, time, 16);
+                    [low, mid, high, rms]
+                } else {
+                    [0.0; 4]
+                };
+
+                let (mut tf, tf3d) =
+                    evaluate_item_transform(scene, layer_idx, item, time, expr_audio_bands);
                 if item.audio_reactive.enabled {
                     let (_, low, mid, high, rms) = self.evaluate_audio_reactive_bands(
                         scene,
@@ -401,7 +520,6 @@ impl RenderGraph {
                     tf.opacity =
                         (tf.opacity + item.audio_reactive.opacity_amount * energy).clamp(0.0, 1.0);
                 }
-                let tf3d = item.eval_transform_3d(time);
                 match &item.kind {
                     ItemKind::FilterObject {
                         effect_type,
@@ -435,9 +553,18 @@ impl RenderGraph {
                         group_passes.push((layer_idx, *target_layer_count, tf));
                     }
                     _ => {
-                        if let Some(mut item_img) =
-                            self.render_item(project, scene, item, &tf, time, w, h, depth)
-                        {
+                        if let Some(mut item_img) = self.render_item(
+                            project,
+                            scene,
+                            layer_idx,
+                            item,
+                            &tf,
+                            expr_audio_bands,
+                            time,
+                            w,
+                            h,
+                            depth,
+                        ) {
                             apply_effect_chain(
                                 &mut item_img,
                                 &item.effect_chain,
@@ -457,6 +584,7 @@ impl RenderGraph {
                                 draw_x += (old_w - item_img.width as f32) * 0.5;
                                 draw_y += (old_h - item_img.height as f32) * 0.5;
                             }
+                            let mut shadow_to_draw: Option<(LinearImage, f32, f32)> = None;
                             if scene.camera.enabled && tf3d.enable_3d {
                                 let cx = w as f32 * 0.5;
                                 let cy = h as f32 * 0.5;
@@ -488,11 +616,47 @@ impl RenderGraph {
                                 }
                                 draw_x = cx + proj.screen_offset_x - item_img.width as f32 * 0.5;
                                 draw_y = cy + proj.screen_offset_y - item_img.height as f32 * 0.5;
+
+                                if scene.camera.light.enabled {
+                                    let (light_tint, shadow_off) =
+                                        scene.camera.compute_layer_lighting(
+                                            [item_cx, item_cy, tf3d.z],
+                                            tf3d.rotation_x_deg,
+                                            tf3d.rotation_y_deg,
+                                        );
+                                    if scene.camera.light.cast_shadow {
+                                        let blur_r = (scene.camera.light.shadow_softness
+                                            * proj.perspective_scale)
+                                            .round()
+                                            .clamp(0.0, 24.0)
+                                            as i32;
+                                        let shadow_img = build_drop_shadow_image(
+                                            &item_img,
+                                            scene.camera.light.shadow_opacity,
+                                            blur_r,
+                                        );
+                                        shadow_to_draw = Some((
+                                            shadow_img,
+                                            draw_x + shadow_off[0] * proj.perspective_scale,
+                                            draw_y + shadow_off[1] * proj.perspective_scale,
+                                        ));
+                                    }
+                                    apply_3d_lighting_tint(&mut item_img, light_tint);
+                                }
                             }
 
                             let dst = layer_buf.get_or_insert_with(|| {
                                 LinearImage::new(w, h, LinearPremul::TRANSPARENT)
                             });
+                            if let Some((shadow_img, sx_pos, sy_pos)) = shadow_to_draw {
+                                dst.blend_with_mode(
+                                    &shadow_img,
+                                    sx_pos.round() as i32,
+                                    sy_pos.round() as i32,
+                                    tf.opacity,
+                                    BlendMode::Normal,
+                                );
+                            }
                             dst.blend_with_mode(
                                 &item_img,
                                 draw_x.round() as i32,
@@ -600,16 +764,6 @@ impl RenderGraph {
             canvas.blend_with_mode(&layer_img, 0, 0, 1.0, blend_mode);
         }
 
-        // v0.8 #13: シーン全体の非破壊カラーグレーディング（3-Way + .cube 3D LUT）
-        if scene.color_grade.enabled {
-            let lut = scene
-                .color_grade
-                .lut_path
-                .as_deref()
-                .and_then(|p| self.resolve_lut(p));
-            apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_ref());
-        }
-
         canvas
     }
 
@@ -618,8 +772,10 @@ impl RenderGraph {
         &mut self,
         project: Option<&Project>,
         scene: &Scene,
+        layer_idx: usize,
         item: &TimelineItem,
         tf: &Transform2D,
+        expr_audio_bands: [f32; 4],
         global_time: RationalTime,
         canvas_w: u32,
         canvas_h: u32,
@@ -939,6 +1095,46 @@ impl RenderGraph {
                     }
                 }
                 Some(img)
+            }
+            ItemKind::ParticleEmitter { config } => Some(render_particle_emitter(
+                config,
+                local_time.as_seconds() as f32,
+                canvas_w,
+                canvas_h,
+            )),
+            ItemKind::VectorShape { config } => {
+                let trim_start = evaluate_item_property(
+                    scene,
+                    layer_idx,
+                    item,
+                    "trim_start",
+                    global_time,
+                    expr_audio_bands,
+                );
+                let trim_end = evaluate_item_property(
+                    scene,
+                    layer_idx,
+                    item,
+                    "trim_end",
+                    global_time,
+                    expr_audio_bands,
+                );
+                let trim_offset = evaluate_item_property(
+                    scene,
+                    layer_idx,
+                    item,
+                    "trim_offset",
+                    global_time,
+                    expr_audio_bands,
+                );
+                Some(render_vector_shape(
+                    config,
+                    trim_start,
+                    trim_end,
+                    trim_offset,
+                    tf.scale_x,
+                    tf.scale_y,
+                ))
             }
             ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }
@@ -1716,7 +1912,7 @@ fn apply_transition(
 }
 
 /// O(W * H) スライディングウィンドウ分離ボックスブラー（半径 R に依存しない一定計算量＋行優先メモリアクセス）
-fn box_blur_separable(image: &mut LinearImage, radius: i32) {
+pub(crate) fn box_blur_separable(image: &mut LinearImage, radius: i32) {
     let w = image.width as i32;
     let h = image.height as i32;
     if w == 0 || h == 0 || radius <= 0 {
@@ -2169,6 +2365,7 @@ mod tests {
             dof_enabled: false,
             focus_distance: 1000.0,
             aperture: 0.0,
+            ..Camera3D::default()
         };
 
         // Layer 0 (下レイヤー) だが 3D 空間では手前 (z = -200) にある赤い四角
@@ -2747,5 +2944,73 @@ mod tests {
             loud_upper_px.r > 0.8 && loud_upper_px.g > 0.6,
             "expected bounced yellow box at (200,72), got {loud_upper_px:?}"
         );
+    }
+
+    #[test]
+    fn v09_expressions_shutter_motion_blur_and_3d_lighting_render_cleanly() {
+        let mut proj = Project::new("v09_render_test", ProjectSettings::default());
+        let scene = proj.active_scene_mut().unwrap();
+        scene.width = 200;
+        scene.height = 120;
+        scene.fps = FrameRate::FPS_30;
+        scene.motion_blur.enabled = true;
+        scene.motion_blur.shutter_angle_deg = 360.0;
+        scene.motion_blur.preview_samples = 5;
+
+        let mut box_item = TimelineItem::new(
+            "MovingBox",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 20.0,
+                height: 20.0,
+                color: RgbaColor::WHITE,
+            },
+        );
+        box_item.transform.y = 50.0;
+        // 1秒あたり +600px 移動するエクスプレッション（1フレーム30fpsで20px移動）
+        box_item.expressions.insert("x".into(), "time * 600".into());
+        scene.layers[0].items.push(box_item);
+
+        let mut graph = RenderGraph::new();
+        let blurred = graph
+            .render_project_scene(
+                &proj,
+                proj.active_scene_id,
+                RationalTime::from_seconds(0.1),
+                false,
+            )
+            .unwrap();
+
+        // モーションブラーありでは水平方向に中間輝度（0.1 < r < 0.9）の残像ピクセルが生じる
+        let mid_trail = (0..blurred.width)
+            .filter(|&x| {
+                let p = blurred.pixels[(60 * blurred.width + x) as usize];
+                p.r > 0.08 && p.r < 0.92
+            })
+            .count();
+        assert!(
+            mid_trail >= 4,
+            "expected motion blur trail pixels, got {mid_trail}"
+        );
+
+        // 3D カメラ＋ライト＆シャドウキャッチャーでも正常描画される
+        let scene2 = proj.active_scene_mut().unwrap();
+        scene2.motion_blur.enabled = false;
+        scene2.camera.enabled = true;
+        scene2.camera.light.enabled = true;
+        scene2.camera.light.cast_shadow = true;
+        scene2.layers[0].items[0].transform_3d.enable_3d = true;
+        scene2.layers[0].items[0].transform_3d.rotation_y_deg = 45.0;
+        let lit = graph
+            .render_project_scene(
+                &proj,
+                proj.active_scene_id,
+                RationalTime::from_seconds(0.1),
+                false,
+            )
+            .unwrap();
+        assert!(lit.pixels.iter().any(|p| p.r > 0.1));
     }
 }

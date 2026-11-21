@@ -242,6 +242,7 @@ fn run_export_worker(
     }
     let mut rg = RenderGraph::new();
     rg.use_proxies = false; // 書き出し時は必ず高画質原本を参照
+    rg.high_quality_motion_blur = true; // 書き出し時は高品質サブフレーム分割でモーションブラー合成
     rg.set_project_folder(req.folder.clone());
     for (id, path) in &req.shader_files {
         let _ = rg.hot_shaders.register_file(id.clone(), path);

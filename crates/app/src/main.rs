@@ -12,6 +12,7 @@ mod project_io;
 mod ram_preview;
 mod render_queue;
 mod timeline;
+mod v09_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -32,6 +33,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use timeline::{TimelinePlaybackAction, TimelineState};
 use uuid::Uuid;
+use v09_panels::V09PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand, EffectNode,
@@ -109,6 +111,7 @@ struct EditorApp {
     font_picker: FontPickerState,
     inspector_extras: InspectorExtrasState,
     color_scopes: ColorScopesState,
+    v09_panels: V09PanelsState,
     audio_ai_panel: AudioAi3DPanel,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     render_graph: RenderGraph,
@@ -300,6 +303,7 @@ impl EditorApp {
             font_picker: FontPickerState::new(),
             inspector_extras: InspectorExtrasState::default(),
             color_scopes: ColorScopesState::default(),
+            v09_panels: V09PanelsState::default(),
             audio_ai_panel: AudioAi3DPanel::default(),
             waveforms: BTreeMap::new(),
             render_graph,
@@ -928,6 +932,20 @@ impl TabViewer for EditorTabViewer<'_> {
                     if let Some((layer_idx, track_matte, item)) = selected_snapshot {
                         ui.heading(format!("選択中: {}", item.name));
 
+                        // v0.9 #15: モーショングラフィックス テンプレート公開パラメータ専用編集
+                        if let Some(ref binding) = item.template_binding {
+                            let mut g = self.app.session.lock().unwrap();
+                            if self.app.v09_panels.show_template_instance_ui(
+                                ui,
+                                &mut g,
+                                item.id,
+                                binding,
+                            ) {
+                                self.app.ram_preview.clear();
+                                self.app.preview_dirty = true;
+                            }
+                        }
+
                         // ブレンドモード
                         let mut blend = item.blend_mode;
                         egui::ComboBox::from_label("ブレンドモード")
@@ -1024,7 +1042,7 @@ impl TabViewer for EditorTabViewer<'_> {
                             );
                         }
 
-                        // v0.7.1: フィルタオブジェクト・グループ制御・オーディオスペクトラム専用インスペクタ
+                        // v0.7.1 + v0.9: 専用オブジェクトインスペクタ
                         match item.kind.clone() {
                             ItemKind::FilterObject {
                                 effect_type,
@@ -1075,7 +1093,36 @@ impl TabViewer for EditorTabViewer<'_> {
                                     sensitivity,
                                 );
                             }
+                            ItemKind::ParticleEmitter { config } => {
+                                let mut g = self.app.session.lock().unwrap();
+                                if V09PanelsState::show_particle_inspector_ui(
+                                    ui, &mut g, item.id, config,
+                                ) {
+                                    self.app.ram_preview.clear();
+                                    self.app.preview_dirty = true;
+                                }
+                            }
+                            ItemKind::VectorShape { config } => {
+                                let mut g = self.app.session.lock().unwrap();
+                                if V09PanelsState::show_vector_shape_inspector_ui(
+                                    ui, &mut g, item.id, config,
+                                ) {
+                                    self.app.ram_preview.clear();
+                                    self.app.preview_dirty = true;
+                                }
+                            }
                             _ => {}
+                        }
+
+                        // v0.9 #14: Pure-Rust エクスプレッションエディタ
+                        {
+                            let mut g = self.app.session.lock().unwrap();
+                            if self.app.v09_panels.show_expression_editor_ui(
+                                ui, &mut g, layer_idx, &item,
+                            ) {
+                                self.app.ram_preview.clear();
+                                self.app.preview_dirty = true;
+                            }
                         }
 
                         // A-5: 動画・音声の再生速度・逆再生・ループ・時間制御
@@ -1342,6 +1389,23 @@ impl TabViewer for EditorTabViewer<'_> {
                     {
                         let mut g = self.app.session.lock().unwrap();
                         if self.app.color_scopes.show_color_grading_ui(ui, &mut g) {
+                            self.app.ram_preview.clear();
+                            self.app.preview_dirty = true;
+                        }
+                        if V09PanelsState::show_scene_lighting_and_motion_blur_ui(ui, &mut g) {
+                            self.app.ram_preview.clear();
+                            self.app.preview_dirty = true;
+                        }
+                        let tpl_action = self.app.v09_panels.show_template_gallery_ui(ui, &mut g);
+                        if let Some(new_proj) = tpl_action.replaced_project {
+                            g.project = new_proj;
+                            g.bus = CommandBus::default();
+                            g.selected_items.clear();
+                            g.playhead = RationalTime::ZERO;
+                            self.app.render_graph.clear_media_caches();
+                            self.app.ram_preview.clear();
+                            self.app.preview_dirty = true;
+                        } else if tpl_action.dirty {
                             self.app.ram_preview.clear();
                             self.app.preview_dirty = true;
                         }

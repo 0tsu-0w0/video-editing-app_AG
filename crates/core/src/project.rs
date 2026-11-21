@@ -431,6 +431,492 @@ pub enum ShapeKind {
     Ellipse,
 }
 
+/// v0.9 #16: 決定論的パーティクルプリセット種別
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticlePreset {
+    #[default]
+    Confetti,
+    Snow,
+    Sparks,
+    LightOrbs,
+    SpeedLines,
+    ActionLines,
+}
+
+impl ParticlePreset {
+    pub const ALL: &'static [Self] = &[
+        Self::Confetti,
+        Self::Snow,
+        Self::Sparks,
+        Self::LightOrbs,
+        Self::SpeedLines,
+        Self::ActionLines,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Confetti => "🎊 紙吹雪 (Confetti)",
+            Self::Snow => "❄ 雪 (Snow)",
+            Self::Sparks => "✨ 火花 (Sparks)",
+            Self::LightOrbs => "🌟 光粒・ボケ玉 (Light Orbs)",
+            Self::SpeedLines => "⚡ 集中線 (Speed Lines)",
+            Self::ActionLines => "💨 スピードライン (Action Lines)",
+        }
+    }
+}
+
+/// v0.9 #16: 決定論的シード 2D/3D パーティクルエミッター設定
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ParticleConfig {
+    pub preset: ParticlePreset,
+    pub seed: u64,
+    pub count: u32,
+    pub speed: f32,
+    pub size_px: f32,
+    pub spread_deg: f32,
+    pub gravity: f32,
+    pub wind_x: f32,
+    pub lifetime_sec: f32,
+    pub color_primary: RgbaColor,
+    pub color_secondary: RgbaColor,
+    /// 0.0=完全2D, 1.0=強めのZ奥行きサイズ＆不透明度パララックス
+    pub depth_3d: f32,
+}
+
+impl Default for ParticleConfig {
+    fn default() -> Self {
+        Self::for_preset(ParticlePreset::Confetti)
+    }
+}
+
+impl ParticleConfig {
+    pub fn for_preset(preset: ParticlePreset) -> Self {
+        match preset {
+            ParticlePreset::Confetti => Self {
+                preset,
+                seed: 202609,
+                count: 90,
+                speed: 220.0,
+                size_px: 14.0,
+                spread_deg: 60.0,
+                gravity: 240.0,
+                wind_x: 35.0,
+                lifetime_sec: 3.5,
+                color_primary: RgbaColor {
+                    r: 1.0,
+                    g: 0.34,
+                    b: 0.45,
+                    a: 1.0,
+                },
+                color_secondary: RgbaColor {
+                    r: 0.25,
+                    g: 0.82,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                depth_3d: 0.65,
+            },
+            ParticlePreset::Snow => Self {
+                preset,
+                seed: 1001,
+                count: 140,
+                speed: 95.0,
+                size_px: 8.0,
+                spread_deg: 25.0,
+                gravity: 40.0,
+                wind_x: 28.0,
+                lifetime_sec: 6.0,
+                color_primary: RgbaColor::WHITE,
+                color_secondary: RgbaColor {
+                    r: 0.78,
+                    g: 0.90,
+                    b: 1.0,
+                    a: 0.85,
+                },
+                depth_3d: 0.85,
+            },
+            ParticlePreset::Sparks => Self {
+                preset,
+                seed: 7777,
+                count: 110,
+                speed: 520.0,
+                size_px: 6.0,
+                spread_deg: 110.0,
+                gravity: 420.0,
+                wind_x: 0.0,
+                lifetime_sec: 1.4,
+                color_primary: RgbaColor {
+                    r: 1.0,
+                    g: 0.92,
+                    b: 0.55,
+                    a: 1.0,
+                },
+                color_secondary: RgbaColor {
+                    r: 1.0,
+                    g: 0.35,
+                    b: 0.08,
+                    a: 1.0,
+                },
+                depth_3d: 0.4,
+            },
+            ParticlePreset::LightOrbs => Self {
+                preset,
+                seed: 4040,
+                count: 45,
+                speed: 55.0,
+                size_px: 34.0,
+                spread_deg: 360.0,
+                gravity: -22.0,
+                wind_x: 12.0,
+                lifetime_sec: 5.5,
+                color_primary: RgbaColor {
+                    r: 1.0,
+                    g: 0.86,
+                    b: 0.56,
+                    a: 0.65,
+                },
+                color_secondary: RgbaColor {
+                    r: 0.48,
+                    g: 0.82,
+                    b: 1.0,
+                    a: 0.55,
+                },
+                depth_3d: 0.9,
+            },
+            ParticlePreset::SpeedLines => Self {
+                preset,
+                seed: 8888,
+                count: 72,
+                speed: 18.0,
+                size_px: 5.0,
+                spread_deg: 360.0,
+                gravity: 0.0,
+                wind_x: 0.0,
+                lifetime_sec: 0.5,
+                color_primary: RgbaColor::WHITE,
+                color_secondary: RgbaColor {
+                    r: 0.15,
+                    g: 0.15,
+                    b: 0.18,
+                    a: 0.9,
+                },
+                depth_3d: 0.2,
+            },
+            ParticlePreset::ActionLines => Self {
+                preset,
+                seed: 9999,
+                count: 48,
+                speed: 1600.0,
+                size_px: 4.5,
+                spread_deg: 0.0,
+                gravity: 0.0,
+                wind_x: 0.0,
+                lifetime_sec: 0.8,
+                color_primary: RgbaColor::WHITE,
+                color_secondary: RgbaColor {
+                    r: 0.45,
+                    g: 0.88,
+                    b: 1.0,
+                    a: 0.85,
+                },
+                depth_3d: 0.5,
+            },
+        }
+    }
+}
+
+/// v0.9 #16: ベクターシェイプの塗りつぶし種別
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum VectorFillMode {
+    None,
+    Solid(RgbaColor),
+    LinearGradient {
+        start_color: RgbaColor,
+        end_color: RgbaColor,
+        angle_deg: f32,
+    },
+}
+
+impl Default for VectorFillMode {
+    fn default() -> Self {
+        Self::LinearGradient {
+            start_color: RgbaColor {
+                r: 0.22,
+                g: 0.62,
+                b: 1.0,
+                a: 0.95,
+            },
+            end_color: RgbaColor {
+                r: 0.72,
+                g: 0.30,
+                b: 0.98,
+                a: 0.95,
+            },
+            angle_deg: 35.0,
+        }
+    }
+}
+
+/// v0.9 #16: 自由ベジェベクターシェイプ（塗り・グラデーション・破線ストローク・トリムパス対応）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorShapeConfig {
+    pub width: f32,
+    pub height: f32,
+    pub closed: bool,
+    pub vertices: Vec<MaskVertex>,
+    #[serde(default)]
+    pub fill: VectorFillMode,
+    pub stroke_color: RgbaColor,
+    pub stroke_width: f32,
+    /// 0 以下で実線、正値で破線ダッシュ長 (px)
+    #[serde(default)]
+    pub dash_length: f32,
+    /// 破線の隙間長 (px)
+    #[serde(default)]
+    pub dash_gap: f32,
+    /// トリムパス開始位置 (0.0..=1.0)
+    #[serde(default)]
+    pub trim_start: f32,
+    /// トリムパス終了位置 (0.0..=1.0)
+    #[serde(default = "default_one_f32")]
+    pub trim_end: f32,
+    /// トリムパスオフセット（周回シフト）
+    #[serde(default)]
+    pub trim_offset: f32,
+}
+
+impl Default for VectorShapeConfig {
+    fn default() -> Self {
+        Self::star()
+    }
+}
+
+impl VectorShapeConfig {
+    /// 五芒星プリセット
+    pub fn star() -> Self {
+        let mut verts = Vec::with_capacity(10);
+        for i in 0..10 {
+            let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
+            let r = if i % 2 == 0 { 0.44 } else { 0.19 };
+            verts.push(MaskVertex::corner(
+                0.5 + angle.cos() * r,
+                0.5 + angle.sin() * r,
+            ));
+        }
+        Self {
+            width: 360.0,
+            height: 360.0,
+            closed: true,
+            vertices: verts,
+            fill: VectorFillMode::default(),
+            stroke_color: RgbaColor::WHITE,
+            stroke_width: 6.0,
+            dash_length: 0.0,
+            dash_gap: 0.0,
+            trim_start: 0.0,
+            trim_end: 1.0,
+            trim_offset: 0.0,
+        }
+    }
+
+    /// 矢印プリセット
+    pub fn arrow() -> Self {
+        Self {
+            width: 420.0,
+            height: 220.0,
+            closed: true,
+            vertices: vec![
+                MaskVertex::corner(0.06, 0.34),
+                MaskVertex::corner(0.60, 0.34),
+                MaskVertex::corner(0.60, 0.12),
+                MaskVertex::corner(0.94, 0.50),
+                MaskVertex::corner(0.60, 0.88),
+                MaskVertex::corner(0.60, 0.66),
+                MaskVertex::corner(0.06, 0.66),
+            ],
+            fill: VectorFillMode::LinearGradient {
+                start_color: RgbaColor {
+                    r: 1.0,
+                    g: 0.52,
+                    b: 0.16,
+                    a: 1.0,
+                },
+                end_color: RgbaColor {
+                    r: 1.0,
+                    g: 0.84,
+                    b: 0.22,
+                    a: 1.0,
+                },
+                angle_deg: 0.0,
+            },
+            stroke_color: RgbaColor::WHITE,
+            stroke_width: 5.0,
+            dash_length: 0.0,
+            dash_gap: 0.0,
+            trim_start: 0.0,
+            trim_end: 1.0,
+            trim_offset: 0.0,
+        }
+    }
+
+    /// 手描き風ウェーブ下線（開パス・トリムパス演出向け）
+    pub fn underline_wave(color: RgbaColor) -> Self {
+        Self {
+            width: 800.0,
+            height: 90.0,
+            closed: false,
+            vertices: vec![
+                MaskVertex {
+                    x: 0.04,
+                    y: 0.55,
+                    in_handle: [0.0, 0.0],
+                    out_handle: [0.14, -0.35],
+                },
+                MaskVertex {
+                    x: 0.36,
+                    y: 0.50,
+                    in_handle: [-0.12, 0.32],
+                    out_handle: [0.12, -0.32],
+                },
+                MaskVertex {
+                    x: 0.68,
+                    y: 0.52,
+                    in_handle: [-0.12, 0.30],
+                    out_handle: [0.12, -0.28],
+                },
+                MaskVertex {
+                    x: 0.96,
+                    y: 0.45,
+                    in_handle: [-0.10, 0.24],
+                    out_handle: [0.0, 0.0],
+                },
+            ],
+            fill: VectorFillMode::None,
+            stroke_color: color,
+            stroke_width: 10.0,
+            dash_length: 0.0,
+            dash_gap: 0.0,
+            trim_start: 0.0,
+            trim_end: 1.0,
+            trim_offset: 0.0,
+        }
+    }
+
+    /// 吹き出しプリセット
+    pub fn speech_bubble() -> Self {
+        Self {
+            width: 480.0,
+            height: 260.0,
+            closed: true,
+            vertices: vec![
+                MaskVertex::corner(0.10, 0.12),
+                MaskVertex::corner(0.90, 0.12),
+                MaskVertex::corner(0.90, 0.72),
+                MaskVertex::corner(0.36, 0.72),
+                MaskVertex::corner(0.20, 0.92),
+                MaskVertex::corner(0.24, 0.72),
+                MaskVertex::corner(0.10, 0.72),
+            ],
+            fill: VectorFillMode::Solid(RgbaColor {
+                r: 0.98,
+                g: 0.98,
+                b: 1.0,
+                a: 0.95,
+            }),
+            stroke_color: RgbaColor {
+                r: 0.14,
+                g: 0.18,
+                b: 0.26,
+                a: 1.0,
+            },
+            stroke_width: 7.0,
+            dash_length: 0.0,
+            dash_gap: 0.0,
+            trim_start: 0.0,
+            trim_end: 1.0,
+            trim_offset: 0.0,
+        }
+    }
+
+    /// 破線リング（ローディング／強調枠向け）
+    pub fn circle_ring() -> Self {
+        let r = 0.40_f32;
+        let k = 0.552_284_8 * r;
+        Self {
+            width: 320.0,
+            height: 320.0,
+            closed: true,
+            vertices: vec![
+                MaskVertex {
+                    x: 0.5,
+                    y: 0.5 - r,
+                    in_handle: [-k, 0.0],
+                    out_handle: [k, 0.0],
+                },
+                MaskVertex {
+                    x: 0.5 + r,
+                    y: 0.5,
+                    in_handle: [0.0, -k],
+                    out_handle: [0.0, k],
+                },
+                MaskVertex {
+                    x: 0.5,
+                    y: 0.5 + r,
+                    in_handle: [k, 0.0],
+                    out_handle: [-k, 0.0],
+                },
+                MaskVertex {
+                    x: 0.5 - r,
+                    y: 0.5,
+                    in_handle: [0.0, k],
+                    out_handle: [0.0, -k],
+                },
+            ],
+            fill: VectorFillMode::None,
+            stroke_color: RgbaColor {
+                r: 0.26,
+                g: 0.92,
+                b: 0.85,
+                a: 1.0,
+            },
+            stroke_width: 10.0,
+            dash_length: 22.0,
+            dash_gap: 12.0,
+            trim_start: 0.0,
+            trim_end: 1.0,
+            trim_offset: 0.0,
+        }
+    }
+}
+
+/// v0.9 #16: シャッター角度ベース サブフレーム合成モーションブラー設定
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MotionBlurConfig {
+    pub enabled: bool,
+    /// シャッター角度（0.0..=360.0 度、映画標準 180.0°）
+    pub shutter_angle_deg: f32,
+    /// シャッター位相（-180.0..=180.0 度、既定 -90.0° で中央揃え）
+    pub shutter_phase_deg: f32,
+    /// プレビュー時の軽量サブフレーム分割数（1..=8, 既定 3）
+    pub preview_samples: u32,
+    /// 書き出し時の高品質サブフレーム分割数（1..=16, 既定 8）
+    pub export_samples: u32,
+}
+
+impl Default for MotionBlurConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            shutter_angle_deg: 180.0,
+            shutter_phase_deg: -90.0,
+            preview_samples: 3,
+            export_samples: 8,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ItemKind {
@@ -493,6 +979,14 @@ pub enum ItemKind {
         color: RgbaColor,
         peak_color: RgbaColor,
         sensitivity: f32,
+    },
+    /// v0.9 #16: 決定論的シード 2D/3D パーティクルエミッター
+    ParticleEmitter {
+        config: ParticleConfig,
+    },
+    /// v0.9 #16: 自由ベジェベクターシェイプ（グラデーション塗り・破線・トリムパス対応）
+    VectorShape {
+        config: VectorShapeConfig,
     },
     Precomp {
         scene_id: SceneId,
@@ -801,6 +1295,12 @@ pub struct TimelineItem {
     /// v0.7 #8: 自由ベジェマスク列（加算・減算・フェザー・反転）
     #[serde(default)]
     pub masks: Vec<BezierMask>,
+    /// v0.9 #14: プロパティごとのエクスプレッション式（"x", "y", "scale_x", "rotation_deg", "opacity", "z", "trim_end" 等）
+    #[serde(default)]
+    pub expressions: BTreeMap<String, String>,
+    /// v0.9 #15: モーショングラフィックス テンプレート紐づけメタデータ（Precomp 用）
+    #[serde(default)]
+    pub template_binding: Option<crate::template::TemplateBinding>,
     pub kind: ItemKind,
 }
 
@@ -827,6 +1327,8 @@ impl TimelineItem {
             audio_effects: Vec::new(),
             audio_reactive: AudioReactiveConfig::default(),
             masks: Vec::new(),
+            expressions: BTreeMap::new(),
+            template_binding: None,
             kind,
         }
     }
@@ -1053,6 +1555,9 @@ pub struct Scene {
     /// v0.8 #13: シーン全体のカラーグレーディング＆`.cube` 3D LUT 設定
     #[serde(default)]
     pub color_grade: SceneColorGrade,
+    /// v0.9 #16: シャッター角度ベース サブフレーム合成モーションブラー設定
+    #[serde(default)]
+    pub motion_blur: MotionBlurConfig,
     /// タイムラインマーカー一覧（YouTube チャプター生成対応）
     #[serde(default)]
     pub markers: Vec<TimelineMarker>,
@@ -1072,6 +1577,7 @@ impl Scene {
             target_lufs: None,
             audio_ducking: AudioDuckingConfig::default(),
             color_grade: SceneColorGrade::default(),
+            motion_blur: MotionBlurConfig::default(),
             markers: Vec::new(),
             layers: vec![
                 Layer::new("Layer 1"),
