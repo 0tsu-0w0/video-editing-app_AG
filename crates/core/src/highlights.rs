@@ -354,6 +354,7 @@ pub fn build_shorts_clip_scene_command(
         },
         color_grade: src.color_grade.clone(),
         color_management: src.color_management,
+        cinema_finishing: src.cinema_finishing.clone(),
         motion_blur: src.motion_blur,
         markers: Vec::new(),
         node_graph: crate::node_graph::NodeCompositeGraph::default(),

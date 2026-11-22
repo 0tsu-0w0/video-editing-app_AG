@@ -445,6 +445,10 @@ impl RenderGraph {
                         config.width = (config.width * sx).max(16.0);
                         config.height = (config.height * sy).max(16.0);
                     }
+                    ItemKind::RiggedPuppet { config } => {
+                        config.width = (config.width * sx).max(32.0);
+                        config.height = (config.height * sy).max(32.0);
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -543,6 +547,16 @@ impl RenderGraph {
         // v4.0 #33: ACEScg / OpenColorIO プロカラー管理（IDT → Working → Gamut Compress → Tone Map → ODT）
         if scene.color_management.enabled {
             apply_scene_color_management(&mut canvas, &scene.color_management);
+        }
+
+        // v5.0 #40: シネマフィニッシング（35mm ハレーション・アナモルフィックフレア・グレイン・レターボックス・バーンイン）
+        if scene.cinema_finishing.enabled {
+            crate::finishing_render::apply_cinema_finishing(
+                &mut canvas,
+                &scene.cinema_finishing,
+                time,
+                scene.fps,
+            );
         }
 
         canvas
@@ -1296,11 +1310,33 @@ impl RenderGraph {
             ItemKind::GenerativeBg { config } => {
                 let sw = (config.width * tf.scale_x).round().clamp(16.0, 4096.0) as u32;
                 let sh = (config.height * tf.scale_y).round().clamp(16.0, 4096.0) as u32;
+                let t_sec = if item.speed_ramp.enabled {
+                    ve_core::evaluate_speed_ramp_source_time(
+                        local_time.as_seconds(),
+                        item.duration.as_seconds(),
+                        &item.speed_ramp,
+                    ) as f32
+                } else {
+                    local_time.as_seconds() as f32
+                };
                 Some(crate::generative_render::render_generative_bg(
-                    config,
-                    local_time.as_seconds() as f32,
-                    sw,
-                    sh,
+                    config, t_sec, sw, sh,
+                ))
+            }
+            ItemKind::RiggedPuppet { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(32.0, 4096.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(32.0, 4096.0) as u32;
+                let t_sec = if item.speed_ramp.enabled {
+                    ve_core::evaluate_speed_ramp_source_time(
+                        local_time.as_seconds(),
+                        item.duration.as_seconds(),
+                        &item.speed_ramp,
+                    ) as f32
+                } else {
+                    local_time.as_seconds() as f32
+                };
+                Some(crate::rig_render::render_rigged_puppet(
+                    config, t_sec, sw, sh,
                 ))
             }
             ItemKind::Audio { .. }

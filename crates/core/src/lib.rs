@@ -9,6 +9,7 @@ pub mod crdt_sync;
 pub mod delivery;
 pub mod encoding;
 pub mod expression;
+pub mod finishing;
 pub mod folder;
 pub mod generative;
 pub mod highlights;
@@ -22,9 +23,11 @@ pub mod preset;
 pub mod project;
 pub mod recipe;
 pub mod registry;
+pub mod rigging;
 pub mod scene3d;
 pub mod script_import;
 pub mod settings;
+pub mod speed_ramp;
 pub mod template;
 pub mod text_edit;
 pub mod time;
@@ -64,6 +67,9 @@ pub use expression::{
     CompiledExpression, EXPRESSION_PROPERTIES, ExpressionContext, ExpressionError, LayerLookupFn,
     build_bake_expression_command, compile_expression, evaluate_expression, evaluate_item_property,
     evaluate_item_transform, expression_presets, item_base_property, item_expressions_use_audio,
+};
+pub use finishing::{
+    CinemaFinishingConfig, LetterboxAspect, export_cmx3600_edl, export_fcpxml_v10,
 };
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
 pub use generative::{GenerativeBgConfig, GenerativeBgPreset};
@@ -118,6 +124,10 @@ pub use registry::{
     ExtensionKind, RegistryEntry, SandboxPermission, official_registry_catalog, sha256_hex,
     verify_and_install_extension,
 };
+pub use rigging::{
+    BoneNode, IkTarget, Rig2DConfig, RigMotionPreset, SolvedBonePose, evaluate_rig_poses,
+    solve_two_bone_ik,
+};
 pub use scene3d::{
     Mesh3DConfig, Mesh3DData, Mesh3DPreset, Vertex3D, build_cube_mesh, build_extruded_3d_text_mesh,
     build_sphere_mesh, build_torus_mesh, encode_mesh_to_glb, parse_gltf_or_glb, resolve_mesh_data,
@@ -128,6 +138,10 @@ pub use script_import::{
 };
 pub use settings::{
     EditorAction, EditorKeymap, EditorUserSettings, KeymapPreset, UiLanguage, UiThemePreset, tr,
+};
+pub use speed_ramp::{
+    DetectedSceneCut, SpeedRampConfig, SpeedRampKnot, SpeedRampPreset, build_scene_cut_commands,
+    evaluate_speed_at_norm_time, evaluate_speed_ramp_source_time,
 };
 pub use template::{
     ExposedParam, ExposedParamKind, MotionTemplate, ProjectTemplate, ResponsiveTimeRegion,

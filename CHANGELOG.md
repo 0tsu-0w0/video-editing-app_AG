@@ -1,5 +1,25 @@
 # Changelog
 
+## [5.0.0] - 2026-11-21
+
+プロフィニッシング＆モーションリギング＆スマート音響マイルストーン v5.0（#37〜#40）をすべて実装し、全 40 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **74 MCP ツール**）。
+
+### #37 2D スケルトンボーン ＆ 2-Bone IK パペットリギングエンジン
+* `ve-core` / `ve-render`: `rigging` / `rig_render` モジュール — 10 ボーン標準ヒューマノイド階層 FK・余弦定理による解析的 2-Bone 逆運動学 `solve_two_bone_ik`・髪/リボン二次物理スウェイ・4 種モーションプリセット（`IdleBreathe` / `WaveHello` / `NodTalk` / `DanceBounce`）・`ItemKind::RiggedPuppet`＆`EditCommand::SetRig2D` を `RenderGraph`（アンチエイリアスカプセル＋ボーン/IK オーバーレイ）へ統合
+* `ve-app` / `ve-mcp`: ライブスケルトン可視化付き「🦴 2D ボーン＆IK」タブおよび MCP `rig2d_puppet_control` を追加
+
+### #38 オフライン自動プロシージャル BGM コンポーザー（音楽理論・マルチトラック 48kHz WAV ＆ 小節マーカー同期）
+* `ve-audio`: `bgm_composer` モジュール — 著作権フリー完全オフラインで 6 ジャンル（Lo-Fi チルホップ・アップビートポップ・シネマティック壮大・サイバーシンセウェーブ・爽やかアコースティック・サスペンスパルス）のドラム・ベース・デチューンステレオコードパッド・メロディ＆エコーを 48kHz 放送安全リミット付きステレオ合成し、正確な拍／小節マーカー時刻を同時生成する `compose_bgm_track` を実装
+* `ve-app` / `ve-mcp`: 「🎼 自動BGM作曲」タブ（小節マーカー 1-Undo 同時配置）および MCP `offline_bgm_composer` を追加
+
+### #39 スピードランプ（Time-Remapping 解析積分曲線）＆ 自動シーンカット検出（Scene Edit Detection）
+* `ve-core` / `ve-render`: `speed_ramp` / `rig_render` モジュール — 5 プリセット（`BulletTimeDip` / `RampUpHero` / `EaseInSlowMo` / `FlashBurst` 等）＆カスタムノットの厳密解析積分タイムリマップ `evaluate_speed_ramp_source_time`（`TimelineItem::speed_ramp`・`EditCommand::SetSpeedRamp`）を `TimelineItem::evaluate_source_time_sec`＆`RenderGraph` へ統合。さらに 64 ビン RGB ヒストグラム χ² 距離＋輝度変化によるショット境界自動検出 `detect_scene_cuts_in_scene` および 1-Undo マーカー＆自動分割コマンドビルダー `build_scene_cut_commands` を実装
+* `ve-app` / `ve-mcp`: 速度曲線グラフ＆検出カット一覧付き「⚡ 速度曲線＆カット検出」タブおよび MCP `speed_ramp_and_scene_detect` を追加
+
+### #40 プロ・シネマフィニッシング（35mm ハレーション・アナモルフィックフレア・グレイン・バーンイン）＆ CMX 3600 EDL / FCPXML v1.10 書き出し
+* `ve-core` / `ve-render`: `finishing` / `finishing_render` モジュール — 35mm フィルムハレーション（高輝度赤橙光学散乱）・双方向指数ストリーク型アナモルフィック水平レンズフレア・オーガニック 35mm グレイン・周辺ビネット・2.39:1/1.85:1/4:3 レターボックス・SMPTE タイムコード＆透かしバーンイン HUD（`apply_cinema_finishing` / `EditCommand::SetCinemaFinishing`）を `RenderGraph` 最終段へ統合。さらに業界標準 **CMX 3600 EDL**（`export_cmx3600_edl`）および **Final Cut Pro XML v1.10**（`export_fcpxml_v10`）書き出しを実装
+* `ve-app` / `ve-mcp`: 「🎬 シネマ仕上げ＆EDL」タブおよび MCP `cinema_finishing_and_edl`（全 **74 MCP ツール**）を追加
+
 ## [4.0.0] - 2026-11-21
 
 マスタースタジオ＆クリエイティブ物理マイルストーン v4.0（#33〜#36）をすべて実装し、全 36 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **70 MCP ツール**）。

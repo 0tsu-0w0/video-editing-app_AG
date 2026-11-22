@@ -1027,6 +1027,10 @@ pub enum ItemKind {
     GenerativeBg {
         config: crate::generative::GenerativeBgConfig,
     },
+    /// v5.0 #37: 2D スケルトンボーン＆2-Bone IK パペットリグ（二次揺れ対応）
+    RiggedPuppet {
+        config: Box<crate::rigging::Rig2DConfig>,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -1349,6 +1353,9 @@ pub struct TimelineItem {
     /// v2.1 #28: ワード単位ダイナミック・キネティック字幕設定
     #[serde(default)]
     pub kinetic_subtitle: crate::kinetic_sub::KineticSubtitleConfig,
+    /// v5.0 #39: スピードランプ（Time-Remapping 速度曲線）設定
+    #[serde(default)]
+    pub speed_ramp: crate::speed_ramp::SpeedRampConfig,
     pub kind: ItemKind,
 }
 
@@ -1431,6 +1438,7 @@ impl TimelineItem {
             group_id: None,
             corner_pin: CornerPinConfig::default(),
             kinetic_subtitle: crate::kinetic_sub::KineticSubtitleConfig::default(),
+            speed_ramp: crate::speed_ramp::SpeedRampConfig::default(),
             kind,
         }
     }
@@ -1443,7 +1451,7 @@ impl TimelineItem {
         t >= self.start && t < self.end()
     }
 
-    /// 再生速度・逆再生・ループ・`time_remap` キーフレームを考慮して元素材の参照時刻（秒）を算出する
+    /// 再生速度・逆再生・ループ・`time_remap` キーフレーム・v5.0 スピードランプを考慮して元素材の参照時刻（秒）を算出する
     pub fn evaluate_source_time_sec(
         &self,
         local_time: RationalTime,
@@ -1465,6 +1473,13 @@ impl TimelineItem {
                 kfs,
                 local_time,
             ))
+        } else if self.speed_ramp.enabled {
+            let ramped = crate::speed_ramp::evaluate_speed_ramp_source_time(
+                local_time.as_seconds(),
+                self.duration.as_seconds(),
+                &self.speed_ramp,
+            );
+            source_offset.as_seconds() + ramped
         } else {
             let speed = f64::from(self.playback.speed);
             if speed < 0.0 {
@@ -1823,6 +1838,9 @@ pub struct Scene {
     /// v4.0 #33: ACEScg / OpenColorIO プロカラー管理（カメラ Log IDT・ガマット圧縮・AgX/ACES トーンマップ）
     #[serde(default)]
     pub color_management: crate::color_mgmt::ColorManagementConfig,
+    /// v5.0 #40: シネマフィニッシング（ハレーション・アナモルフィックフレア・フィルムグレイン・レターボックス・バーンイン）
+    #[serde(default)]
+    pub cinema_finishing: crate::finishing::CinemaFinishingConfig,
     /// v0.9 #16: シャッター角度ベース サブフレーム合成モーションブラー設定
     #[serde(default)]
     pub motion_blur: MotionBlurConfig,
@@ -1852,6 +1870,7 @@ impl Scene {
             audio_ducking: AudioDuckingConfig::default(),
             color_grade: SceneColorGrade::default(),
             color_management: crate::color_mgmt::ColorManagementConfig::default(),
+            cinema_finishing: crate::finishing::CinemaFinishingConfig::default(),
             motion_blur: MotionBlurConfig::default(),
             markers: Vec::new(),
             node_graph: crate::node_graph::NodeCompositeGraph::default(),

@@ -1,4 +1,5 @@
 pub mod beats;
+pub mod bgm_composer;
 pub mod clock;
 pub mod dsp;
 pub mod dubbing;
@@ -14,6 +15,7 @@ pub use beats::{
     BeatAnalysisResult, BeatDetectionConfig, BeatPoint, detect_audio_beats,
     detect_beats_from_waveform,
 };
+pub use bgm_composer::{BgmComposeConfig, BgmGenre, ComposedBgmResult, compose_bgm_track};
 pub use clock::AudioMasterClock;
 pub use dsp::{
     AtomicAudioMeter, AudioMeterSnapshot, SpectrumSnapshot, StemSeparationResult,

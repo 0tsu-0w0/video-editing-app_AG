@@ -1,6 +1,7 @@
 pub mod ai_vision;
 pub mod color;
 pub mod color_grading;
+pub mod finishing_render;
 pub mod generative_render;
 pub mod gpu_v30;
 pub mod graph;
@@ -10,6 +11,7 @@ pub mod mesh3d_render;
 pub mod node_eval;
 pub mod pipeline;
 pub mod psd_sprite;
+pub mod rig_render;
 pub mod sprite;
 pub mod text;
 pub mod v09_fx;
@@ -29,6 +31,7 @@ pub use color_grading::{
     apply_scene_color_management, compute_auto_color_match, compute_video_scopes,
     emit_sample_cube_luts, evaluate_tone_curve_lut,
 };
+pub use finishing_render::apply_cinema_finishing;
 pub use generative_render::{
     encode_linear_image_png_bytes, measure_scene_video_qc_metrics, render_generative_bg,
     score_frame_thumbnail_attractiveness, select_best_thumbnail_frame,
@@ -53,6 +56,9 @@ pub use pipeline::{
     WgpuComputeCompositor, WgpuPreviewPipeline,
 };
 pub use psd_sprite::PsdCharacterAsset;
+pub use rig_render::{
+    compute_frame_histogram_chi_sq, detect_scene_cuts_in_scene, render_rigged_puppet,
+};
 pub use sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
 pub use text::{StyledSpan, TextRenderer, parse_inline_text_spans, strip_inline_tags};
 pub use v09_fx::{

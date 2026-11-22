@@ -400,6 +400,20 @@ pub enum EditCommand {
         item_id: ItemId,
         config: crate::generative::GenerativeBgConfig,
     },
+    /// v5.0 #37: 2D スケルトンボーン＆2-Bone IK パペットリグ設定を更新する
+    SetRig2D {
+        item_id: ItemId,
+        config: Box<crate::rigging::Rig2DConfig>,
+    },
+    /// v5.0 #39: クリップのスピードランプ（Time-Remapping 曲線）設定を更新する
+    SetSpeedRamp {
+        item_id: ItemId,
+        speed_ramp: crate::speed_ramp::SpeedRampConfig,
+    },
+    /// v5.0 #40: シーンのシネマフィニッシング（ハレーション・フレア・グレイン・レターボックス・バーンイン）を更新する
+    SetCinemaFinishing {
+        config: crate::finishing::CinemaFinishingConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -478,6 +492,9 @@ impl EditCommand {
             Self::SetItemPhonemes { .. } => "set_item_phonemes",
             Self::SetColorManagement { .. } => "set_color_management",
             Self::SetGenerativeBg { .. } => "set_generative_bg",
+            Self::SetRig2D { .. } => "set_rig_2d",
+            Self::SetSpeedRamp { .. } => "set_speed_ramp",
+            Self::SetCinemaFinishing { .. } => "set_cinema_finishing",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -958,6 +975,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 audio_ducking: AudioDuckingConfig::default(),
                 color_grade: SceneColorGrade::default(),
                 color_management: crate::color_mgmt::ColorManagementConfig::default(),
+                cinema_finishing: crate::finishing::CinemaFinishingConfig::default(),
                 motion_blur: MotionBlurConfig::default(),
                 markers: Vec::new(),
                 node_graph: NodeCompositeGraph::default(),
@@ -1756,6 +1774,43 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             } else {
                 Err(CommandError::ItemNotFound(*item_id))
             }
+        }
+        EditCommand::SetRig2D { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::RiggedPuppet { config: ref mut c } = item.kind {
+                let mut next = (**config).clone();
+                next.width = next.width.clamp(64.0, 4096.0);
+                next.height = next.height.clamp(64.0, 4096.0);
+                next.motion_speed = next.motion_speed.clamp(0.0, 6.0);
+                next.motion_amp = next.motion_amp.clamp(0.0, 3.0);
+                **c = next;
+                Ok(())
+            } else {
+                Err(CommandError::ItemNotFound(*item_id))
+            }
+        }
+        EditCommand::SetSpeedRamp {
+            item_id,
+            speed_ramp,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut sr = speed_ramp.clone();
+            sr.knots = sr.normalized();
+            item.speed_ramp = sr;
+            Ok(())
+        }
+        EditCommand::SetCinemaFinishing { config } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = config.clone();
+            next.halation_strength = next.halation_strength.clamp(0.0, 1.5);
+            next.halation_threshold = next.halation_threshold.clamp(0.3, 1.0);
+            next.anamorphic_flare = next.anamorphic_flare.clamp(0.0, 1.5);
+            next.film_grain = next.film_grain.clamp(0.0, 0.5);
+            next.vignette = next.vignette.clamp(0.0, 1.0);
+            scene.cinema_finishing = next;
+            Ok(())
         }
         EditCommand::Batch { commands, .. } => {
             for cmd in commands {
