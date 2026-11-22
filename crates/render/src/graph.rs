@@ -1267,6 +1267,19 @@ impl RenderGraph {
                     tf.scale_y,
                 ))
             }
+            ItemKind::Mesh3D { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(16.0, 2048.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(16.0, 2048.0) as u32;
+                let base_dir = self.project_folder.as_ref().map(|f| f.root());
+                Some(crate::mesh3d_render::render_mesh3d_item(
+                    config,
+                    base_dir,
+                    &scene.camera.light,
+                    local_time.as_seconds() as f32,
+                    sw,
+                    sh,
+                ))
+            }
             ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }
             | ItemKind::Transition { .. }

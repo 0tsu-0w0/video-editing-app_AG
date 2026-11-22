@@ -1,6 +1,7 @@
 pub mod beats;
 pub mod clock;
 pub mod dsp;
+pub mod dubbing;
 pub mod mixer;
 pub mod multicam;
 pub mod output;
@@ -18,6 +19,11 @@ pub use dsp::{
     analyze_spectrum_bands, apply_audio_effect_chain, apply_de_esser, apply_sidechain_ducking,
     apply_spectral_noise_reduction, compute_lufs_gain, db_to_linear, linear_to_db,
     measure_block_meter, measure_integrated_lufs, separate_vocal_bgm_stems,
+};
+pub use dubbing::{
+    DubbingVoicePreset, GeneratedDubClip, align_text_to_phoneme_segments,
+    build_dubbing_timeline_commands, collect_dubbing_targets_from_table,
+    synthesize_offline_dubbing_pcm,
 };
 pub use mixer::{AudioClip, AudioGraph};
 pub use multicam::{AudioSyncEstimate, estimate_audio_offset_xcorr};

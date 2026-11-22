@@ -1019,6 +1019,10 @@ pub enum ItemKind {
     VectorShape {
         config: VectorShapeConfig,
     },
+    /// v3.0 #30: 3D メッシュ / glTF 2.0 モデル / 3D 立体押し出しテキスト（PBR 描画対応）
+    Mesh3D {
+        config: crate::scene3d::Mesh3DConfig,
+    },
     Precomp {
         scene_id: SceneId,
     },

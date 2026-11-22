@@ -3,6 +3,7 @@ pub mod cache;
 pub mod camera;
 pub mod collab;
 pub mod command;
+pub mod crdt_sync;
 pub mod delivery;
 pub mod encoding;
 pub mod expression;
@@ -17,6 +18,7 @@ pub mod preset;
 pub mod project;
 pub mod recipe;
 pub mod registry;
+pub mod scene3d;
 pub mod script_import;
 pub mod settings;
 pub mod template;
@@ -36,11 +38,15 @@ pub use collab::{
     import_youtube_review_comments, merge_projects_three_way, parse_timecode_to_rational,
 };
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
+pub use crdt_sync::{
+    CrdtOpKind, CrdtOperation, CrdtSyncLog, LanCollabHost, PeerCursorState, PeerId,
+    sync_crdt_with_lan_peer,
+};
 pub use delivery::{
     ArchivePackageSummary, DeliveryIssue, DeliveryReport, IssueSeverity, archive_project_to_zip,
     crc32_ieee, validate_project_delivery,
 };
-pub use encoding::base64_encode;
+pub use encoding::{base64_decode, base64_encode};
 pub use expression::{
     CompiledExpression, EXPRESSION_PROPERTIES, ExpressionContext, ExpressionError, LayerLookupFn,
     build_bake_expression_command, compile_expression, evaluate_expression, evaluate_item_property,
@@ -93,6 +99,10 @@ pub use recipe::{
 pub use registry::{
     ExtensionKind, RegistryEntry, SandboxPermission, official_registry_catalog, sha256_hex,
     verify_and_install_extension,
+};
+pub use scene3d::{
+    Mesh3DConfig, Mesh3DData, Mesh3DPreset, Vertex3D, build_cube_mesh, build_extruded_3d_text_mesh,
+    build_sphere_mesh, build_torus_mesh, encode_mesh_to_glb, parse_gltf_or_glb, resolve_mesh_data,
 };
 pub use script_import::{
     ScriptBuildConfig, ScriptLine, build_script_timeline_commands, parse_script_auto,

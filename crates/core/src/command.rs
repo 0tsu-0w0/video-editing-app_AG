@@ -381,6 +381,16 @@ pub enum EditCommand {
         item_id: ItemId,
         kinetic: crate::kinetic_sub::KineticSubtitleConfig,
     },
+    /// v3.0 #30: 3D メッシュ / glTF 2.0 設定を更新する
+    SetMesh3D {
+        item_id: ItemId,
+        config: crate::scene3d::Mesh3DConfig,
+    },
+    /// v3.0 #31: オフライン吹替／リップシンク用の音素タイミング列を更新する
+    SetItemPhonemes {
+        item_id: ItemId,
+        phonemes: Vec<crate::lipsync::PhonemeSegment>,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -455,6 +465,8 @@ impl EditCommand {
             Self::ReplaceProjectSnapshot { .. } => "replace_project_snapshot",
             Self::SetCornerPin { .. } => "set_corner_pin",
             Self::SetKineticSubtitle { .. } => "set_kinetic_subtitle",
+            Self::SetMesh3D { .. } => "set_mesh_3d",
+            Self::SetItemPhonemes { .. } => "set_item_phonemes",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1693,6 +1705,20 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
         EditCommand::SetKineticSubtitle { item_id, kinetic } => {
             let item = find_item_mut(project, *item_id)?;
             item.kinetic_subtitle = kinetic.clone();
+            Ok(())
+        }
+        EditCommand::SetMesh3D { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::Mesh3D { config: ref mut c } = item.kind {
+                *c = config.clone();
+                Ok(())
+            } else {
+                Err(CommandError::ItemNotFound(*item_id))
+            }
+        }
+        EditCommand::SetItemPhonemes { item_id, phonemes } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.phoneme_segments = phonemes.clone();
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {
