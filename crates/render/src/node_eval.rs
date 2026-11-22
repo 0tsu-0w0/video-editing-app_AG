@@ -346,7 +346,7 @@ fn merge_channels(
     let h = height.max(1);
     let mut out = LinearImage::new(w, h, LinearPremul::TRANSPARENT);
     let len = (w * h) as usize;
-    for i in 0..len {
+    for (i, dst) in out.pixels.iter_mut().enumerate().take(len) {
         let r = r_img
             .and_then(|im| im.pixels.get(i))
             .map(|p| p.r)
@@ -371,7 +371,7 @@ fn merge_channels(
                     .unwrap_or(1.0)
             })
             .clamp(0.0, 1.0);
-        out.pixels[i] = LinearPremul {
+        *dst = LinearPremul {
             r: r * a,
             g: g * a,
             b: b * a,

@@ -1091,11 +1091,11 @@ impl V20PanelsState {
                     Stroke::new(1.0, Color32::from_gray(70)),
                 );
                 let n = self.reframe_samples.len().max(2);
-                for i in 0..self.reframe_samples.len().saturating_sub(1) {
+                for (i, pair) in self.reframe_samples.windows(2).enumerate() {
                     let x0 = rect.left() + (i as f32 / (n - 1) as f32) * rect.width();
                     let x1 = rect.left() + ((i + 1) as f32 / (n - 1) as f32) * rect.width();
-                    let y0 = rect.top() + self.reframe_samples[i].focus_x_norm * rect.height();
-                    let y1 = rect.top() + self.reframe_samples[i + 1].focus_x_norm * rect.height();
+                    let y0 = rect.top() + pair[0].focus_x_norm * rect.height();
+                    let y1 = rect.top() + pair[1].focus_x_norm * rect.height();
                     p.line_segment(
                         [Pos2::new(x0, y0), Pos2::new(x1, y1)],
                         Stroke::new(2.0, Color32::from_rgb(80, 220, 255)),
