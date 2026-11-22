@@ -16,6 +16,7 @@ mod v09_panels;
 mod v10_panels;
 mod v20_panels;
 mod v21_panels;
+mod v30_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -40,6 +41,7 @@ use v09_panels::V09PanelsState;
 use v10_panels::{V10PanelsState, apply_user_visuals};
 use v20_panels::V20PanelsState;
 use v21_panels::V21PanelsState;
+use v30_panels::V30PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
@@ -140,6 +142,7 @@ struct EditorApp {
     v10_panels: V10PanelsState,
     v20_panels: V20PanelsState,
     v21_panels: V21PanelsState,
+    v30_panels: V30PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -338,6 +341,7 @@ impl EditorApp {
             v10_panels: V10PanelsState::default(),
             v20_panels: V20PanelsState::default(),
             v21_panels: V21PanelsState::default(),
+            v30_panels: V30PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -2062,6 +2066,16 @@ impl eframe::App for EditorApp {
                 }
                 if ui
                     .toggle_value(
+                        &mut self.v30_panels.show_window,
+                        "🌌 v3.0 ワールド＆GPU",
+                    )
+                    .on_hover_text("v3.0 ワールド＆GPU スタジオ（フルGPUコンピュート＆4Kベンチ・3Dメッシュ/glTF 2.0＆カメラトラッカー・オフライン多言語AI吹替＆リップシンク・P2P/LAN CRDT同時共同編集）")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_window
+                }
+                if ui
+                    .toggle_value(
                         &mut self.v10_panels.show_settings_window,
                         tr(self.user_settings.language, "settings_title"),
                     )
@@ -2544,6 +2558,22 @@ impl eframe::App for EditorApp {
             }
         }
 
+        // v3.0 #29〜#32: ワールド＆GPU スタジオ（フルGPUコンピュート・3Dメッシュ/glTF＆カメラ追跡・オフライン多言語吹替＆リップシンク・P2P/LAN CRDT共同編集）
+        if self.v30_panels.show_window {
+            let selected_item = self
+                .session
+                .lock()
+                .ok()
+                .and_then(|s| s.selected_items.first().copied());
+            if self
+                .v30_panels
+                .show_v30_window(&ctx, &self.session, selected_item)
+            {
+                self.ram_preview.clear();
+                self.preview_dirty = true;
+            }
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2570,7 +2600,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v2.1.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v3.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

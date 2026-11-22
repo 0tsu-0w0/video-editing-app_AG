@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.0.0] - 2026-11-21
+
+次世代ワールド＆GPU マイルストーン v3.0（#29〜#32）をすべて実装し、全 32 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **66 MCP ツール**）。
+
+### #29 フル GPU コンピュートパイプライン（Vulkan / Metal / DX12 WGSL ＆ 4K スコープ）
+* `ve-render`: `gpu_v30` モジュール — `@compute @workgroup_size(8, 8)` WGSL コンピュートシェーダー `COLOR_GRADE_COMPUTE_WGSL` および原子ヒストグラム／スコープ用 `VIDEO_SCOPES_COMPUTE_WGSL`（`atomicAdd`）を追加し、`naga` 静的検証・`wgpu` ヘッドレス GPU ディスパッチ（`GpuV30Pipeline`）・決定論的 CPU フォールバック（`run_gpu_or_cpu_grade_and_scopes`）・1080p/4K 実測ベンチマーク（`benchmark_v30_gpu_pipeline`）を実装
+* `ve-app` / `ve-mcp`: v3.0 スタジオ「⚡ GPU コンピュート＆4K」タブおよび MCP `gpu_v30_pipeline` を追加
+
+### #30 3D メッシュ / glTF 2.0 シーン合成 ＆ 3D カメラトラッカー
+* `ve-core`: `scene3d` モジュール — Pure-Rust RFC 4648 `base64_decode`・glTF 2.0（`.gltf` JSON + embedded Base64 data URI / 外部 `.bin` ＆ `.glb` バイナリコンテナ）パーサ `parse_gltf_or_glb`・GLB エンコーダ `encode_mesh_to_glb`・プロシージャル 3D キューブ／球体／トーラス／**5×7 押し出し 3D 立体テキスト**・`ItemKind::Mesh3D`＆`EditCommand::SetMesh3D` を実装
+* `ve-render`: `mesh3d_render` モジュール — Z バッファ付き PBR 3D ラスタライザ（GGX 鏡面・Schlick Fresnel・スタジオ環境反射・`Light3D` 連動・ワイヤーフレーム）を `RenderGraph` に統合し、特徴点視差＋Z ドリー復元の 3D カメラトラッカー `analyze_3d_camera_track`＆`build_3d_camera_track_command` を追加
+* `ve-app` / `ve-mcp`: プレビュー直接操作ギズモ対応、「🧊 3D メッシュ/glTF ＆ カメラ追跡」タブ、および MCP `scene_3d_and_camera_track` を追加
+
+### #31 オフライン多言語 AI 吹替 ＆ 音声リップシンク自動生成
+* `ve-audio` / `ve-core`: `dubbing` モジュール — 完全オフライン（クラウド送信ゼロ）の日英テキスト→母音音素アライメント `align_text_to_phoneme_segments`・5 話者プリセットの 3 フォルマント共振 48kHz ステレオ音声合成 `synthesize_offline_dubbing_pcm`・字幕切替＋吹替 WAV 配置＋全立ち絵（`CharacterSprite`）への音素リップシンク一括同期 `build_dubbing_timeline_commands`（`EditCommand::SetItemPhonemes` 1-Undo 対応）を実装
+* `ve-app` / `ve-mcp`: 「🎙 オフライン吹替＆リップシンク」タブ（母音タイムラインプレビュー付）および MCP `offline_ai_dubbing_lipsync` を追加
+
+### #32 リアルタイム P2P / LAN ＆ CRDT 同時共同編集（クラウド不要ローカルチーム編集）
+* `ve-core`: `crdt_sync` モジュール — Lamport 論理時計＋Vector Clock＋決定論的全順序 `(lamport, peer_id, op_id)` による可換・結合・冪等な Op-Based CRDT（`CrdtSyncLog`）・ライブピアカーソル在席管理（`PeerCursorState`）・トークン認証付き Pure-Rust LAN TCP JSON-Lines ピア同期サーバー＆クライアント（`LanCollabHost` / `sync_crdt_with_lan_peer`）・Delta JSON 入出力を実装
+* `ve-mcp` / `ve-app`: `EditorSession::crdt_log` 共有統合、「🌐 P2P/CRDT 同時共同編集」タブ、および MCP `crdt_realtime_collab`（全 **66 MCP ツール**）を追加
+
 ## [2.1.0] - 2026-11-21
 
 シネマ＆クリエイタースタジオ v2.1 マイルストーン（#25〜#28）をすべて実装し、全 28 ロードマップ項目を達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **62 MCP ツール**）。

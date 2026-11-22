@@ -1,9 +1,11 @@
 pub mod ai_vision;
 pub mod color;
 pub mod color_grading;
+pub mod gpu_v30;
 pub mod graph;
 pub mod hot_shader;
 pub mod mask_tracker;
+pub mod mesh3d_render;
 pub mod node_eval;
 pub mod pipeline;
 pub mod psd_sprite;
@@ -25,11 +27,20 @@ pub use color_grading::{
     VideoScopeData, WAVEFORM_BINS, WAVEFORM_COLS, apply_hsl_qualifier_rgb, apply_scene_color_grade,
     compute_auto_color_match, compute_video_scopes, emit_sample_cube_luts, evaluate_tone_curve_lut,
 };
+pub use gpu_v30::{
+    COLOR_GRADE_COMPUTE_WGSL, GpuBenchmarkReport, GpuV30Capabilities, GpuV30Pipeline,
+    VIDEO_SCOPES_COMPUTE_WGSL, benchmark_v30_gpu_pipeline, detect_gpu_v30_capabilities,
+    run_gpu_or_cpu_grade_and_scopes,
+};
 pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph, render_frame_batch_parallel};
 pub use hot_shader::{
     HotShaderEntry, ShaderHotReloader, ShaderReloadStatus, register_shader_dir, validate_wgsl,
 };
 pub use mask_tracker::{apply_bezier_masks, track_point_across_frames, track_point_in_scene};
+pub use mesh3d_render::{
+    CameraTrack3DSample, analyze_3d_camera_track, build_3d_camera_track_command,
+    render_mesh_data_pbr, render_mesh3d_item,
+};
 pub use node_eval::{LayerRenderPacket, evaluate_node_composite_graph};
 pub use pipeline::{
     COMPOSITE_COMPUTE_WGSL_SOURCE, GpuEffectUniform, GpuPostProcessPass, HeadlessGpuOffloader,

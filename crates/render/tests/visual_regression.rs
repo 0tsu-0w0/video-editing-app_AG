@@ -306,3 +306,60 @@ fn golden_v21_curves_hsl_corner_pin_and_kinetic_subtitles() {
         "v2.1 kinetic subtitles + motion must visibly progress over time: changed={changed}"
     );
 }
+
+#[test]
+fn golden_v30_mesh3d_pbr_and_gpu_compute_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        let mut cube_item = TimelineItem::new(
+            "PBR Torus",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::Mesh3D {
+                config: ve_core::Mesh3DConfig {
+                    preset: ve_core::Mesh3DPreset::Torus,
+                    width: 120.0,
+                    height: 120.0,
+                    metallic: 0.75,
+                    roughness: 0.22,
+                    auto_spin_deg_per_sec: 90.0,
+                    ..ve_core::Mesh3DConfig::default()
+                },
+            },
+        );
+        cube_item.transform.x = 100.0;
+        cube_item.transform.y = 30.0;
+        scene.layers[2].items.push(cube_item);
+    }
+
+    let t0 = RationalTime::from_seconds(0.2);
+    let t1 = RationalTime::from_seconds(1.1);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let r1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let r2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    assert_eq!(
+        r1, r2,
+        "v3.0 PBR Mesh3D rendering must be bit-for-bit deterministic"
+    );
+
+    let later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let diff = r1.iter().zip(later.iter()).filter(|(a, b)| a != b).count();
+    assert!(
+        diff > 400,
+        "v3.0 spinning 3D PBR mesh must visibly animate across frames: diff={diff}"
+    );
+
+    let caps = ve_render::detect_gpu_v30_capabilities();
+    assert!(caps.color_shader_valid && caps.scopes_shader_valid && caps.composite_shader_valid);
+}

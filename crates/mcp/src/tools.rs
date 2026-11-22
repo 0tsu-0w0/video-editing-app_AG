@@ -8,37 +8,41 @@ use ve_ai::{
     import_tts_file_pair,
 };
 use ve_audio::{
-    AudioGraph, BeatDetectionConfig, detect_audio_beats, estimate_audio_offset_xcorr,
-    measure_integrated_lufs, measure_true_peak_dbtp, separate_vocal_bgm_stems,
+    AudioGraph, BeatDetectionConfig, DubbingVoicePreset, GeneratedDubClip,
+    align_text_to_phoneme_segments, build_dubbing_timeline_commands, detect_audio_beats,
+    estimate_audio_offset_xcorr, measure_integrated_lufs, measure_true_peak_dbtp,
+    separate_vocal_bgm_stems, synthesize_offline_dubbing_pcm,
 };
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode, Camera3D,
     ChannelSelector, CharacterSpriteConfig, ColorCurves, CommandSource, CompositeNode,
-    CompositeNodeKind, ConflictResolution, CornerPinConfig, CubicBezier, EditCommand, EditorKeymap,
-    EffectNode, EffectPreset, FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig,
-    Keyframe, KeymapPreset, KineticHighlightMode, KineticSubtitleConfig, Light3DType, LipSyncMode,
-    LocalizationEntry, LocalizationTable, MaskMode, MaskVertex, MediaKind, MotionPreset,
-    MulticamCutPoint, NodeCompositeGraph, ParticleConfig, ParticlePreset, ProjectTemplate,
-    PsdCharacterConfig, RationalTime, ReviewComment, ReviewSource, ReviewStatus, RgbaColor,
-    SceneColorGrade, ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator,
-    TextStylePreset, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode, UiLanguage,
-    UiThemePreset, VectorShapeConfig, archive_project_to_zip, base64_encode, build_align_commands,
-    build_apply_locale_commands, build_bake_expression_command, build_beat_cut_commands,
-    build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
+    CompositeNodeKind, ConflictResolution, CornerPinConfig, CrdtOpKind, CrdtSyncLog, CubicBezier,
+    EditCommand, EditorKeymap, EffectNode, EffectPreset, FrameRate, HighlightConfig, Interpolation,
+    ItemKind, JumpCutConfig, Keyframe, KeymapPreset, KineticHighlightMode, KineticSubtitleConfig,
+    Light3DType, LipSyncMode, LocalizationEntry, LocalizationTable, MaskMode, MaskVertex,
+    MediaKind, Mesh3DConfig, Mesh3DPreset, MotionPreset, MulticamCutPoint, NodeCompositeGraph,
+    ParticleConfig, ParticlePreset, ProjectTemplate, PsdCharacterConfig, RationalTime,
+    ReviewComment, ReviewSource, ReviewStatus, RgbaColor, SceneColorGrade, ScriptBuildConfig,
+    ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem, TimelineMarker,
+    TrackMatte, TrackMatteMode, UiLanguage, UiThemePreset, VectorShapeConfig,
+    archive_project_to_zip, base64_encode, build_align_commands, build_apply_locale_commands,
+    build_bake_expression_command, build_beat_cut_commands, build_beat_markers_command,
+    build_close_gaps_commands, build_cube_mesh, build_fit_duration_to_layer_commands,
     build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
     build_multicam_switch_cut_commands, build_multicam_sync_align_commands,
     build_replace_text_commands, build_review_comments_to_markers_commands,
     build_script_timeline_commands, build_shorts_clip_scene_command,
     build_strip_filler_words_commands, build_text_based_delete_commands,
     build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
-    compile_expression, detect_speech_intervals_from_rms, diff_projects, evaluate_item_property,
-    export_ass_subtitles, export_localization_csv, export_otio_json, export_review_comments_csv,
-    export_review_comments_json, export_srt_subtitles, extract_highlight_candidates,
-    extract_localization_table, extract_motion_template_from_scene, extract_transcript_entries,
-    format_diff_report, format_youtube_chapters, import_localization_csv,
-    import_review_comments_csv, import_review_comments_json, import_youtube_review_comments,
-    merge_projects_three_way, official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo,
-    parse_script_auto, parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
+    compile_expression, detect_speech_intervals_from_rms, diff_projects, encode_mesh_to_glb,
+    evaluate_item_property, export_ass_subtitles, export_localization_csv, export_otio_json,
+    export_review_comments_csv, export_review_comments_json, export_srt_subtitles,
+    extract_highlight_candidates, extract_localization_table, extract_motion_template_from_scene,
+    extract_transcript_entries, format_diff_report, format_youtube_chapters,
+    import_localization_csv, import_review_comments_csv, import_review_comments_json,
+    import_youtube_review_comments, merge_projects_three_way, official_registry_catalog,
+    parse_ass_subtitles, parse_aviutl_exo, parse_gltf_or_glb, parse_script_auto,
+    parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
     sync_node_graph_to_scene_layers, validate_project_delivery, verify_and_install_extension,
     wrap_subtitle_japanese,
 };
@@ -48,9 +52,11 @@ use ve_media::{
 };
 use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
 use ve_render::{
-    AutoReframeConfig, LocalVisionBackend, RenderGraph, StabilizeConfig, analyze_camera_shake,
-    analyze_scene_auto_reframe, build_auto_reframe_commands, build_stabilize_commands,
-    compute_auto_color_match, detect_local_vision_status, emit_sample_cube_luts, validate_wgsl,
+    AutoReframeConfig, LocalVisionBackend, RenderGraph, StabilizeConfig, analyze_3d_camera_track,
+    analyze_camera_shake, analyze_scene_auto_reframe, benchmark_v30_gpu_pipeline,
+    build_3d_camera_track_command, build_auto_reframe_commands, build_stabilize_commands,
+    compute_auto_color_match, detect_gpu_v30_capabilities, detect_local_vision_status,
+    emit_sample_cube_luts, run_gpu_or_cpu_grade_and_scopes, validate_wgsl,
 };
 
 const MAX_BATCH_COMMANDS: usize = 500;
@@ -1143,6 +1149,107 @@ pub fn tool_definitions() -> Value {
                     "locale": { "type": "string" },
                     "csv": { "type": "string" },
                     "translations": { "type": "object" }
+                }
+            }
+        },
+        {
+            "name": "gpu_v30_pipeline",
+            "description": "v3.0 #29: フル GPU コンピュートパイプライン（Vulkan/Metal/DX12 WGSL コンピュートシェーダー検証・4K ベンチマーク・GPU/CPU フォールバック付きリアルタイム色調＆ビデオスコープ実行）を操作する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "benchmark_4k", "run_grade_and_scopes"]
+                    },
+                    "width": { "type": "integer" },
+                    "height": { "type": "integer" },
+                    "time_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "scene_3d_and_camera_track",
+            "description": "v3.0 #30: 3D メッシュ / glTF 2.0 (`.gltf`/`.glb`) / 3D 立体押し出しテキストの配置・PBR 質感更新・サンプル GLB 書き出し＆検証・視差ベース 3D カメラトラッキングを実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add_mesh_3d", "update_mesh_3d", "emit_sample_glb", "track_3d_camera"]
+                    },
+                    "id": { "type": "string" },
+                    "layer_index": { "type": "integer" },
+                    "name": { "type": "string" },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["cube", "sphere", "torus", "extruded_text", "gltf_file"]
+                    },
+                    "gltf_path": { "type": "string" },
+                    "text_content": { "type": "string" },
+                    "extrude_depth": { "type": "number" },
+                    "base_color": { "type": "string" },
+                    "metallic": { "type": "number" },
+                    "roughness": { "type": "number" },
+                    "env_reflection": { "type": "number" },
+                    "wireframe": { "type": "boolean" },
+                    "auto_spin_deg_per_sec": { "type": "number" },
+                    "start_sec": { "type": "number" },
+                    "duration_sec": { "type": "number" },
+                    "sample_interval_sec": { "type": "number" },
+                    "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "offline_ai_dubbing_lipsync",
+            "description": "v3.0 #31: 完全オフライン（クラウド送信ゼロ）の多言語 AI 吹替音声合成（3フォルマント共振 48kHz WAV 生成）・音素アライメント・立ち絵/映像リップシンク自動同期を 1-Undo で実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list_voices", "align_phonemes", "generate_locale_dubbing"]
+                    },
+                    "text": { "type": "string" },
+                    "duration_sec": { "type": "number" },
+                    "locale": { "type": "string" },
+                    "voice": {
+                        "type": "string",
+                        "enum": ["jp_female", "jp_male", "en_female", "en_male", "narrator_warm"]
+                    },
+                    "audio_layer_index": { "type": "integer" },
+                    "csv": { "type": "string" },
+                    "translations": { "type": "object" },
+                    "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "crdt_realtime_collab",
+            "description": "v3.0 #32: Lamport/Vector Clock ベースの Op-Based CRDT 同時共同編集（ローカル操作記録・ライブカーソルプレゼンス更新・デルタ JSON 書き出し・リモートデルタ冪等マージ＆ 1-Undo 反映）を操作する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "set_peer_profile", "update_cursor", "record_marker_op", "record_text_op", "export_delta", "merge_remote_delta"]
+                    },
+                    "peer_id": { "type": "string" },
+                    "display_name": { "type": "string" },
+                    "color_hex": { "type": "string" },
+                    "playhead_sec": { "type": "number" },
+                    "selected_item": { "type": "string" },
+                    "id": { "type": "string" },
+                    "content": { "type": "string" },
+                    "time_sec": { "type": "number" },
+                    "label": { "type": "string" },
+                    "delta_json": { "type": "string" },
+                    "apply": { "type": "boolean" }
                 }
             }
         }
@@ -6748,6 +6855,637 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 )),
             }
         }
+        "gpu_v30_pipeline" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            match action {
+                "status" => {
+                    let caps = detect_gpu_v30_capabilities();
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "gpu_available": caps.gpu_available,
+                                "adapter_name": caps.adapter_name,
+                                "backend_name": caps.backend_name,
+                                "color_shader_valid": caps.color_shader_valid,
+                                "scopes_shader_valid": caps.scopes_shader_valid,
+                                "composite_shader_valid": caps.composite_shader_valid
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "benchmark_4k" => {
+                    let w = args.get("width").and_then(Value::as_u64).unwrap_or(1920) as u32;
+                    let h = args.get("height").and_then(Value::as_u64).unwrap_or(1080) as u32;
+                    let rep = benchmark_v30_gpu_pipeline(w, h);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "width": rep.width,
+                                "height": rep.height,
+                                "executed_on_gpu": rep.executed_on_gpu,
+                                "backend_name": rep.backend_name,
+                                "elapsed_ms": rep.elapsed_ms,
+                                "estimated_fps": rep.estimated_fps,
+                                "avg_luma_ire": rep.avg_luma_ire
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "run_grade_and_scopes" => {
+                    let t_sec = finite_clamped(
+                        args.get("time_sec"),
+                        s.playhead.as_seconds(),
+                        0.0,
+                        86_400.0,
+                    );
+                    let w = (args.get("width").and_then(Value::as_u64).unwrap_or(640) as u32)
+                        .clamp(64, 1920);
+                    let h = (args.get("height").and_then(Value::as_u64).unwrap_or(360) as u32)
+                        .clamp(64, 1080);
+                    let scene_id = s.project.active_scene_id;
+                    let grade = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .color_grade
+                        .clone();
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let mut img = rg
+                        .render_project_scene_scaled(
+                            &s.project,
+                            scene_id,
+                            RationalTime::from_seconds(t_sec),
+                            w,
+                            h,
+                            false,
+                        )
+                        .ok_or_else(|| "failed to render frame".to_string())?;
+                    let (scopes, on_gpu, backend) =
+                        run_gpu_or_cpu_grade_and_scopes(&mut img, &grade, None);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "executed_on_gpu": on_gpu,
+                                "backend_name": backend,
+                                "avg_luma_ire": scopes.avg_luma_ire,
+                                "peak_luma_ire": scopes.peak_luma_ire,
+                                "clipped_highlight_pct": scopes.clipped_highlight_pct,
+                                "crushed_shadow_pct": scopes.crushed_shadow_pct
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown gpu_v30_pipeline action: {other}")),
+            }
+        }
+        "scene_3d_and_camera_track" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let parse_preset = |raw: Option<&str>, cur: Mesh3DPreset| match raw {
+                Some("sphere") => Mesh3DPreset::Sphere,
+                Some("torus") => Mesh3DPreset::Torus,
+                Some("extruded_text") => Mesh3DPreset::ExtrudedText,
+                Some("gltf_file") => Mesh3DPreset::GltfFile,
+                Some("cube") => Mesh3DPreset::Cube,
+                _ => cur,
+            };
+            let apply_mesh_args = |cfg: &mut Mesh3DConfig| {
+                cfg.preset = parse_preset(args.get("preset").and_then(Value::as_str), cfg.preset);
+                if let Some(p) = args.get("gltf_path").and_then(Value::as_str) {
+                    cfg.gltf_path = if p.trim().is_empty() {
+                        None
+                    } else {
+                        Some(p.to_string())
+                    };
+                }
+                if let Some(txt) = args.get("text_content").and_then(Value::as_str) {
+                    cfg.text_content = txt.to_string();
+                }
+                if args.get("extrude_depth").is_some() {
+                    cfg.extrude_depth = finite_clamped(
+                        args.get("extrude_depth"),
+                        f64::from(cfg.extrude_depth),
+                        0.05,
+                        2.0,
+                    ) as f32;
+                }
+                if let Some(hex) = args.get("base_color").and_then(Value::as_str)
+                    && let Some(c) = RgbaColor::from_hex(hex)
+                {
+                    cfg.base_color = c;
+                }
+                if args.get("metallic").is_some() {
+                    cfg.metallic =
+                        finite_clamped(args.get("metallic"), f64::from(cfg.metallic), 0.0, 1.0)
+                            as f32;
+                }
+                if args.get("roughness").is_some() {
+                    cfg.roughness =
+                        finite_clamped(args.get("roughness"), f64::from(cfg.roughness), 0.06, 1.0)
+                            as f32;
+                }
+                if args.get("env_reflection").is_some() {
+                    cfg.env_reflection = finite_clamped(
+                        args.get("env_reflection"),
+                        f64::from(cfg.env_reflection),
+                        0.0,
+                        1.0,
+                    ) as f32;
+                }
+                if let Some(wf) = args.get("wireframe").and_then(Value::as_bool) {
+                    cfg.wireframe = wf;
+                }
+                if args.get("auto_spin_deg_per_sec").is_some() {
+                    cfg.auto_spin_deg_per_sec = finite_clamped(
+                        args.get("auto_spin_deg_per_sec"),
+                        f64::from(cfg.auto_spin_deg_per_sec),
+                        -720.0,
+                        720.0,
+                    ) as f32;
+                }
+            };
+
+            match action {
+                "add_mesh_3d" => {
+                    let max_layer = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.layers.len().saturating_sub(1))
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let layer_index = (args.get("layer_index").and_then(Value::as_u64).unwrap_or(0)
+                        as usize)
+                        .min(max_layer);
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("3D Mesh")
+                        .to_string();
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        s.playhead.as_seconds(),
+                        0.0,
+                        86_400.0,
+                    ));
+                    let dur = RationalTime::from_seconds(finite_clamped(
+                        args.get("duration_sec"),
+                        4.0,
+                        0.1,
+                        3600.0,
+                    ));
+                    let mut cfg = Mesh3DConfig::default();
+                    apply_mesh_args(&mut cfg);
+                    let item = TimelineItem::new(
+                        name,
+                        start,
+                        dur,
+                        ItemKind::Mesh3D {
+                            config: cfg.clone(),
+                        },
+                    );
+                    let created_id = item.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddObject { layer_index, item },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "created_id": created_id, "mesh_3d": cfg }).to_string() }]
+                    }))
+                }
+                "update_mesh_3d" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let mut cfg = s
+                        .project
+                        .active_scene()
+                        .and_then(|sc| {
+                            sc.layers.iter().flat_map(|l| l.items.iter()).find_map(|i| {
+                                if i.id == item_id
+                                    && let ItemKind::Mesh3D { config } = &i.kind
+                                {
+                                    Some(config.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .ok_or_else(|| format!("mesh_3d item not found: {item_id}"))?;
+                    apply_mesh_args(&mut cfg);
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetMesh3D {
+                                item_id,
+                                config: cfg.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "item_id": item_id, "mesh_3d": cfg }).to_string() }]
+                    }))
+                }
+                "emit_sample_glb" => {
+                    let cube = build_cube_mesh();
+                    let bytes = encode_mesh_to_glb(&cube);
+                    let parsed = parse_gltf_or_glb(&bytes, None)?;
+                    let out_dir = s
+                        .folder
+                        .as_ref()
+                        .map(|f| f.assets_dir())
+                        .unwrap_or_else(|| std::env::temp_dir().join("ve_glb"));
+                    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                    let glb_path = out_dir.join("sample_cube.glb");
+                    std::fs::write(&glb_path, &bytes).map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "glb_path": glb_path.display().to_string(),
+                                "bytes": bytes.len(),
+                                "triangles": parsed.triangle_count(),
+                                "vertices": parsed.vertices.len()
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "track_3d_camera" => {
+                    let step = finite_clamped(args.get("sample_interval_sec"), 0.25, 0.1, 2.0);
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let scene_id = s.project.active_scene_id;
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let samples = analyze_3d_camera_track(&mut rg, &s.project, scene_id, step);
+                    let base_cam = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.camera)
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let applied = if apply
+                        && let Some(cmd) = build_3d_camera_track_command(&base_cam, &samples)
+                    {
+                        s.bus
+                            .execute(&mut s.project, cmd, CommandSource::Mcp, None)
+                            .map_err(|e| e.to_string())?;
+                        true
+                    } else {
+                        false
+                    };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "sample_count": samples.len(),
+                                "applied": applied,
+                                "camera_position": s.project.active_scene().map(|sc| sc.camera.position)
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown scene_3d_and_camera_track action: {other}")),
+            }
+        }
+        "offline_ai_dubbing_lipsync" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            match action {
+                "list_voices" => {
+                    let voices: Vec<Value> = DubbingVoicePreset::ALL
+                        .iter()
+                        .map(|v| {
+                            json!({
+                                "id": v.id(),
+                                "name": v.display_name(),
+                                "base_pitch_hz": v.base_pitch_hz()
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "offline_only": true, "voices": voices }).to_string() }]
+                    }))
+                }
+                "align_phonemes" => {
+                    let text = args
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'text'".to_string())?;
+                    let dur_sec = finite_clamped(args.get("duration_sec"), 2.0, 0.15, 60.0);
+                    let segs = align_text_to_phoneme_segments(
+                        text,
+                        RationalTime::ZERO,
+                        RationalTime::from_seconds(dur_sec),
+                    );
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "phoneme_count": segs.len(), "phonemes": segs }).to_string() }]
+                    }))
+                }
+                "generate_locale_dubbing" => {
+                    let locale = args.get("locale").and_then(Value::as_str).unwrap_or("en");
+                    let voice = DubbingVoicePreset::from_id(
+                        args.get("voice").and_then(Value::as_str).unwrap_or(
+                            if locale.starts_with("en") {
+                                "en_female"
+                            } else {
+                                "jp_female"
+                            },
+                        ),
+                    );
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let max_layer = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.layers.len().saturating_sub(1))
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let audio_layer_index = (args
+                        .get("audio_layer_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(max_layer as u64)
+                        as usize)
+                        .min(max_layer);
+
+                    let targets: Vec<(Uuid, String, RationalTime, RationalTime)> =
+                        if let Some(csv) = args.get("csv").and_then(Value::as_str) {
+                            let tbl = import_localization_csv(csv);
+                            let sc = s
+                                .project
+                                .active_scene()
+                                .ok_or_else(|| "no active scene".to_string())?;
+                            ve_audio::collect_dubbing_targets_from_table(sc, &tbl, locale)
+                        } else if let Some(map) =
+                            args.get("translations").and_then(Value::as_object)
+                        {
+                            let sc = s
+                                .project
+                                .active_scene()
+                                .ok_or_else(|| "no active scene".to_string())?;
+                            let mut out = Vec::new();
+                            for (k, v) in map {
+                                if let (Ok(id), Some(txt)) = (Uuid::parse_str(k), v.as_str())
+                                    && let Some(item) = sc
+                                        .layers
+                                        .iter()
+                                        .flat_map(|l| l.items.iter())
+                                        .find(|i| i.id == id)
+                                {
+                                    out.push((id, txt.to_string(), item.start, item.duration));
+                                }
+                            }
+                            out
+                        } else {
+                            let sc = s
+                                .project
+                                .active_scene()
+                                .ok_or_else(|| "no active scene".to_string())?;
+                            sc.layers
+                                .iter()
+                                .flat_map(|l| l.items.iter())
+                                .filter_map(|i| {
+                                    if let ItemKind::Text { content, .. } = &i.kind {
+                                        Some((i.id, content.clone(), i.start, i.duration))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        };
+
+                    if targets.is_empty() {
+                        return Err("吹替対象の字幕アイテムがありません".into());
+                    }
+
+                    let out_dir = s
+                        .folder
+                        .as_ref()
+                        .map(|f| f.assets_dir().join("dubbing"))
+                        .unwrap_or_else(|| std::env::temp_dir().join("ve_dubbing"));
+                    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                    let sr = s.project.settings.audio_sample_rate.max(8_000);
+
+                    let mut generated_clips = Vec::new();
+                    let mut wav_paths = Vec::new();
+                    for (idx, (sub_id, txt, start, dur)) in targets.into_iter().enumerate() {
+                        let phonemes = align_text_to_phoneme_segments(&txt, start, dur);
+                        let pcm = synthesize_offline_dubbing_pcm(&phonemes, start, dur, sr, voice);
+                        let wav_name = format!("dub_{locale}_{idx}.wav");
+                        let wav_path = out_dir.join(&wav_name);
+                        write_wav_pcm16(&wav_path, &pcm, sr, 2).map_err(|e| e.to_string())?;
+                        wav_paths.push(wav_path.display().to_string());
+
+                        let asset_id = Uuid::new_v4();
+                        s.project.assets.push(AssetRef {
+                            id: asset_id,
+                            name: wav_name.clone(),
+                            relative_path: Some(PathBuf::from("assets/dubbing").join(&wav_name)),
+                            fallback_absolute_path: Some(wav_path),
+                            collected: true,
+                            kind: MediaKind::Audio,
+                        });
+                        generated_clips.push(GeneratedDubClip {
+                            subtitle_item_id: sub_id,
+                            translated_text: txt,
+                            start,
+                            duration: dur,
+                            audio_asset_id: asset_id,
+                            clip_name: format!("Dub[{locale}] #{idx}"),
+                            phonemes,
+                        });
+                    }
+
+                    let dub_count = generated_clips.len();
+                    let cmds = {
+                        let sc = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        build_dubbing_timeline_commands(sc, audio_layer_index, &generated_clips)
+                    };
+                    let applied = if apply && !cmds.is_empty() {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: format!(
+                                        "オフライン多言語吹替＆リップシンク [{locale}] ({dub_count}件)"
+                                    ),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        true
+                    } else {
+                        false
+                    };
+
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "offline_only": true,
+                                "locale": locale,
+                                "voice": voice.id(),
+                                "generated_clips": dub_count,
+                                "wav_paths": wav_paths,
+                                "applied": applied
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown offline_ai_dubbing_lipsync action: {other}"
+                )),
+            }
+        }
+        "crdt_realtime_collab" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            match action {
+                "status" => Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": json!({
+                            "peer_id": s.crdt_log.local_peer_id,
+                            "display_name": s.crdt_log.display_name,
+                            "color_hex": s.crdt_log.color_hex,
+                            "lamport_clock": s.crdt_log.lamport_clock,
+                            "vector_clock": s.crdt_log.vector_clock,
+                            "op_count": s.crdt_log.operations.len(),
+                            "peers": s.crdt_log.peers
+                        }).to_string()
+                    }]
+                })),
+                "set_peer_profile" => {
+                    if let Some(pid) = args.get("peer_id").and_then(Value::as_str)
+                        && !pid.trim().is_empty()
+                    {
+                        s.crdt_log.local_peer_id = pid.trim().to_string();
+                    }
+                    if let Some(dn) = args.get("display_name").and_then(Value::as_str)
+                        && !dn.trim().is_empty()
+                    {
+                        s.crdt_log.display_name = dn.trim().to_string();
+                    }
+                    if let Some(c) = args.get("color_hex").and_then(Value::as_str)
+                        && !c.trim().is_empty()
+                    {
+                        s.crdt_log.color_hex = c.trim().to_string();
+                    }
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "peer_id": s.crdt_log.local_peer_id, "display_name": s.crdt_log.display_name }).to_string() }]
+                    }))
+                }
+                "update_cursor" => {
+                    let playhead_sec = finite_clamped(
+                        args.get("playhead_sec"),
+                        s.playhead.as_seconds(),
+                        0.0,
+                        86_400.0,
+                    );
+                    let sel = args
+                        .get("selected_item")
+                        .and_then(Value::as_str)
+                        .and_then(|v| Uuid::parse_str(v).ok());
+                    let op = s.crdt_log.update_local_cursor(playhead_sec, sel);
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&op).unwrap_or_default() }]
+                    }))
+                }
+                "record_marker_op" => {
+                    let t = finite_clamped(
+                        args.get("time_sec"),
+                        s.playhead.as_seconds(),
+                        0.0,
+                        86_400.0,
+                    );
+                    let label = args
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or("CRDT Marker");
+                    let marker = TimelineMarker::new(RationalTime::from_seconds(t), label);
+                    let op = s.crdt_log.record_local(CrdtOpKind::AddMarker { marker });
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&op).unwrap_or_default() }]
+                    }))
+                }
+                "record_text_op" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let content = args
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'content'".to_string())?
+                        .to_string();
+                    let op = s
+                        .crdt_log
+                        .record_local(CrdtOpKind::SetTextContent { item_id, content });
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&op).unwrap_or_default() }]
+                    }))
+                }
+                "export_delta" => {
+                    let delta = s.crdt_log.export_delta_json(None);
+                    Ok(json!({ "content": [{ "type": "text", "text": delta }] }))
+                }
+                "merge_remote_delta" => {
+                    let delta_str = args
+                        .get("delta_json")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'delta_json'".to_string())?;
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let ops = CrdtSyncLog::parse_delta_json(delta_str)?;
+                    let merged_new = s.crdt_log.merge_remote_ops(&ops);
+                    let applied = if apply {
+                        let converged = s.crdt_log.apply_to_project(&s.project);
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::ReplaceProjectSnapshot {
+                                    project: Box::new(converged),
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        true
+                    } else {
+                        false
+                    };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "merged_new_ops": merged_new,
+                                "total_ops": s.crdt_log.operations.len(),
+                                "lamport_clock": s.crdt_log.lamport_clock,
+                                "peer_count": s.crdt_log.peers.len(),
+                                "applied": applied
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown crdt_realtime_collab action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -7401,7 +8139,7 @@ mod tests {
 
         // Verify exact MCP tool count = 58 (v2.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 62);
+        assert_eq!(defs.as_array().unwrap().len(), 66);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -7596,7 +8334,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 62);
+        assert_eq!(defs.as_array().unwrap().len(), 66);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -7873,7 +8611,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 62);
+        assert_eq!(defs.as_array().unwrap().len(), 66);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -8091,6 +8829,200 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 62);
+        assert_eq!(defs.as_array().unwrap().len(), 66);
+    }
+
+    #[test]
+    fn v30_mcp_tools_gpu_3d_dubbing_and_crdt() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v30_{}", Uuid::new_v4()));
+        let proj = Project::new("McpV30", ProjectSettings::default());
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let mut ed = EditorSession::with_folder(proj, folder);
+        ed.project.active_scene_mut().unwrap().layers[1]
+            .items
+            .push(TimelineItem::new(
+                "SubJP",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(2.0),
+                ItemKind::Text {
+                    content: "こんにちは、次世代編集ソフトです！".into(),
+                    font_family: "Sans".into(),
+                    font_size: 42.0,
+                    color: RgbaColor::WHITE,
+                    animator: TextAnimator::default(),
+                },
+            ));
+        let sub_id = ed.project.active_scene().unwrap().layers[1].items[0]
+            .id
+            .to_string();
+        let session = Arc::new(Mutex::new(ed));
+
+        // 1. #29 gpu_v30_pipeline: status + benchmark_4k + run_grade_and_scopes
+        let gpu_st = call_tool(&session, "gpu_v30_pipeline", &json!({"action": "status"})).unwrap();
+        let st_txt = gpu_st["content"][0]["text"].as_str().unwrap();
+        assert!(st_txt.contains("\"color_shader_valid\":true"));
+        assert!(st_txt.contains("\"scopes_shader_valid\":true"));
+
+        let bench = call_tool(
+            &session,
+            "gpu_v30_pipeline",
+            &json!({"action": "benchmark_4k", "width": 320, "height": 180}),
+        )
+        .unwrap();
+        assert!(
+            bench["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"estimated_fps\"")
+        );
+
+        // 2. #30 scene_3d_and_camera_track: add_mesh_3d + update_mesh_3d + emit_sample_glb + track_3d_camera
+        let m3d = call_tool(
+            &session,
+            "scene_3d_and_camera_track",
+            &json!({
+                "action": "add_mesh_3d",
+                "layer_index": 0,
+                "name": "Hero3D",
+                "preset": "extruded_text",
+                "text_content": "V3.0",
+                "metallic": 0.7,
+                "roughness": 0.2
+            }),
+        )
+        .unwrap();
+        let m3d_id = serde_json::from_str::<Value>(m3d["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        call_tool(
+            &session,
+            "scene_3d_and_camera_track",
+            &json!({"action": "update_mesh_3d", "id": m3d_id, "preset": "torus", "wireframe": true}),
+        )
+        .unwrap();
+
+        let glb = call_tool(
+            &session,
+            "scene_3d_and_camera_track",
+            &json!({"action": "emit_sample_glb"}),
+        )
+        .unwrap();
+        assert!(
+            glb["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"triangles\":12")
+        );
+
+        let cam_tr = call_tool(
+            &session,
+            "scene_3d_and_camera_track",
+            &json!({"action": "track_3d_camera", "sample_interval_sec": 0.5, "apply": true}),
+        )
+        .unwrap();
+        assert!(
+            cam_tr["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"applied\":true")
+        );
+
+        // 3. #31 offline_ai_dubbing_lipsync: list_voices + align_phonemes + generate_locale_dubbing
+        let voices = call_tool(
+            &session,
+            "offline_ai_dubbing_lipsync",
+            &json!({"action": "list_voices"}),
+        )
+        .unwrap();
+        assert!(
+            voices["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"offline_only\":true")
+        );
+
+        let ph = call_tool(
+            &session,
+            "offline_ai_dubbing_lipsync",
+            &json!({"action": "align_phonemes", "text": "Hello V3 world!", "duration_sec": 2.0}),
+        )
+        .unwrap();
+        assert!(
+            ph["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"phoneme_count\"")
+        );
+
+        let dub = call_tool(
+            &session,
+            "offline_ai_dubbing_lipsync",
+            &json!({
+                "action": "generate_locale_dubbing",
+                "locale": "en",
+                "voice": "en_female",
+                "audio_layer_index": 3,
+                "translations": { sub_id.clone(): "Hello, welcome to version 3!" },
+                "apply": true
+            }),
+        )
+        .unwrap();
+        let dub_json: Value =
+            serde_json::from_str(dub["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(dub_json["generated_clips"], 1);
+        assert_eq!(dub_json["applied"], true);
+        let wav_p = dub_json["wav_paths"][0].as_str().unwrap();
+        assert!(std::path::Path::new(wav_p).exists());
+
+        // 4. #32 crdt_realtime_collab: profile + cursor + marker op + export_delta + remote merge
+        call_tool(
+            &session,
+            "crdt_realtime_collab",
+            &json!({"action": "set_peer_profile", "peer_id": "editor_a", "display_name": "Alice", "color_hex": "#33ddff"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "crdt_realtime_collab",
+            &json!({"action": "update_cursor", "playhead_sec": 1.5}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "crdt_realtime_collab",
+            &json!({"action": "record_marker_op", "time_sec": 0.8, "label": "Alice Note"}),
+        )
+        .unwrap();
+
+        let mut remote_peer = CrdtSyncLog::new("editor_b", "Bob", "#ff6699");
+        remote_peer.update_local_cursor(2.2, None);
+        remote_peer.record_local(CrdtOpKind::AddMarker {
+            marker: TimelineMarker::new(RationalTime::from_seconds(1.8), "Bob Remote Marker"),
+        });
+        let remote_delta = remote_peer.export_delta_json(None);
+
+        let merged = call_tool(
+            &session,
+            "crdt_realtime_collab",
+            &json!({"action": "merge_remote_delta", "delta_json": remote_delta, "apply": true}),
+        )
+        .unwrap();
+        let merged_json: Value =
+            serde_json::from_str(merged["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(merged_json["merged_new_ops"], 2);
+        assert_eq!(merged_json["applied"], true);
+        {
+            let g = session.lock().unwrap();
+            let markers = &g.project.active_scene().unwrap().markers;
+            assert!(markers.iter().any(|m| m.label == "Bob Remote Marker"));
+            assert!(g.crdt_log.peers.contains_key("editor_b"));
+        }
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 66);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }
