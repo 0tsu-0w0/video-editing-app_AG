@@ -9,6 +9,7 @@ pub mod expression;
 pub mod folder;
 pub mod highlights;
 pub mod interop;
+pub mod kinetic_sub;
 pub mod lipsync;
 pub mod multicam;
 pub mod node_graph;
@@ -55,6 +56,12 @@ pub use interop::{
     export_srt_subtitles, parse_ass_subtitles, parse_aviutl_exo, parse_srt_subtitles,
     subtitle_entries_to_commands,
 };
+pub use kinetic_sub::{
+    KineticHighlightMode, KineticSubtitleConfig, KineticWordSpan, LocalizationEntry,
+    LocalizationTable, build_apply_locale_commands, export_localization_csv,
+    extract_localization_table, generate_kinetic_inline_markup, import_localization_csv,
+    tokenize_kinetic_words,
+};
 pub use lipsync::{
     CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
     evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
@@ -70,12 +77,12 @@ pub use node_graph::{
 pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor, TextStylePreset};
 pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
-    BezierMask, BlendMode, EffectId, EffectNode, FilterTargetScope, ItemId, ItemKind, Layer,
-    LayerId, MaskMode, MaskVertex, MediaKind, MotionBlurConfig, MotionTrackConfig, ParticleConfig,
-    ParticlePreset, PlaybackSettings, Project, ProjectSettings, RgbaColor, Scene, SceneColorGrade,
-    SceneId, ScenePreset, ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker,
-    TrackMatte, TrackMatteMode, TrackPointSample, Transform2D, TransitionKind, VectorFillMode,
-    VectorShapeConfig,
+    BezierMask, BlendMode, ColorCurves, CornerPinConfig, EffectId, EffectNode, FilterTargetScope,
+    HslQualifier, ItemId, ItemKind, Layer, LayerId, MaskMode, MaskVertex, MediaKind,
+    MotionBlurConfig, MotionTrackConfig, ParticleConfig, ParticlePreset, PlaybackSettings, Project,
+    ProjectSettings, RgbaColor, Scene, SceneColorGrade, SceneId, ScenePreset, ShapeKind,
+    TextAnimator, TextStyle, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
+    TrackPointSample, Transform2D, TransitionKind, VectorFillMode, VectorShapeConfig,
 };
 pub use recipe::{
     AgentRole, ApprovalGateStatus, EditRecipe, RecipeError, RecipeRunState, RecipeStep,

@@ -519,6 +519,49 @@ fn apply_audio_effect(
                 .clamp(-24.0, 0.0);
             apply_de_esser(samples, channels, sr, freq_hz, threshold_db, reduction_db);
         }
+        "spatial_3d" => {
+            let az = node.params.get("azimuth_deg").copied().unwrap_or(0.0);
+            let el = node.params.get("elevation_deg").copied().unwrap_or(0.0);
+            let dist = node.params.get("distance").copied().unwrap_or(1.5);
+            let room = node.params.get("room_mix").copied().unwrap_or(0.15);
+            crate::spatial_master::apply_binaural_spatial_3d(
+                samples,
+                channels,
+                sample_rate,
+                az,
+                el,
+                dist,
+                room,
+            );
+        }
+        "multiband_comp" => {
+            let low_t = node.params.get("low_thresh_db").copied().unwrap_or(-20.0);
+            let mid_t = node.params.get("mid_thresh_db").copied().unwrap_or(-18.0);
+            let high_t = node.params.get("high_thresh_db").copied().unwrap_or(-22.0);
+            let ratio = node.params.get("ratio").copied().unwrap_or(3.0);
+            let makeup = node.params.get("makeup_db").copied().unwrap_or(2.0);
+            crate::spatial_master::apply_multiband_compressor_3band(
+                samples,
+                channels,
+                sample_rate,
+                low_t,
+                mid_t,
+                high_t,
+                ratio,
+                makeup,
+            );
+        }
+        "true_peak_limiter" => {
+            let ceiling = node.params.get("ceiling_dbtp").copied().unwrap_or(-1.0);
+            let release = node.params.get("release_ms").copied().unwrap_or(60.0);
+            crate::spatial_master::apply_true_peak_limiter(
+                samples,
+                channels,
+                sample_rate,
+                ceiling,
+                release,
+            );
+        }
         _ => {}
     }
 }

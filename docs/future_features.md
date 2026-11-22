@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-21  
-> **v0.1〜v2.0 全 24 項目完了済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・**第 3 ワークスペース「ノード合成空間（Fusion/Nuke スタイル）」＆双方向レイヤー同期・完全オフライン ローカル AI ビジョン（グリーンバック不要切り抜き／顔・被写体追尾 9:16 自動リフレーム／ローカル超解像／オプティカルフロースロー補間）・マルチエージェント AI 編集ディレクター（YAML/JSON レシピ・人間承認ゲート・視覚自己検査）・Git-Friendly NLE 視覚タイムライン Diff＆3-Way 意味的ブランチマージ＆Frame.io/YouTube レビューコメント連携・全 58 MCP ツール**。  
-> 以下に **v0.8〜v2.0（✅ 全 24 項目実装済み）** をマイルストーン順に整理しています。
+> **v0.1〜v2.1 全 28 項目完了済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間（Fusion/Nuke スタイル）」＆双方向レイヤー同期・完全オフライン ローカル AI ビジョン・マルチエージェント AI 編集ディレクター・Git-Friendly NLE 視覚タイムライン Diff＆3-Way マージ＆Frame.io/YouTube レビュー・**RGB/マスタートーンカーブ＆HSL 二次色補正クオリファイア＆ショット間自動カラーマッチ・自動 2D 手ぶれ補正＆平面 4 点コーナーピン射影合成・3D バイノーラル空間オーディオ＆3 バンドマルチバンドコンプ＆4× True-Peak リミッター・ワード単位キネティック字幕＆多言語ローカライズ CSV 一括切替・全 62 MCP ツール**。  
+> 以下に **v0.8〜v2.1（✅ 全 28 項目実装済み）** および次世代 **v3.0 構想（#29〜#32）** を整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -13,8 +13,10 @@ flowchart LR
   V09["✅ v0.9\nエクスプレッション\n.mogrtテンプレート・パーティクル"]
   V10["✅ v1.0 本番版\nマルチカム・HWデコード/並列合成\nプロ音声・配布エコシステム"]
   V20["✅ v2.0 フロンティア版\nノード合成空間・ローカルAI切り抜き\n自律AIディレクター・共同レビュー"]
+  V21["✅ v2.1 シネマ＆クリエイター\nトーンカーブ/HSL/カラーマッチ\n手ぶれ補正/4点ピン・3D音響・キネティック字幕"]
+  V30["🔭 v3.0 次世代構想\nフルGPUノード・glTF 3D合成\nオフラインAI吹替・P2P CRDT同時編集"]
 
-  V07 --> V08 --> V09 --> V10 --> V20
+  V07 --> V08 --> V09 --> V10 --> V20 --> V21 --> V30
 ```
 
 | バージョン | テーマ | 含まれる項目 | ステータス |
@@ -27,6 +29,8 @@ flowchart LR
 | **v0.9** | AE 級プロシージャル表現・テンプレート量産・高度 2D/3D 合成 | **#14〜#16** | ✅ 完了 |
 | **v1.0** | プロダクション完成版（マルチカム・HW 並列性能・プロ音声・配布基盤） | **#17〜#20** | ✅ 完了 |
 | **v2.0** | 次世代 AI ＆ ノード合成・共同編集フロンティア | **#21〜#24** | ✅ 完了 |
+| **v2.1** | シネマ＆クリエイタースタジオ（プロ色調・VFX・3D 空間音響・キネティック字幕） | **#25〜#28** | ✅ 完了 |
+| **v3.0** | 次世代フル GPU ＆ 3D ワールド ＆ オフライン AI 吹替 ＆ リアルタイム共同編集 | **#29〜#32** | 🔭 構想中 |
 
 ---
 
@@ -141,6 +145,50 @@ flowchart LR
 - **実装内容**:
   - `ve-core`: `collab` モジュール — 意味的タイムライン差分 `diff_projects` / `format_diff_report`、3-Way 意味的ブランチマージ `merge_projects_three_way`（非競合自動統合＋`KeepOurs`/`KeepTheirs`/`KeepBothDuplicate` 競合解決＋1 ステップ Undo 可能な `EditCommand::ReplaceProjectSnapshot`）、Frame.io CSV/JSON＆YouTube タイムスタンプコメント入出力（`import_review_comments_csv` / `json` / `import_youtube_review_comments` / `export_review_comments_csv`）、ステータス別カラー付きタイムラインマーカー自動変換（`build_review_comments_to_markers_commands`）、および `ProjectFolder::snapshots_dir()` CRUD
   - `ve-app` / `ve-mcp`: フロンティアスタジオ「🤝 共同編集・Diff＆レビュー」UI（カラー付き Diff・クリックシーク・3-Way 競合解決ラジオ・Frame.io/YouTube レビュー入出力）および MCP `collab_diff_and_review` ツール
+
+---
+
+## ✅ v2.1（実装済み・シネマ＆クリエイタースタジオ）：プロ色調・VFX・3D 空間音響・キネティック字幕
+
+### 25. ~~プロ・カラーグレーディング完成（RGB トーンカーブ・HSL 二次色補正・自動ショットカラーマッチ）~~ ✅ 実装済み（v2.1）
+- **目的**: 3-Way ホイール＆`.cube` 3D LUT に加え、DaVinci Resolve 相当の精細なトーンカーブ操作・特定色相の二次抽出補正・複数カット間の自動色合わせを非破壊で完結させる。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `ColorCurves`（Master/R/G/B 制御点＋S-Curve/Film Fade/Warm Cinema プリセット）と Fritsch-Carlson 単調 3 次エルミートスプライン補間 `evaluate_tone_curve_lut`（オーバーシュート無し）、`HslQualifier`＆`apply_hsl_qualifier_rgb`（色相・彩度・輝度レンジソフト抽出＋色相シフト/彩度/輝度補正＋非選択モノクロ暗転マット可視化）、および Reinhard 方式統計カラーマッチ `compute_auto_color_match` を `apply_scene_color_grade` へ統合
+  - `ve-app` / `ve-mcp`: シネマ＆クリエイタースタジオ「🎨 トーンカーブ / HSL / カラーマッチ」タブ（ドラッグ制御点＆スプライン描画キャンバス付）および MCP `pro_color_match_and_grade`
+
+### 26. ~~自動 2D 手ぶれ補正 ＆ 平面 4 点コーナーピン射影合成（VFX トラッキング拡張）~~ ✅ 実装済み（v2.1）
+- **目的**: 手持ち撮影の微振動を 1 クリックで三脚級の滑らかさに整え、モニター・スマホ・看板などの傾いた平面へ画像・動画を自然な遠近法で貼り込めるようにする。
+- **実装内容**:
+  - `ve-core` / `ve-render`: 8×8 部分ピボット付きガウス消去法による厳密 $3\times 3$ 射影ホモグラフィ `solve_unit_square_to_quad_homography`＆`apply_corner_pin`（エッジアンチエイリアスフェザー付・`EditCommand::SetCornerPin`）を `RenderGraph` に統合。さらに 4 象限マルチパッチカメラ運動推定 `estimate_global_frame_motion`・前後両方向ゼロ位相平滑化 `analyze_camera_shake`・自動クロップ拡大＋1-Undo キーフレーム生成 `build_stabilize_commands` を実装
+  - `ve-app` / `ve-mcp`: 「📹 手ぶれ補正 / 4点コーナーピン」タブ（ブレ軌跡スパークライン＋ドラッグ操作可能な 4 隅射影クワッドキャンバス）および MCP `vfx_stabilize_and_corner_pin`
+
+### 27. ~~3D 空間オーディオ（バイノーラルパンナー）＆ マスタリング DSP スイート~~ ✅ 実装済み（v2.1）
+- **目的**: ヘッドホン視聴で奥行きと立体感を生む 3D 空間音響と、放送・配信（ITU-R BS.1770 `-1.0 dBTP`）に厳格準拠した仕上げマスタリングをソフト内で完結させる。
+- **実装内容**:
+  - `ve-audio` / `ve-core`: Woodworth 球面頭部モデルの ITD 両耳間時間差（端数サンプル補間）・ILD 両耳間レベル差・頭部回折シャドウ LPF・距離減衰・空間初期反射を備える `apply_binaural_spatial_3d`（`"spatial_3d"`）、位相滑らかな 3 バンド独立ダイナミクス `apply_multiband_compressor_3band`（`"multiband_comp"`）、および 4× Catmull-Rom オーバーサンプリング True-Peak 計測 `measure_true_peak_dbtp`＆ブリックウォールリミッター `apply_true_peak_limiter`（`"true_peak_limiter"`）を `apply_audio_effect_chain` に統合
+  - `ve-app` / `ve-mcp`: 「🎧 3D空間オーディオ / マスタリング」タブ（360° インタラクティブトップダウンレーダー＋True-Peak/LUFS 放送安全判定）および MCP `spatial_and_master_audio`
+
+### 28. ~~ダイナミック・キネティック字幕 ＆ 多言語字幕ローカライズ切替~~ ✅ 実装済み（v2.1）
+- **目的**: Shorts / TikTok / 解説動画の視聴維持率を高めるワード単位のハイライト・ポップ字幕と、グローバル展開向けの多言語 CSV 翻訳＆1-Undo 言語切替を実現する。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `kinetic_sub` モジュール — 日本語・英語ハイブリッドのワード／文節トークナイザー `tokenize_kinetic_words`、4 種ハイライトモード（`WordPopColor` / `KaraokeSweep` / `ProgressiveReveal` / `KeywordPulse`）による毎フレーム動的 AviUtl2 `<#RRGGBB><sNN>` マークアップ生成 `generate_kinetic_inline_markup`（`RenderGraph` 統合・`EditCommand::SetKineticSubtitle`）、および多言語字幕テーブル抽出・スプレッドシート互換 CSV 入出力・1-Undo 言語一括切替（`extract_localization_table` / `export_localization_csv` / `import_localization_csv` / `build_apply_locale_commands`）
+  - `ve-app` / `ve-mcp`: 「💬 キネティック字幕 / 多言語切替」タブ（ライブプレビューバー＆CSV エディタ付）および MCP `kinetic_subtitles_and_localize`（全 **62 MCP ツール**）
+
+---
+
+## 🔭 v3.0（構想中・次世代フロンティア）：フル GPU ＆ 3D ワールド ＆ オフライン AI 吹替 ＆ リアルタイム共同編集
+
+### 29. フル GPU コンピュートパイプライン（Vulkan / Metal / DX12 リアルタイムノード評価＆4K スコープ）
+- **狙い**: ノード合成グラフ評価・トーンカーブ/HSL/3D LUT・ビデオスコープ解析を `wgpu` Compute Shader でゼロコピー実行し、4K 60fps 多レイヤーの完全リアルタイム再生を実現する。
+
+### 30. 3D メッシュ / glTF 2.0 シーン合成 ＆ 3D カメラトラッカー
+- **狙い**: 平面 3D レイヤーを超え、glTF 2.0 3D モデル読み込み・3D 立体押し出しテキスト・PBR ライティング＆影落とし・特徴点ベースの 3D カメラ軌跡復元を統合する。
+
+### 31. オフライン多言語 AI 吹替 ＆ 音声リップシンク自動生成
+- **狙い**: v2.1 の多言語字幕ローカライズ表と連動し、各言語のローカル TTS 音声一括生成・音素アライメント・立ち絵＆映像リップシンク同期を完全オフラインで自動化する。
+
+### 32. リアルタイム P2P / WebRTC ＆ CRDT 同時共同編集（クラウド不要 LAN チーム編集）
+- **狙い**: Git-Friendly 3-Way マージから一歩進め、`CommandBus` 操作ログを CRDT ベースでリアルタイム同期し、同一スタジオやリモートチームでライブカーソル付き同時編集を実現する。
 
 ---
 
