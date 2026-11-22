@@ -122,6 +122,11 @@ impl ProjectFolder {
         self.root.join("cache").join("precomp")
     }
 
+    /// v1.0 #18: アプリ再起動を跨いで再利用できる SSD 永続フレームキャッシュディレクトリ (`cache/frames/`)
+    pub fn cache_frames_dir(&self) -> PathBuf {
+        self.root.join("cache").join("frames")
+    }
+
     pub fn cache_waveforms_dir(&self) -> PathBuf {
         self.root.join("cache").join("waveforms")
     }
@@ -138,6 +143,27 @@ impl ProjectFolder {
         self.root.join("backups")
     }
 
+    /// v1.0 #20: プロジェクト／ユーザー設定ファイル (`editor_settings.json`)
+    pub fn user_settings_path(&self) -> PathBuf {
+        self.root.join("editor_settings.json")
+    }
+
+    pub fn save_user_settings(
+        &self,
+        settings: &crate::settings::EditorUserSettings,
+    ) -> Result<(), FolderError> {
+        let json = serde_json::to_string_pretty(settings)?;
+        fs::write(self.user_settings_path(), json)?;
+        Ok(())
+    }
+
+    pub fn load_user_settings(&self) -> crate::settings::EditorUserSettings {
+        fs::read_to_string(self.user_settings_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
     pub fn ensure_layout(&self) -> Result<(), FolderError> {
         fs::create_dir_all(&self.root)?;
         fs::create_dir_all(self.assets_dir())?;
@@ -148,6 +174,7 @@ impl ProjectFolder {
         fs::create_dir_all(self.templates_dir())?;
         fs::create_dir_all(self.project_templates_dir())?;
         fs::create_dir_all(self.cache_precomp_dir())?;
+        fs::create_dir_all(self.cache_frames_dir())?;
         fs::create_dir_all(self.cache_waveforms_dir())?;
         fs::create_dir_all(self.cache_proxy_dir())?;
         fs::create_dir_all(self.exports_dir())?;

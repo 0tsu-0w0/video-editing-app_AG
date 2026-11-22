@@ -415,6 +415,18 @@ fn write_http_json(stream: &mut TcpStream, status: &str, body: &Value) {
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(&payload);
     let _ = stream.flush();
+    // RFC 7230 §6.6 graceful close: 送信側のみ先に FIN を送り、未読の受信ボディ残存により
+    // Windows Winsock が RST (WSAECONNRESET 10054) を返してレスポンス読取を中断するのを防ぐ
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let mut drain = [0u8; 512];
+    let mut drained = 0usize;
+    while drained < 64 * 1024 {
+        match stream.read(&mut drain) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
 }
 
 #[cfg(test)]

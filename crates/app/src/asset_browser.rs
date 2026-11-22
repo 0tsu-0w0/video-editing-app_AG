@@ -425,9 +425,13 @@ impl AssetBrowserPanel {
                     source_offset: RationalTime::ZERO,
                     gain: 1.0,
                     muted: false,
+                    pan: 0.0,
+                    send_reverb: 0.0,
                     speed: 1.0,
                     loop_playback: false,
                     time_remap_kfs: Vec::new(),
+                    volume_kfs: Vec::new(),
+                    pan_kfs: Vec::new(),
                     effects: Vec::new(),
                     buffer: Arc::new(buf),
                 });

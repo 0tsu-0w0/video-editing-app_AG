@@ -5,6 +5,7 @@ use std::thread::{self, JoinHandle};
 use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{Project, ProjectFolder, RationalTime, SceneId};
+use ve_media::HwDecodeBackend;
 use ve_render::{LinearImage, RenderGraph};
 
 /// RAM プレビューキャッシュの上限フレーム数（640x360 Linear f32 で ~3.6MB/枚 → 上限 96 枚 ≈ 340MB）
@@ -30,6 +31,8 @@ struct PrefetchTarget {
     proxies: HashMap<Uuid, PathBuf>,
     waveforms: BTreeMap<Uuid, WaveformPeaks>,
     use_proxies: bool,
+    hw_decode: HwDecodeBackend,
+    disk_cache_bytes: u64,
     revision: u64,
     scene_id: SceneId,
     center_frame: i64,
@@ -46,10 +49,12 @@ struct SharedState {
 }
 
 /// AE 風のバックグラウンド RAM プレビュー先読みキャッシュマネージャ。
-/// 専用ワーカースレッドが `RenderGraph`（常駐 `VideoStreamDecoder` 内蔵）を保持し、
+/// 専用ワーカースレッドが `RenderGraph`（常駐 `VideoStreamDecoder`＋SSD 永続フレームキャッシュ内蔵）を保持し、
 /// 再生ヘッド周辺のフレームを先読みして再生・スクラブ時のフレーム落ちを防止する。
 pub struct RamPreviewManager {
     pub enabled: bool,
+    pub hw_decode: HwDecodeBackend,
+    pub disk_cache_max_bytes: u64,
     shared: Arc<(Mutex<SharedState>, Condvar)>,
     worker: Option<JoinHandle<()>>,
     last_submitted: Option<(u64, SceneId, i64, u32, u32, bool)>,
@@ -80,6 +85,8 @@ impl RamPreviewManager {
 
         Self {
             enabled: true,
+            hw_decode: HwDecodeBackend::Auto,
+            disk_cache_max_bytes: 512 * 1024 * 1024,
             shared,
             worker,
             last_submitted: None,
@@ -130,6 +137,8 @@ impl RamPreviewManager {
                 proxies: proxies.clone(),
                 waveforms: waveforms.clone(),
                 use_proxies,
+                hw_decode: self.hw_decode,
+                disk_cache_bytes: self.disk_cache_max_bytes,
                 revision,
                 scene_id,
                 center_frame: center_frame.max(0),
@@ -263,6 +272,7 @@ fn insert_lru(st: &mut SharedState, key: RamFrameKey, img: Arc<LinearImage>) {
 
 fn ram_preview_worker_loop(shared: Arc<(Mutex<SharedState>, Condvar)>) {
     let mut rg = RenderGraph::new();
+    let mut disk_cache_dir: Option<PathBuf> = None;
     let (lock, cvar) = &*shared;
 
     loop {
@@ -290,7 +300,15 @@ fn ram_preview_worker_loop(shared: Arc<(Mutex<SharedState>, Condvar)>) {
 
         let (target, frame_idx) = work;
         rg.use_proxies = target.use_proxies;
+        rg.set_hw_decode(target.hw_decode);
         rg.set_project_folder(target.folder.clone());
+        if let Some(ref folder) = target.folder {
+            let frames_dir = folder.cache_frames_dir();
+            if disk_cache_dir.as_ref() != Some(&frames_dir) {
+                let _ = rg.enable_disk_frame_cache(frames_dir.clone(), target.disk_cache_bytes);
+                disk_cache_dir = Some(frames_dir);
+            }
+        }
         for (aid, p) in &target.proxies {
             rg.register_proxy(*aid, p.clone());
         }
@@ -304,15 +322,30 @@ fn ram_preview_worker_loop(shared: Arc<(Mutex<SharedState>, Condvar)>) {
             continue;
         };
         let t = RationalTime::from_frame(frame_idx, fps);
-        let Some(img) = rg.render_project_scene_scaled(
-            &target.project,
-            target.scene_id,
-            t,
-            target.width,
-            target.height,
-            false,
-        ) else {
-            continue;
+        let img = if disk_cache_dir.is_some() {
+            match rg.render_project_scene_cached_rgba8(
+                &target.project,
+                target.scene_id,
+                t,
+                target.width,
+                target.height,
+                false,
+            ) {
+                Some(rgba) => LinearImage::from_rgba8_srgb(target.width, target.height, &rgba),
+                None => continue,
+            }
+        } else {
+            let Some(img) = rg.render_project_scene_scaled(
+                &target.project,
+                target.scene_id,
+                t,
+                target.width,
+                target.height,
+                false,
+            ) else {
+                continue;
+            };
+            img
         };
 
         let key = RamFrameKey {

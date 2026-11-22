@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Next-Gen Hybrid Video Editor
+GenericName=Video Editor
+Comment=Pure-Rust hybrid NLE, motion graphics, and AI MCP video editing suite
+Exec=ve-app %F
+Icon=ve-app
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+StartupNotify=true

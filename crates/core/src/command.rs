@@ -319,6 +319,39 @@ pub enum EditCommand {
     SetMotionBlur {
         motion_blur: MotionBlurConfig,
     },
+    /// v1.0 #19: 選択クリップ群のグルーピング設定／映像・音声リンク解除 (`group_id = None`)
+    SetGroupId {
+        item_ids: Vec<ItemId>,
+        group_id: Option<uuid::Uuid>,
+    },
+    /// v1.0 #19: スリップトリム（タイムライン位置・尺は変えずに source_offset のみずらす）
+    SlipTrim {
+        item_id: ItemId,
+        delta: RationalTime,
+    },
+    /// v1.0 #19: ロールトリム（隣接 2 クリップの境界カット点だけを左右へ滑らかに移動）
+    RollTrim {
+        left_item_id: ItemId,
+        right_item_id: ItemId,
+        delta: RationalTime,
+    },
+    /// v1.0 #19: スライドトリム（中央クリップを移動し、前後隣接クリップのアウト／インを自動追従調整）
+    SlideTrim {
+        item_id: ItemId,
+        left_neighbor_id: Option<ItemId>,
+        right_neighbor_id: Option<ItemId>,
+        delta: RationalTime,
+    },
+    /// v1.0 #19: オーディオトラックミキサー設定（音量・パン・ミュート・ソロ・出力バス・リバーブセンド）
+    SetLayerMixer {
+        layer_index: usize,
+        volume: f32,
+        pan: f32,
+        muted: bool,
+        solo: bool,
+        bus: String,
+        send_reverb: f32,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -382,6 +415,11 @@ impl EditCommand {
             Self::SetParticleConfig { .. } => "set_particle_config",
             Self::SetVectorShape { .. } => "set_vector_shape",
             Self::SetMotionBlur { .. } => "set_motion_blur",
+            Self::SetGroupId { .. } => "set_group_id",
+            Self::SlipTrim { .. } => "slip_trim",
+            Self::RollTrim { .. } => "roll_trim",
+            Self::SlideTrim { .. } => "slide_trim",
+            Self::SetLayerMixer { .. } => "set_layer_mixer",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -583,6 +621,16 @@ impl CommandBus {
         }
         Ok(applied)
     }
+}
+
+fn find_item_ref(project: &Project, item_id: ItemId) -> Result<&TimelineItem, CommandError> {
+    let scene = project.active_scene().ok_or(CommandError::NoActiveScene)?;
+    for layer in &scene.layers {
+        if let Some(item) = layer.items.iter().find(|i| i.id == item_id) {
+            return Ok(item);
+        }
+    }
+    Err(CommandError::ItemNotFound(item_id))
 }
 
 fn find_item_mut(
@@ -1427,6 +1475,133 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             mb.preview_samples = mb.preview_samples.clamp(1, 8);
             mb.export_samples = mb.export_samples.clamp(1, 16);
             scene.motion_blur = mb;
+            Ok(())
+        }
+        EditCommand::SetGroupId { item_ids, group_id } => {
+            for &id in item_ids {
+                if let Ok(item) = find_item_mut(project, id) {
+                    item.group_id = *group_id;
+                }
+            }
+            Ok(())
+        }
+        EditCommand::SlipTrim { item_id, delta } => {
+            let item = find_item_mut(project, *item_id)?;
+            match &mut item.kind {
+                ItemKind::Video { source_offset, .. } | ItemKind::Audio { source_offset, .. } => {
+                    *source_offset = (*source_offset + *delta).max(RationalTime::ZERO);
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        EditCommand::RollTrim {
+            left_item_id,
+            right_item_id,
+            delta,
+        } => {
+            let min_dur = RationalTime::from_seconds(0.05);
+            let (left_dur, right_start, right_dur) = {
+                let left = find_item_ref(project, *left_item_id)?;
+                let right = find_item_ref(project, *right_item_id)?;
+                (left.duration, right.start, right.duration)
+            };
+            let max_pos = (right_dur - min_dur).max(RationalTime::ZERO);
+            let max_neg = (min_dur - left_dur).min(RationalTime::ZERO);
+            let clamped = (*delta).clamp(max_neg, max_pos);
+
+            let left = find_item_mut(project, *left_item_id)?;
+            left.duration = (left.duration + clamped).max(min_dur);
+
+            let right = find_item_mut(project, *right_item_id)?;
+            right.start = (right_start + clamped).max(RationalTime::ZERO);
+            right.duration = (right_dur - clamped).max(min_dur);
+            match &mut right.kind {
+                ItemKind::Video { source_offset, .. } | ItemKind::Audio { source_offset, .. } => {
+                    *source_offset = (*source_offset + clamped).max(RationalTime::ZERO);
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        EditCommand::SlideTrim {
+            item_id,
+            left_neighbor_id,
+            right_neighbor_id,
+            delta,
+        } => {
+            let min_dur = RationalTime::from_seconds(0.05);
+            let item_start = find_item_ref(project, *item_id)?.start;
+            let mut clamped = *delta;
+            if item_start + clamped < RationalTime::ZERO {
+                clamped = RationalTime::ZERO - item_start;
+            }
+            if let Some(lid) = left_neighbor_id
+                && let Ok(l) = find_item_ref(project, *lid)
+            {
+                let min_delta = min_dur - l.duration;
+                if clamped < min_delta {
+                    clamped = min_delta;
+                }
+            }
+            if let Some(rid) = right_neighbor_id
+                && let Ok(r) = find_item_ref(project, *rid)
+            {
+                let max_delta = r.duration - min_dur;
+                if clamped > max_delta {
+                    clamped = max_delta;
+                }
+            }
+
+            let mid = find_item_mut(project, *item_id)?;
+            mid.start = (mid.start + clamped).max(RationalTime::ZERO);
+
+            if let Some(lid) = left_neighbor_id
+                && let Ok(l) = find_item_mut(project, *lid)
+            {
+                l.duration = (l.duration + clamped).max(min_dur);
+            }
+            if let Some(rid) = right_neighbor_id
+                && let Ok(r) = find_item_mut(project, *rid)
+            {
+                r.start = (r.start + clamped).max(RationalTime::ZERO);
+                r.duration = (r.duration - clamped).max(min_dur);
+                match &mut r.kind {
+                    ItemKind::Video { source_offset, .. }
+                    | ItemKind::Audio { source_offset, .. } => {
+                        *source_offset = (*source_offset + clamped).max(RationalTime::ZERO);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        EditCommand::SetLayerMixer {
+            layer_index,
+            volume,
+            pan,
+            muted,
+            solo,
+            bus,
+            send_reverb,
+        } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let layer = scene
+                .layers
+                .get_mut(*layer_index)
+                .ok_or(CommandError::InvalidLayer(*layer_index))?;
+            layer.volume = volume.clamp(0.0, 4.0);
+            layer.pan = pan.clamp(-1.0, 1.0);
+            layer.muted = *muted;
+            layer.solo = *solo;
+            layer.bus = if bus.trim().is_empty() {
+                "Master".to_string()
+            } else {
+                bus.trim().to_string()
+            };
+            layer.send_reverb = send_reverb.clamp(0.0, 1.0);
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

@@ -7,29 +7,36 @@ use ve_ai::{
     ApiProvider, ClaudeRefiner, CloudUploadGuard, OsCredentialStore, SubtitleSegment,
     import_tts_file_pair,
 };
-use ve_audio::{AudioGraph, BeatDetectionConfig, detect_audio_beats};
+use ve_audio::{
+    AudioGraph, BeatDetectionConfig, detect_audio_beats, estimate_audio_offset_xcorr,
+    separate_vocal_bgm_stems,
+};
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, Camera3D,
-    CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EffectNode, EffectPreset,
-    FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, Light3DType,
-    LipSyncMode, MaskMode, MaskVertex, MediaKind, MotionPreset, ParticleConfig, ParticlePreset,
-    ProjectTemplate, PsdCharacterConfig, RationalTime, RgbaColor, SceneColorGrade,
-    ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem,
-    TimelineMarker, TrackMatte, TrackMatteMode, VectorShapeConfig, base64_encode,
+    CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EditorKeymap, EffectNode,
+    EffectPreset, FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe,
+    KeymapPreset, Light3DType, LipSyncMode, MaskMode, MaskVertex, MediaKind, MotionPreset,
+    MulticamCutPoint, ParticleConfig, ParticlePreset, ProjectTemplate, PsdCharacterConfig,
+    RationalTime, RgbaColor, SceneColorGrade, ScriptBuildConfig, ShapeKind, TemplateParamValue,
+    TextAnimator, TextStylePreset, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
+    UiLanguage, UiThemePreset, VectorShapeConfig, archive_project_to_zip, base64_encode,
     build_align_commands, build_bake_expression_command, build_beat_cut_commands,
     build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
     build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
+    build_multicam_switch_cut_commands, build_multicam_sync_align_commands,
     build_replace_text_commands, build_script_timeline_commands, build_shorts_clip_scene_command,
     build_strip_filler_words_commands, build_text_based_delete_commands,
     build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
     compile_expression, detect_speech_intervals_from_rms, evaluate_item_property,
     export_ass_subtitles, export_otio_json, export_srt_subtitles, extract_highlight_candidates,
     extract_motion_template_from_scene, extract_transcript_entries, format_youtube_chapters,
-    parse_ass_subtitles, parse_aviutl_exo, parse_script_auto, parse_srt_subtitles,
-    search_text_items, subtitle_entries_to_commands, wrap_subtitle_japanese,
+    official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo, parse_script_auto,
+    parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
+    validate_project_delivery, verify_and_install_extension, wrap_subtitle_japanese,
 };
 use ve_media::{
-    ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, decode_audio_file, write_wav_pcm16,
+    ExportConfig, ExportFormat, FfmpegCli, HwDecodeBackend, VideoEncoder, decode_audio_file,
+    write_wav_pcm16,
 };
 use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
 use ve_render::{RenderGraph, emit_sample_cube_luts, validate_wgsl};
@@ -782,6 +789,115 @@ pub fn tool_definitions() -> Value {
         }
     ]) {
         tools.extend(v09_extra);
+    }
+
+    if let Value::Array(v10_extra) = json!([
+        {
+            "name": "sync_multicam",
+            "description": "v1.0 #17: マルチカメラ音声相互相関（Cross-Correlation）による自動同期整列、およびライブスイッチングカット組み立てを実行する（Undo対応）",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["auto_sync_audio", "apply_switch_cuts"]
+                    },
+                    "angle_layers": { "type": "array", "items": { "type": "integer" } },
+                    "max_lag_sec": { "type": "number" },
+                    "apply": { "type": "boolean" },
+                    "manual_offsets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "offset_sec": { "type": "number" }
+                            }
+                        }
+                    },
+                    "output_layer_index": { "type": "integer" },
+                    "range_start_sec": { "type": "number" },
+                    "range_end_sec": { "type": "number" },
+                    "cuts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "time_sec": { "type": "number" },
+                                "active_angle": { "type": "integer" }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "name": "nle_pro_edit",
+            "description": "v1.0 #19: スリップ/ロール/スライドトリム、クリップグルーピング＆A/Vリンク解除、トラックミキサー（パン/ソロ/バス/センド）、オフラインボーカル＆BGMステム分離を実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["slip_trim", "roll_trim", "slide_trim", "group", "unlink", "set_layer_mixer", "separate_stems"]
+                    },
+                    "id": { "type": "string" },
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                    "left_item_id": { "type": "string" },
+                    "right_item_id": { "type": "string" },
+                    "layer_index": { "type": "integer" },
+                    "delta_sec": { "type": "number" },
+                    "volume": { "type": "number" },
+                    "pan": { "type": "number" },
+                    "solo": { "type": "boolean" },
+                    "muted": { "type": "boolean" },
+                    "bus": { "type": "string" },
+                    "send_reverb": { "type": "number" },
+                    "asset_id": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "validate_and_package_project",
+            "description": "v1.0 #19: プロジェクト書き出し前検証チェックリスト（オフライン素材・無音ギャップ・高解像度）の実行、および Pure-Rust ZIP アーカイブパッケージ化を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["validate", "archive_zip"]
+                    },
+                    "file_name": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "manage_ecosystem",
+            "description": "v1.0 #20: カスタムキーバインドプリセット（AviUtl2/Premiere/DaVinci/AE）・多言語/テーマ設定・SHA-256検証付き公式拡張レジストリ・HWデコード/エンコード検出を操作する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get_settings", "set_settings", "export_keymap_json", "import_keymap_json", "list_registry", "install_extension", "hw_status"]
+                    },
+                    "language": { "type": "string", "enum": ["ja", "en"] },
+                    "theme": { "type": "string", "enum": ["dark_studio", "midnight_oled", "high_contrast", "light_daylight"] },
+                    "font_scale": { "type": "number" },
+                    "keymap_preset": { "type": "string", "enum": ["aviutl2", "premiere", "davinci", "after_effects"] },
+                    "keymap_json": { "type": "string" },
+                    "extension_id": { "type": "string" },
+                    "hw_decode": { "type": "string" },
+                    "parallel_export_threads": { "type": "integer" }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v10_extra);
     }
     Value::Array(tools)
 }
@@ -2315,6 +2431,7 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
             let (format, ext, transparent_bg) = match fmt_str {
                 "mp4_h264" => (ExportFormat::Mp4H264, "mp4", false),
                 "mp4_h265" => (ExportFormat::Mp4H265, "mp4", false),
+                "mp4_h265_hdr10" => (ExportFormat::Mp4H265HdrPq10Bit, "mp4", false),
                 "webm_vp9_alpha" => (ExportFormat::WebmVp9Alpha, "webm", true),
                 "wav_audio_only" => (ExportFormat::WavAudioOnly, "wav", false),
                 other => return Err(format!("unsupported export format: {other}")),
@@ -4099,6 +4216,700 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 other => Err(format!("unknown set_scene_motion_blur action: {other}")),
             }
         }
+        "sync_multicam" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            match action {
+                "auto_sync_audio" => {
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let max_lag_sec = finite_clamped(args.get("max_lag_sec"), 5.0, 0.1, 30.0);
+                    let mut offsets: Vec<(Uuid, f64)> = Vec::new();
+                    let mut reports: Vec<Value> = Vec::new();
+
+                    if let Some(manual) = args.get("manual_offsets").and_then(Value::as_array) {
+                        for entry in manual {
+                            let id = parse_uuid(entry, "id")?;
+                            let off = finite_clamped(entry.get("offset_sec"), 0.0, -300.0, 300.0);
+                            offsets.push((id, off));
+                            reports.push(json!({
+                                "item_id": id,
+                                "offset_sec": off,
+                                "correlation": 1.0,
+                                "confidence": 1.0
+                            }));
+                        }
+                    } else {
+                        let angle_layers: Vec<usize> = args
+                            .get("angle_layers")
+                            .and_then(Value::as_array)
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_u64().map(|n| n as usize))
+                                    .collect()
+                            })
+                            .filter(|v: &Vec<usize>| !v.is_empty())
+                            .unwrap_or_else(|| vec![0, 1]);
+                        let scene = guard.project.active_scene().ok_or("no active scene")?;
+                        let mut angle_clips: Vec<(usize, Uuid, Option<PathBuf>)> = Vec::new();
+                        for &li in &angle_layers {
+                            if let Some(layer) = scene.layers.get(li)
+                                && let Some(item) = layer.items.first()
+                            {
+                                let path = match &item.kind {
+                                    ItemKind::Video { asset_id, .. }
+                                    | ItemKind::Audio { asset_id, .. } => {
+                                        guard.project.asset(*asset_id).and_then(|a| {
+                                            if let Some(f) = guard.folder.as_ref() {
+                                                match f.resolve_asset(a) {
+                                                    ve_core::AssetResolution::Found(p) => Some(p),
+                                                    ve_core::AssetResolution::Offline => None,
+                                                }
+                                            } else {
+                                                a.fallback_absolute_path.clone()
+                                            }
+                                        })
+                                    }
+                                    _ => None,
+                                };
+                                angle_clips.push((li, item.id, path));
+                            }
+                        }
+                        if angle_clips.len() < 2 {
+                            return Err(
+                                "マルチカム同期には2つ以上のアングルクリップが必要です".into()
+                            );
+                        }
+                        let ref_buf = angle_clips[0]
+                            .2
+                            .as_deref()
+                            .and_then(|p| decode_audio_file(p).ok());
+                        offsets.push((angle_clips[0].1, 0.0));
+                        reports.push(json!({
+                            "layer_index": angle_clips[0].0,
+                            "item_id": angle_clips[0].1,
+                            "offset_sec": 0.0,
+                            "correlation": 1.0,
+                            "confidence": 1.0
+                        }));
+                        for (li, item_id, path_opt) in angle_clips.into_iter().skip(1) {
+                            let est = match (
+                                ref_buf.as_ref(),
+                                path_opt.as_deref().and_then(|p| decode_audio_file(p).ok()),
+                            ) {
+                                (Some(rb), Some(tb)) => {
+                                    estimate_audio_offset_xcorr(rb, &tb, max_lag_sec)
+                                }
+                                _ => Default::default(),
+                            };
+                            offsets.push((item_id, est.offset_sec));
+                            reports.push(json!({
+                                "layer_index": li,
+                                "item_id": item_id,
+                                "offset_sec": est.offset_sec,
+                                "correlation": est.correlation,
+                                "confidence": est.confidence
+                            }));
+                        }
+                    }
+
+                    let mut applied = false;
+                    if apply
+                        && let Some(cmd) = guard
+                            .project
+                            .active_scene()
+                            .and_then(|s| build_multicam_sync_align_commands(s, &offsets))
+                    {
+                        let sess = &mut *guard;
+                        sess.bus
+                            .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                            .map_err(|e| e.to_string())?;
+                        applied = true;
+                    }
+
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "applied": applied, "angles": reports }).to_string()
+                        }]
+                    }))
+                }
+                "apply_switch_cuts" => {
+                    let angle_layers: Vec<usize> = args
+                        .get("angle_layers")
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_u64().map(|n| n as usize))
+                                .collect()
+                        })
+                        .ok_or("missing 'angle_layers'")?;
+                    let max_layer = guard
+                        .project
+                        .active_scene()
+                        .map(|s| s.layers.len().saturating_sub(1))
+                        .ok_or("no active scene")?;
+                    let output_layer_index = (args
+                        .get("output_layer_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(max_layer as u64)
+                        as usize)
+                        .min(max_layer);
+                    let range_start = RationalTime::from_seconds(finite_clamped(
+                        args.get("range_start_sec"),
+                        0.0,
+                        0.0,
+                        86_400.0,
+                    ));
+                    let default_end = guard
+                        .project
+                        .active_scene()
+                        .map(|s| s.total_duration().as_seconds().max(1.0))
+                        .unwrap_or(5.0);
+                    let range_end = RationalTime::from_seconds(finite_clamped(
+                        args.get("range_end_sec"),
+                        default_end,
+                        0.01,
+                        86_400.0,
+                    ));
+                    let cuts: Vec<MulticamCutPoint> = args
+                        .get("cuts")
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| {
+                                    let t = c.get("time_sec")?.as_f64()?;
+                                    let a = c.get("active_angle")?.as_u64()? as usize;
+                                    Some(MulticamCutPoint {
+                                        time: RationalTime::from_seconds(t.max(0.0)),
+                                        active_angle: a,
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let cmd = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| {
+                            build_multicam_switch_cut_commands(
+                                s,
+                                &angle_layers,
+                                &cuts,
+                                output_layer_index,
+                                range_start,
+                                range_end,
+                            )
+                        })
+                        .ok_or("切替カットの生成対象クリップがありません")?;
+                    let cut_clips = match &cmd {
+                        EditCommand::Batch { commands, .. } => commands.len(),
+                        _ => 1,
+                    };
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(&mut sess.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "output_layer_index": output_layer_index,
+                                "generated_clips": cut_clips
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown sync_multicam action: {other}")),
+            }
+        }
+        "nle_pro_edit" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            match action {
+                "slip_trim" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let delta = RationalTime::from_seconds(finite_clamped(
+                        args.get("delta_sec"),
+                        0.0,
+                        -3600.0,
+                        3600.0,
+                    ));
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SlipTrim { item_id, delta },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({"slip_trimmed": item_id, "delta_sec": delta.as_seconds()}).to_string() }] }),
+                    )
+                }
+                "roll_trim" => {
+                    let left_item_id = parse_uuid(args, "left_item_id")?;
+                    let right_item_id = parse_uuid(args, "right_item_id")?;
+                    let delta = RationalTime::from_seconds(finite_clamped(
+                        args.get("delta_sec"),
+                        0.0,
+                        -3600.0,
+                        3600.0,
+                    ));
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::RollTrim {
+                                left_item_id,
+                                right_item_id,
+                                delta,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({"roll_trimmed": [left_item_id, right_item_id], "delta_sec": delta.as_seconds()}).to_string() }] }),
+                    )
+                }
+                "slide_trim" => {
+                    let item_id = parse_uuid(args, "id")?;
+                    let left_neighbor_id = args
+                        .get("left_item_id")
+                        .and_then(Value::as_str)
+                        .and_then(|s| Uuid::parse_str(s).ok());
+                    let right_neighbor_id = args
+                        .get("right_item_id")
+                        .and_then(Value::as_str)
+                        .and_then(|s| Uuid::parse_str(s).ok());
+                    let delta = RationalTime::from_seconds(finite_clamped(
+                        args.get("delta_sec"),
+                        0.0,
+                        -3600.0,
+                        3600.0,
+                    ));
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SlideTrim {
+                                item_id,
+                                left_neighbor_id,
+                                right_neighbor_id,
+                                delta,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({"slide_trimmed": item_id, "delta_sec": delta.as_seconds()}).to_string() }] }),
+                    )
+                }
+                "group" | "unlink" => {
+                    let ids_arr = args
+                        .get("ids")
+                        .and_then(Value::as_array)
+                        .ok_or("missing 'ids' array")?;
+                    let mut item_ids = Vec::with_capacity(ids_arr.len());
+                    for v in ids_arr {
+                        let s = v.as_str().ok_or("id must be string")?;
+                        item_ids.push(Uuid::parse_str(s).map_err(|e| e.to_string())?);
+                    }
+                    let count = item_ids.len();
+                    let group_id = if action == "group" {
+                        Some(Uuid::new_v4())
+                    } else {
+                        None
+                    };
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetGroupId { item_ids, group_id },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({"action": action, "group_id": group_id, "count": count}).to_string() }] }),
+                    )
+                }
+                "set_layer_mixer" => {
+                    let layer_index =
+                        args.get("layer_index")
+                            .and_then(Value::as_u64)
+                            .ok_or("missing 'layer_index'")? as usize;
+                    let cur = guard
+                        .project
+                        .active_scene()
+                        .and_then(|s| s.layers.get(layer_index))
+                        .ok_or("layer out of bounds")?;
+                    let volume = if args.get("volume").is_some() {
+                        finite_clamped(args.get("volume"), f64::from(cur.volume), 0.0, 2.0) as f32
+                    } else {
+                        cur.volume
+                    };
+                    let pan = if args.get("pan").is_some() {
+                        finite_clamped(args.get("pan"), f64::from(cur.pan), -1.0, 1.0) as f32
+                    } else {
+                        cur.pan
+                    };
+                    let solo = args
+                        .get("solo")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(cur.solo);
+                    let muted = args
+                        .get("muted")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(cur.muted);
+                    let bus = args
+                        .get("bus")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| cur.bus.clone());
+                    let send_reverb = if args.get("send_reverb").is_some() {
+                        finite_clamped(
+                            args.get("send_reverb"),
+                            f64::from(cur.send_reverb),
+                            0.0,
+                            1.0,
+                        ) as f32
+                    } else {
+                        cur.send_reverb
+                    };
+                    let sess = &mut *guard;
+                    sess.bus
+                        .execute(
+                            &mut sess.project,
+                            EditCommand::SetLayerMixer {
+                                layer_index,
+                                volume,
+                                pan,
+                                solo,
+                                muted,
+                                bus: bus.clone(),
+                                send_reverb,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "layer_index": layer_index,
+                                "volume": volume,
+                                "pan": pan,
+                                "solo": solo,
+                                "muted": muted,
+                                "bus": bus,
+                                "send_reverb": send_reverb
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "separate_stems" => {
+                    let asset_id = parse_uuid(args, "asset_id")?;
+                    let asset = guard
+                        .project
+                        .asset(asset_id)
+                        .cloned()
+                        .ok_or("asset not found")?;
+                    let src_path = if let Some(f) = guard.folder.as_ref() {
+                        match f.resolve_asset(&asset) {
+                            ve_core::AssetResolution::Found(p) => p,
+                            ve_core::AssetResolution::Offline => {
+                                return Err("audio asset is offline".into());
+                            }
+                        }
+                    } else {
+                        asset
+                            .fallback_absolute_path
+                            .clone()
+                            .ok_or("asset has no path")?
+                    };
+                    let buf = decode_audio_file(&src_path).map_err(|e| e.to_string())?;
+                    let stems = separate_vocal_bgm_stems(&buf);
+                    let out_dir = guard
+                        .folder
+                        .as_ref()
+                        .map(|f| f.assets_dir())
+                        .unwrap_or_else(|| std::env::temp_dir().join("ve_stems"));
+                    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                    let stem_base: String = asset
+                        .name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .take(32)
+                        .collect();
+                    let vocal_path = out_dir.join(format!("{stem_base}_vocals.wav"));
+                    let bgm_path = out_dir.join(format!("{stem_base}_bgm.wav"));
+                    write_wav_pcm16(
+                        &vocal_path,
+                        &stems.vocals.samples,
+                        stems.vocals.sample_rate,
+                        stems.vocals.channels as u16,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    write_wav_pcm16(
+                        &bgm_path,
+                        &stems.accompaniment.samples,
+                        stems.accompaniment.sample_rate,
+                        stems.accompaniment.channels as u16,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "method": stems.method,
+                                "vocals_path": vocal_path.display().to_string(),
+                                "bgm_path": bgm_path.display().to_string(),
+                                "frames": stems.vocals.frame_count()
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown nle_pro_edit action: {other}")),
+            }
+        }
+        "validate_and_package_project" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            match action {
+                "validate" => {
+                    let report = validate_project_delivery(&guard.project, guard.folder.as_ref());
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&report).unwrap_or_default()
+                        }]
+                    }))
+                }
+                "archive_zip" => {
+                    let folder = guard
+                        .folder
+                        .as_ref()
+                        .ok_or("ZIP パッケージ化には保存済みプロジェクトフォルダが必要です")?;
+                    let raw_name = args
+                        .get("file_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("project_archive");
+                    let safe_stem: String = raw_name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .take(48)
+                        .collect();
+                    let stem = if safe_stem.is_empty() {
+                        "project_archive".to_string()
+                    } else {
+                        safe_stem
+                    };
+                    let out_dir = folder.exports_dir();
+                    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                    let zip_path = out_dir.join(format!("{stem}.zip"));
+                    let summary =
+                        archive_project_to_zip(folder, &zip_path).map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&summary).unwrap_or_default()
+                        }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown validate_and_package_project action: {other}"
+                )),
+            }
+        }
+        "manage_ecosystem" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("missing 'action'")?;
+            match action {
+                "get_settings" => {
+                    let settings = guard
+                        .folder
+                        .as_ref()
+                        .map(|f| f.load_user_settings())
+                        .unwrap_or_default();
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&settings).unwrap_or_default()
+                        }]
+                    }))
+                }
+                "set_settings" => {
+                    let mut settings = guard
+                        .folder
+                        .as_ref()
+                        .map(|f| f.load_user_settings())
+                        .unwrap_or_default();
+                    if let Some(lang) = args.get("language").and_then(Value::as_str) {
+                        settings.language = match lang {
+                            "en" => UiLanguage::English,
+                            _ => UiLanguage::Japanese,
+                        };
+                    }
+                    if let Some(th) = args.get("theme").and_then(Value::as_str) {
+                        settings.theme = match th {
+                            "midnight_oled" => UiThemePreset::MidnightOled,
+                            "high_contrast" => UiThemePreset::HighContrast,
+                            "light_daylight" => UiThemePreset::LightDaylight,
+                            _ => UiThemePreset::DarkStudio,
+                        };
+                    }
+                    if args.get("font_scale").is_some() {
+                        settings.font_scale = finite_clamped(
+                            args.get("font_scale"),
+                            f64::from(settings.font_scale),
+                            0.85,
+                            1.5,
+                        ) as f32;
+                    }
+                    if let Some(kp) = args.get("keymap_preset").and_then(Value::as_str) {
+                        let preset = match kp {
+                            "premiere" => KeymapPreset::Premiere,
+                            "davinci" => KeymapPreset::DaVinci,
+                            "after_effects" => KeymapPreset::AfterEffects,
+                            _ => KeymapPreset::AviUtl2,
+                        };
+                        settings.keymap = EditorKeymap::for_preset(preset);
+                    }
+                    if let Some(t) = args.get("parallel_export_threads").and_then(Value::as_u64) {
+                        settings.export_worker_threads = (t as usize).clamp(1, 16);
+                    }
+                    if let Some(f) = guard.folder.as_ref() {
+                        f.save_user_settings(&settings).map_err(|e| e.to_string())?;
+                    }
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&settings).unwrap_or_default()
+                        }]
+                    }))
+                }
+                "export_keymap_json" => {
+                    let settings = guard
+                        .folder
+                        .as_ref()
+                        .map(|f| f.load_user_settings())
+                        .unwrap_or_default();
+                    let km_json = settings
+                        .keymap
+                        .to_json_pretty()
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": km_json
+                        }]
+                    }))
+                }
+                "import_keymap_json" => {
+                    let raw = args
+                        .get("keymap_json")
+                        .and_then(Value::as_str)
+                        .ok_or("missing 'keymap_json'")?;
+                    let km = EditorKeymap::from_json(raw).map_err(|e| e.to_string())?;
+                    let mut settings = guard
+                        .folder
+                        .as_ref()
+                        .map(|f| f.load_user_settings())
+                        .unwrap_or_default();
+                    settings.keymap = km;
+                    if let Some(f) = guard.folder.as_ref() {
+                        f.save_user_settings(&settings).map_err(|e| e.to_string())?;
+                    }
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "imported_bindings": settings.keymap.bindings.len(), "preset": settings.keymap.preset }).to_string()
+                        }]
+                    }))
+                }
+                "list_registry" => {
+                    let catalog: Vec<_> = official_registry_catalog()
+                        .into_iter()
+                        .map(|(entry, _)| entry)
+                        .collect();
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&catalog).unwrap_or_default()
+                        }]
+                    }))
+                }
+                "install_extension" => {
+                    let ext_id = args
+                        .get("extension_id")
+                        .and_then(Value::as_str)
+                        .ok_or("missing 'extension_id'")?;
+                    let folder = guard
+                        .folder
+                        .as_ref()
+                        .ok_or("拡張機能インストールには保存済みプロジェクトフォルダが必要です")?;
+                    let (entry, payload) = official_registry_catalog()
+                        .into_iter()
+                        .find(|(e, _)| e.id == ext_id)
+                        .ok_or_else(|| {
+                            format!("extension not found in official catalog: {ext_id}")
+                        })?;
+                    let installed_path =
+                        verify_and_install_extension(&entry, &payload, folder.root())
+                            .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "installed_id": entry.id,
+                                "sha256_verified": entry.sha256,
+                                "permissions": entry.permissions,
+                                "path": installed_path.display().to_string()
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "hw_status" => {
+                    let cli = FfmpegCli::default();
+                    let hw_decoders: Vec<&str> = cli
+                        .detect_available_hw_decoders()
+                        .into_iter()
+                        .map(HwDecodeBackend::display_name)
+                        .collect();
+                    let hw_encoders: Vec<String> = cli
+                        .detect_available_hw_encoders()
+                        .into_iter()
+                        .map(|e| format!("{e:?}"))
+                        .collect();
+                    let resolved_decode = cli.resolve_hw_decoder(HwDecodeBackend::Auto);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "available_hw_decoders": hw_decoders,
+                                "resolved_hw_decode": resolved_decode.display_name(),
+                                "available_hw_encoders": hw_encoders,
+                                "cpu_threads": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown manage_ecosystem action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -4750,10 +5561,204 @@ mod tests {
             assert_eq!(s.camera.light.light_type, Light3DType::Point);
         }
 
-        // Verify exact MCP tool count = 50
+        // Verify exact MCP tool count = 54 (v1.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 50);
+        assert_eq!(defs.as_array().unwrap().len(), 54);
 
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v10_mcp_tools_multicam_nle_delivery_and_ecosystem() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v10_{}", Uuid::new_v4()));
+        let proj = Project::new("McpV10", ProjectSettings::default());
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let mut ed = EditorSession::new(proj);
+        ed.folder = Some(folder);
+        let session = Arc::new(Mutex::new(ed));
+
+        // 1. Add two camera clips and test sync_multicam (manual_offsets + apply_switch_cuts)
+        let c1_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 0, "name": "Cam1", "kind": "shape", "start_sec": 0.0, "duration_sec": 6.0}),
+        )
+        .unwrap();
+        let c1_id = serde_json::from_str::<Value>(c1_res["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let c2_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 1, "name": "Cam2", "kind": "shape", "start_sec": 0.5, "duration_sec": 6.0}),
+        )
+        .unwrap();
+        let c2_id = serde_json::from_str::<Value>(c2_res["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        call_tool(
+            &session,
+            "sync_multicam",
+            &json!({
+                "action": "auto_sync_audio",
+                "manual_offsets": [
+                    {"id": c1_id, "offset_sec": 0.0},
+                    {"id": c2_id, "offset_sec": -0.5}
+                ],
+                "apply": true
+            }),
+        )
+        .unwrap();
+        let sw_res = call_tool(
+            &session,
+            "sync_multicam",
+            &json!({
+                "action": "apply_switch_cuts",
+                "angle_layers": [0, 1],
+                "output_layer_index": 2,
+                "range_start_sec": 0.0,
+                "range_end_sec": 5.0,
+                "cuts": [
+                    {"time_sec": 0.0, "active_angle": 0},
+                    {"time_sec": 2.5, "active_angle": 1}
+                ]
+            }),
+        )
+        .unwrap();
+        assert!(
+            sw_res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"generated_clips\":2")
+        );
+
+        // 2. nle_pro_edit: group + unlink + set_layer_mixer
+        call_tool(
+            &session,
+            "nle_pro_edit",
+            &json!({"action": "group", "ids": [c1_id, c2_id]}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "nle_pro_edit",
+            &json!({
+                "action": "set_layer_mixer",
+                "layer_index": 3,
+                "volume": 0.8,
+                "pan": -0.5,
+                "solo": true,
+                "bus": "Voice",
+                "send_reverb": 0.3
+            }),
+        )
+        .unwrap();
+        {
+            let g = session.lock().unwrap();
+            let s = g.project.active_scene().unwrap();
+            assert!(s.layers[0].items[0].group_id.is_some());
+            assert_eq!(s.layers[0].items[0].group_id, s.layers[1].items[0].group_id);
+            assert!(s.layers[3].solo);
+            assert!((s.layers[3].pan - (-0.5)).abs() < 1e-4);
+            assert_eq!(s.layers[3].bus, "Voice");
+        }
+
+        // 3. validate_and_package_project: validate + archive_zip
+        let val = call_tool(
+            &session,
+            "validate_and_package_project",
+            &json!({"action": "validate"}),
+        )
+        .unwrap();
+        assert!(
+            val["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"passed\":true")
+        );
+        let zip_res = call_tool(
+            &session,
+            "validate_and_package_project",
+            &json!({"action": "archive_zip", "file_name": "v10_release_pack"}),
+        )
+        .unwrap();
+        let zip_json: Value =
+            serde_json::from_str(zip_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(zip_json["file_count"].as_u64().unwrap() >= 1);
+        assert!(std::path::Path::new(zip_json["zip_path"].as_str().unwrap()).exists());
+
+        // 4. manage_ecosystem: settings + keymap json + SHA-256 registry install + hw_status
+        call_tool(
+            &session,
+            "manage_ecosystem",
+            &json!({
+                "action": "set_settings",
+                "language": "en",
+                "theme": "high_contrast",
+                "font_scale": 1.15,
+                "keymap_preset": "premiere",
+                "parallel_export_threads": 4
+            }),
+        )
+        .unwrap();
+        let km = call_tool(
+            &session,
+            "manage_ecosystem",
+            &json!({"action": "export_keymap_json"}),
+        )
+        .unwrap();
+        let km_txt = km["content"][0]["text"].as_str().unwrap();
+        assert!(km_txt.contains("premiere"));
+        call_tool(
+            &session,
+            "manage_ecosystem",
+            &json!({"action": "import_keymap_json", "keymap_json": km_txt}),
+        )
+        .unwrap();
+        let reg = call_tool(
+            &session,
+            "manage_ecosystem",
+            &json!({"action": "list_registry"}),
+        )
+        .unwrap();
+        assert!(
+            reg["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("official_wgsl_film_vignette")
+        );
+        let inst = call_tool(
+            &session,
+            "manage_ecosystem",
+            &json!({"action": "install_extension", "extension_id": "official_wgsl_film_vignette"}),
+        )
+        .unwrap();
+        assert!(
+            inst["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("sha256_verified")
+        );
+        let hw = call_tool(
+            &session,
+            "manage_ecosystem",
+            &json!({"action": "hw_status"}),
+        )
+        .unwrap();
+        assert!(
+            hw["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("resolved_hw_decode")
+        );
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 54);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

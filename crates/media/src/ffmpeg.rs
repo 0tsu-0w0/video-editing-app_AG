@@ -56,13 +56,100 @@ pub struct MediaProbe {
     pub color_space: Option<String>,
 }
 
+/// v1.0 #19: 書き出しカラーマネージメント（Rec.709 SDR / HDR10 PQ 10-bit）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportColorSpace {
+    #[default]
+    Rec709Sdr,
+    Hdr10Pq10Bit,
+}
+
+impl ExportColorSpace {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Rec709Sdr => "Rec.709 (SDR 8-bit)",
+            Self::Hdr10Pq10Bit => "HDR10 PQ (BT.2020 10-bit)",
+        }
+    }
+}
+
+/// v1.0 #18: FFmpeg ハードウェアデコードバックエンド（自動検出＋安全ソフトウェアフォールバック）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HwDecodeBackend {
+    #[default]
+    Auto,
+    Software,
+    D3d11va,
+    Dxva2,
+    Vaapi,
+    VideoToolbox,
+}
+
+impl HwDecodeBackend {
+    pub fn ffmpeg_arg(self) -> Option<&'static str> {
+        match self {
+            Self::Auto | Self::Software => None,
+            Self::D3d11va => Some("d3d11va"),
+            Self::Dxva2 => Some("dxva2"),
+            Self::Vaapi => Some("vaapi"),
+            Self::VideoToolbox => Some("videotoolbox"),
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Auto => "自動 (HWデコード優先)",
+            Self::Software => "Software (CPU)",
+            Self::D3d11va => "Windows D3D11VA",
+            Self::Dxva2 => "Windows DXVA2",
+            Self::Vaapi => "Linux VAAPI",
+            Self::VideoToolbox => "macOS VideoToolbox",
+        }
+    }
+}
+
+/// v1.0 #18: プロキシ生成コーデック設定
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProxyCodec {
+    #[default]
+    H264Fast,
+    MjpegIntra,
+}
+
+/// v1.0 #18: バックグラウンドプロキシ生成プロファイル（解像度・コーデック指定可）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProxyProfile {
+    pub max_height: u32,
+    pub codec: ProxyCodec,
+}
+
+impl Default for ProxyProfile {
+    fn default() -> Self {
+        Self {
+            max_height: 540,
+            codec: ProxyCodec::H264Fast,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
     Mp4H264,
     Mp4H265,
+    /// v1.0 #19: HDR10 PQ 10-bit (BT.2020 / ST 2084 / yuv420p10le) HEVC 書き出し
+    Mp4H265HdrPq10Bit,
     WebmVp9Alpha,
     PngSequence,
     WavAudioOnly,
+}
+
+impl ExportFormat {
+    pub fn color_space(self) -> ExportColorSpace {
+        match self {
+            Self::Mp4H265HdrPq10Bit => ExportColorSpace::Hdr10Pq10Bit,
+            _ => ExportColorSpace::Rec709Sdr,
+        }
+    }
 }
 
 /// ハードウェア／ソフトウェアエンコーダー選択（NVENC / QSV / AMF 自動検出＋CPUフォールバック）
@@ -305,9 +392,27 @@ impl FfmpegCli {
         proxy_path: &Path,
         max_height: u32,
     ) -> Result<PathBuf, MediaError> {
-        if !(64..=2160).contains(&max_height) {
+        self.generate_proxy_with_profile(
+            src_path,
+            proxy_path,
+            ProxyProfile {
+                max_height,
+                codec: ProxyCodec::H264Fast,
+            },
+        )
+    }
+
+    /// v1.0 #18: 解像度・コーデック設定可能なバックグラウンドプロキシ生成（H.264 短GOP / MJPEG 全Iフレーム）
+    pub fn generate_proxy_with_profile(
+        &self,
+        src_path: &Path,
+        proxy_path: &Path,
+        profile: ProxyProfile,
+    ) -> Result<PathBuf, MediaError> {
+        if !(64..=2160).contains(&profile.max_height) {
             return Err(MediaError::InvalidArgument(format!(
-                "proxy max_height {max_height} out of valid range 64..=2160"
+                "proxy max_height {} out of valid range 64..=2160",
+                profile.max_height
             )));
         }
         if let Some(parent) = proxy_path.parent()
@@ -317,33 +422,111 @@ impl FfmpegCli {
         }
         let safe_src = sanitize_ffmpeg_path(src_path);
         let safe_dst = sanitize_ffmpeg_path(proxy_path);
-        let scale_filter = format!("scale=-2:'min(ih,{max_height})'");
-        let output = Command::new(&self.ffmpeg_bin)
-            .args(["-y", "-v", "error", "-i"])
+        let scale_filter = format!("scale=-2:'min(ih,{})'", profile.max_height);
+        let mut cmd = Command::new(&self.ffmpeg_bin);
+        cmd.args(["-y", "-v", "error", "-i"])
             .arg(&safe_src)
-            .args([
-                "-vf",
-                &scale_filter,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-crf",
-                "24",
-                "-g",
-                "15",
-                "-pix_fmt",
-                "yuv420p",
-                "-an",
-            ])
-            .arg(&safe_dst)
-            .output()?;
+            .args(["-vf", &scale_filter]);
+        match profile.codec {
+            ProxyCodec::H264Fast => {
+                cmd.args([
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "24",
+                    "-g",
+                    "15",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-an",
+                ]);
+            }
+            ProxyCodec::MjpegIntra => {
+                cmd.args(["-c:v", "mjpeg", "-q:v", "5", "-an"]);
+            }
+        }
+        let output = cmd.arg(&safe_dst).output()?;
         if !output.status.success() {
             return Err(MediaError::NonZeroExit(
                 String::from_utf8_lossy(&output.stderr).into_owned(),
             ));
         }
         Ok(proxy_path.to_path_buf())
+    }
+
+    /// v1.0 #18: FFmpeg がサポートするハードウェアデコードバックエンド（d3d11va/dxva2/vaapi/videotoolbox）を OS 優先順で検出する
+    pub fn detect_available_hw_decoders(&self) -> Vec<HwDecodeBackend> {
+        let Ok(out) = Command::new(&self.ffmpeg_bin)
+            .args(["-hide_banner", "-hwaccels"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !out.status.success() {
+            return Vec::new();
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let has = |name: &str| text.lines().any(|l| l.trim() == name);
+
+        let preferred_order: &[HwDecodeBackend] = if cfg!(target_os = "windows") {
+            &[HwDecodeBackend::D3d11va, HwDecodeBackend::Dxva2]
+        } else if cfg!(target_os = "macos") {
+            &[HwDecodeBackend::VideoToolbox]
+        } else {
+            &[HwDecodeBackend::Vaapi]
+        };
+
+        let mut list = Vec::new();
+        for &backend in preferred_order {
+            if let Some(arg) = backend.ffmpeg_arg()
+                && has(arg)
+            {
+                list.push(backend);
+            }
+        }
+        list
+    }
+
+    /// v1.0 #18: 指定された希望バックエンドが実機環境で動作するか検証し、不可時は Software へ安全フォールバックする
+    pub fn resolve_hw_decoder(&self, preferred: HwDecodeBackend) -> HwDecodeBackend {
+        if preferred == HwDecodeBackend::Software {
+            return HwDecodeBackend::Software;
+        }
+        let candidates = if preferred == HwDecodeBackend::Auto {
+            self.detect_available_hw_decoders()
+        } else {
+            vec![preferred]
+        };
+        for cand in candidates {
+            let Some(arg) = cand.ffmpeg_arg() else {
+                continue;
+            };
+            // 小型 synthetic ストリームでドライバ初期化成否を即座に検証
+            let ok = Command::new(&self.ffmpeg_bin)
+                .args([
+                    "-v",
+                    "error",
+                    "-hwaccel",
+                    arg,
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=black:s=64x64:d=0.04",
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if ok {
+                return cand;
+            }
+        }
+        HwDecodeBackend::Software
     }
 
     /// 動画・音声コンテナから 16-bit PCM ステレオ WAV を抽出する（AudioGraph・波形生成フォールバック用）
@@ -515,6 +698,12 @@ impl FfmpegCli {
                             &crf_str,
                             "-preset",
                             "p4",
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                             "-movflags",
                             "+faststart",
                         ]);
@@ -527,6 +716,12 @@ impl FfmpegCli {
                             "nv12",
                             "-global_quality",
                             &crf_str,
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                             "-movflags",
                             "+faststart",
                         ]);
@@ -541,6 +736,12 @@ impl FfmpegCli {
                             &crf_str,
                             "-qp_p",
                             &crf_str,
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                             "-movflags",
                             "+faststart",
                         ]);
@@ -555,6 +756,12 @@ impl FfmpegCli {
                             &crf_str,
                             "-preset",
                             "fast",
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                             "-movflags",
                             "+faststart",
                         ]);
@@ -576,6 +783,12 @@ impl FfmpegCli {
                             &crf_str,
                             "-preset",
                             "p4",
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                         ]);
                     }
                     VideoEncoder::Qsv => {
@@ -586,20 +799,75 @@ impl FfmpegCli {
                             "nv12",
                             "-global_quality",
                             &crf_str,
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                         ]);
                     }
                     VideoEncoder::Amf => {
                         cmd.args([
-                            "-c:v", "hevc_amf", "-pix_fmt", "yuv420p", "-qp_i", &crf_str, "-qp_p",
+                            "-c:v",
+                            "hevc_amf",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-qp_i",
                             &crf_str,
+                            "-qp_p",
+                            &crf_str,
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
                         ]);
                     }
                     VideoEncoder::Auto | VideoEncoder::Software => {
-                        cmd.args(["-c:v", "libx265", "-pix_fmt", "yuv420p", "-crf", &crf_str]);
+                        cmd.args([
+                            "-c:v",
+                            "libx265",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-crf",
+                            &crf_str,
+                            "-colorspace",
+                            "bt709",
+                            "-color_primaries",
+                            "bt709",
+                            "-color_trc",
+                            "bt709",
+                        ]);
                     }
                 }
                 if audio_wav_path.is_some() {
                     cmd.args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
+                }
+            }
+            ExportFormat::Mp4H265HdrPq10Bit => {
+                // v1.0 #19: HDR10 PQ 10-bit (BT.2020 + ST 2084 / SMPTE2084) 書き出し
+                cmd.args([
+                    "-c:v",
+                    "libx265",
+                    "-pix_fmt",
+                    "yuv420p10le",
+                    "-crf",
+                    &crf_str,
+                    "-colorspace",
+                    "bt2020nc",
+                    "-color_primaries",
+                    "bt2020",
+                    "-color_trc",
+                    "smpte2084",
+                    "-x265-params",
+                    "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
+                    "-movflags",
+                    "+faststart",
+                ]);
+                if audio_wav_path.is_some() {
+                    cmd.args(["-c:a", "aac", "-b:a", "256k", "-shortest"]);
                 }
             }
             ExportFormat::WebmVp9Alpha => {
@@ -699,6 +967,27 @@ impl FfmpegCli {
         target_width: u32,
         target_height: u32,
     ) -> Result<VideoStreamDecoder, MediaError> {
+        self.open_video_stream_with_hwaccel(
+            path,
+            start_frame,
+            fps,
+            target_width,
+            target_height,
+            HwDecodeBackend::Software,
+        )
+    }
+
+    /// v1.0 #18: ハードウェアデコード指定（d3d11va / dxva2 / vaapi / videotoolbox）付きで
+    /// 常駐デコードストリームを開く。HW 失敗時は自動的に Software へフォールバックする。
+    pub fn open_video_stream_with_hwaccel(
+        &self,
+        path: &Path,
+        start_frame: i64,
+        fps: FrameRate,
+        target_width: u32,
+        target_height: u32,
+        hw_decode: HwDecodeBackend,
+    ) -> Result<VideoStreamDecoder, MediaError> {
         let start_frame = start_frame.max(0);
         let frame_bytes = checked_rgba_frame_bytes(target_width, target_height)?;
         let safe_path = sanitize_ffmpeg_path(path);
@@ -708,8 +997,13 @@ impl FfmpegCli {
             fps.num, fps.den
         );
 
-        let mut child = Command::new(&self.ffmpeg_bin)
-            .args(["-v", "error", "-ss", &format!("{start_sec:.6}"), "-i"])
+        let mut cmd = Command::new(&self.ffmpeg_bin);
+        cmd.args(["-v", "error"]);
+        if let Some(hw_arg) = hw_decode.ffmpeg_arg() {
+            cmd.args(["-hwaccel", hw_arg]);
+        }
+        let mut child = cmd
+            .args(["-ss", &format!("{start_sec:.6}"), "-i"])
             .arg(&safe_path)
             .args([
                 "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "-an", "-sn", "pipe:1",
@@ -1006,5 +1300,51 @@ mod tests {
         assert_eq!(dec.next_frame_index(), 5);
         // 後方シークは None を返し、呼び出し元の再オープンを促す
         assert!(dec.read_frame_at(2).is_none());
+    }
+
+    #[test]
+    fn v10_hw_decode_fallback_proxy_profile_and_hdr10_metadata() {
+        let cli = FfmpegCli::default();
+        assert_eq!(
+            ExportFormat::Mp4H264.color_space(),
+            ExportColorSpace::Rec709Sdr
+        );
+        assert_eq!(
+            ExportFormat::Mp4H265HdrPq10Bit.color_space(),
+            ExportColorSpace::Hdr10Pq10Bit
+        );
+        // Hardware decoder detection never panics; explicit Software always resolves to Software.
+        let _detected = cli.detect_available_hw_decoders();
+        assert_eq!(
+            cli.resolve_hw_decoder(HwDecodeBackend::Software),
+            HwDecodeBackend::Software
+        );
+
+        let tmp = tempdir().unwrap();
+        let src_mp4 = tmp.path().join("src.mp4");
+        let proxy_mjpeg = tmp.path().join("proxy_mjpeg.mov");
+        let config = ExportConfig {
+            width: 160,
+            height: 90,
+            fps: FrameRate::FPS_30,
+            format: ExportFormat::Mp4H264,
+            crf: 23,
+            encoder: VideoEncoder::Software,
+        };
+        let mut session = cli.start_export(&src_mp4, &config, None).unwrap();
+        let frame = vec![140u8; 160 * 90 * 4];
+        for _ in 0..8 {
+            session.write_rgba8_frame(&frame).unwrap();
+        }
+        session.finish().unwrap();
+
+        let profile = ProxyProfile {
+            max_height: 72,
+            codec: ProxyCodec::MjpegIntra,
+        };
+        cli.generate_proxy_with_profile(&src_mp4, &proxy_mjpeg, profile)
+            .unwrap();
+        let probe = cli.probe(&proxy_mjpeg).unwrap();
+        assert_eq!(probe.height, Some(72));
     }
 }

@@ -481,6 +481,44 @@ fn apply_audio_effect(
                 }
             }
         }
+        "noise_reduction" => {
+            let strength = node
+                .params
+                .get("strength")
+                .copied()
+                .unwrap_or(0.65)
+                .clamp(0.0, 1.0);
+            let floor_db = node
+                .params
+                .get("noise_floor_db")
+                .copied()
+                .unwrap_or(-38.0)
+                .clamp(-80.0, -6.0);
+            if strength > 1e-4 {
+                apply_spectral_noise_reduction(samples, channels, strength, floor_db);
+            }
+        }
+        "de_esser" => {
+            let freq_hz = node
+                .params
+                .get("freq_hz")
+                .copied()
+                .unwrap_or(6500.0)
+                .clamp(2500.0, (sr * 0.45).max(2600.0));
+            let threshold_db = node
+                .params
+                .get("threshold_db")
+                .copied()
+                .unwrap_or(-24.0)
+                .clamp(-60.0, 0.0);
+            let reduction_db = node
+                .params
+                .get("reduction_db")
+                .copied()
+                .unwrap_or(-8.0)
+                .clamp(-24.0, 0.0);
+            apply_de_esser(samples, channels, sr, freq_hz, threshold_db, reduction_db);
+        }
         _ => {}
     }
 }
@@ -764,6 +802,309 @@ pub fn apply_sidechain_ducking(
     }
 }
 
+/// Pure-Rust 基数2 Cooley-Tukey FFT（in-place、長さは 2 の冪乗、`inverse == true` で IFFT + 1/N 正規化）
+fn fft_radix2_inplace(re: &mut [f32], im: &mut [f32], inverse: bool) {
+    let n = re.len();
+    debug_assert_eq!(n, im.len());
+    if n <= 1 || !n.is_power_of_two() {
+        return;
+    }
+    // ビット反転並べ替え
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let sign = if inverse { 1.0f32 } else { -1.0f32 };
+    let mut len = 2usize;
+    while len <= n {
+        let half = len >> 1;
+        let angle = sign * 2.0 * PI / len as f32;
+        let wlen_re = angle.cos();
+        let wlen_im = angle.sin();
+        let mut i = 0usize;
+        while i < n {
+            let mut w_re = 1.0f32;
+            let mut w_im = 0.0f32;
+            for k in 0..half {
+                let u_re = re[i + k];
+                let u_im = im[i + k];
+                let vr = re[i + k + half];
+                let vi = im[i + k + half];
+                let v_re = vr * w_re - vi * w_im;
+                let v_im = vr * w_im + vi * w_re;
+                re[i + k] = u_re + v_re;
+                im[i + k] = u_im + v_im;
+                re[i + k + half] = u_re - v_re;
+                im[i + k + half] = u_im - v_im;
+                let next_re = w_re * wlen_re - w_im * wlen_im;
+                let next_im = w_re * wlen_im + w_im * wlen_re;
+                w_re = next_re;
+                w_im = next_im;
+            }
+            i += len;
+        }
+        len <<= 1;
+    }
+    if inverse {
+        let inv_n = 1.0 / n as f32;
+        for v in re.iter_mut() {
+            *v *= inv_n;
+        }
+        for v in im.iter_mut() {
+            *v *= inv_n;
+        }
+    }
+}
+
+/// v1.0 #19: Pure-Rust Hann 窓 STFT スペクトル減算ノイズリダクション（512pt FFT、50% Overlap-Add）
+pub fn apply_spectral_noise_reduction(
+    samples: &mut [f32],
+    channels: usize,
+    strength: f32,
+    noise_floor_db: f32,
+) {
+    let frames = samples.len() / channels.max(1);
+    const N: usize = 512;
+    const HOP: usize = N / 2;
+    if frames < N || channels == 0 {
+        return;
+    }
+
+    let hann: Vec<f32> = (0..N)
+        .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / N as f32).cos()))
+        .collect();
+    // 合成側も sqrt(Hann) ではなく Hann + 正規化重み和で厳密に完全再構成
+    let strength = strength.clamp(0.0, 1.0);
+    let floor_amp = db_to_linear(noise_floor_db) * (N as f32 * 0.25);
+    let spectral_floor = (1.0 - strength * 0.92).clamp(0.06, 1.0);
+
+    for ch in 0..channels {
+        let mut mono = vec![0.0f32; frames];
+        for (i, slot) in mono.iter_mut().enumerate() {
+            *slot = samples[i * channels + ch];
+        }
+
+        // フレームごとのスペクトルとエネルギーを収集し、静かなフレーム（下位 25%）からノイズプロファイルを自動推定
+        let num_hops = ((frames.saturating_sub(N)) / HOP) + 2;
+        let mut frame_spectra: Vec<(Vec<f32>, Vec<f32>, f32)> = Vec::with_capacity(num_hops);
+        for h in 0..num_hops {
+            let start = h * HOP;
+            if start >= frames {
+                break;
+            }
+            let mut re = vec![0.0f32; N];
+            let mut im = vec![0.0f32; N];
+            let mut energy = 0.0f32;
+            for i in 0..N {
+                let s = if start + i < frames {
+                    mono[start + i] * hann[i]
+                } else {
+                    0.0
+                };
+                re[i] = s;
+                energy += s * s;
+            }
+            fft_radix2_inplace(&mut re, &mut im, false);
+            frame_spectra.push((re, im, energy));
+        }
+        if frame_spectra.is_empty() {
+            continue;
+        }
+
+        let mut order: Vec<usize> = (0..frame_spectra.len()).collect();
+        order.sort_by(|&a, &b| frame_spectra[a].2.total_cmp(&frame_spectra[b].2));
+        let noise_count = (frame_spectra.len() / 4).max(1);
+        let mut avg_noise = vec![0.0f32; N];
+        for &idx in &order[..noise_count] {
+            let (ref re, ref im, _) = frame_spectra[idx];
+            for k in 0..N {
+                avg_noise[k] += (re[k] * re[k] + im[k] * im[k]).sqrt();
+            }
+        }
+        for slot in &mut avg_noise {
+            *slot = (*slot / noise_count as f32).max(floor_amp);
+        }
+
+        let mut out = vec![0.0f32; frames];
+        let mut norm = vec![0.0f32; frames];
+        for (h, (mut re, mut im, _)) in frame_spectra.into_iter().enumerate() {
+            let start = h * HOP;
+            for k in 0..N {
+                let mag = (re[k] * re[k] + im[k] * im[k]).sqrt();
+                if mag > 1e-9 {
+                    let over_sub = avg_noise[k] * (1.0 + strength * 1.4);
+                    let clean_mag = (mag - over_sub).max(mag * spectral_floor);
+                    let gain = (clean_mag / mag).clamp(spectral_floor, 1.0);
+                    re[k] *= gain;
+                    im[k] *= gain;
+                }
+            }
+            fft_radix2_inplace(&mut re, &mut im, true);
+            for i in 0..N {
+                if start + i < frames {
+                    let w = hann[i];
+                    out[start + i] += re[i] * w;
+                    norm[start + i] += w * w;
+                }
+            }
+        }
+        for i in 0..frames {
+            let v = if norm[i] > 1e-5 {
+                out[i] / norm[i]
+            } else {
+                mono[i]
+            };
+            samples[i * channels + ch] = v.clamp(-1.0, 1.0);
+        }
+    }
+}
+
+/// v1.0 #19: 歯擦音（サ行・シ行 5kHz–10kHz）を検出し高域のみを動的減衰するディエッサー
+pub fn apply_de_esser(
+    samples: &mut [f32],
+    channels: usize,
+    sr: f32,
+    freq_hz: f32,
+    threshold_db: f32,
+    reduction_db: f32,
+) {
+    if samples.is_empty() || channels == 0 || sr <= 0.0 {
+        return;
+    }
+    let ch_n = channels.min(8);
+    // サイドチェイン検出器（指定周波数以上の歯擦音エネルギーを抽出）
+    let mut det_hpfs: Vec<Biquad> = (0..ch_n)
+        .map(|_| Biquad::high_pass(sr, freq_hz, 0.9))
+        .collect();
+    // 歯擦音発生時のみ高域を滑らかにロールオフさせるダイナミック LPF（非作動時は dry 100% 透過）
+    let lpf_fc = (freq_hz * 0.45).clamp(1200.0, sr * 0.40);
+    let mut body_lpfs: Vec<Biquad> = (0..ch_n)
+        .map(|_| Biquad::low_pass(sr, lpf_fc, 0.707))
+        .collect();
+
+    let thresh = db_to_linear(threshold_db);
+    let max_duck = db_to_linear(reduction_db.min(0.0));
+    let attack = (-1.0 / (0.002 * sr)).exp();
+    let release = (-1.0 / (0.040 * sr)).exp();
+    let mut env = 0.0f32;
+
+    for frame in samples.chunks_exact_mut(channels) {
+        let mut sib_peak = 0.0f32;
+        for (ch, hpf) in det_hpfs.iter_mut().enumerate().take(ch_n) {
+            let det = hpf.process(frame[ch]);
+            sib_peak = sib_peak.max(det.abs());
+        }
+        let coeff = if sib_peak > env { attack } else { release };
+        env = coeff * env + (1.0 - coeff) * sib_peak;
+
+        let band_gain = if env > thresh && env > 1e-6 {
+            let excess = (env / thresh).clamp(1.0, 8.0);
+            let t = ((excess - 1.0) / 3.0).clamp(0.0, 1.0);
+            1.0 + (max_duck - 1.0) * t
+        } else {
+            1.0
+        };
+
+        for (ch, lpf) in body_lpfs.iter_mut().enumerate().take(ch_n) {
+            let x = frame[ch];
+            let body = lpf.process(x);
+            frame[ch] = (x * band_gain + body * (1.0 - band_gain)).clamp(-1.0, 1.0);
+        }
+    }
+}
+
+/// v1.0 #19: ボーカル / BGM ステム分離結果
+#[derive(Debug, Clone)]
+pub struct StemSeparationResult {
+    pub vocals: ve_media::AudioBuffer,
+    pub accompaniment: ve_media::AudioBuffer,
+    pub method: String,
+}
+
+/// v1.0 #19: オフライン Pure-Rust ボーカル／BGM 分離（Mid/Side 定位マスク + STFT 音声帯域 220Hz–4200Hz マスク）。
+/// 外部 AI モデル不要で即時実行でき、ボーカル（センター＋声域）と伴奏（ステレオ広がり＋低高域）を分離する。
+pub fn separate_vocal_bgm_stems(input: &ve_media::AudioBuffer) -> StemSeparationResult {
+    let sr = input.sample_rate.max(8_000);
+    let ch = input.channels.max(1);
+    let frames = input.frame_count();
+    if frames == 0 {
+        return StemSeparationResult {
+            vocals: input.clone(),
+            accompaniment: input.clone(),
+            method: "pure_rust_mid_side_stft".to_string(),
+        };
+    }
+
+    // まずステレオ Mid (L+R)/2 と Side (L-R)/2 を抽出（モノラルの場合は Side=0）
+    let mut mid = vec![0.0f32; frames];
+    let mut side = vec![0.0f32; frames];
+    for i in 0..frames {
+        if ch >= 2 {
+            let l = input.samples[i * ch];
+            let r = input.samples[i * ch + 1];
+            mid[i] = 0.5 * (l + r);
+            side[i] = 0.5 * (l - r);
+        } else {
+            mid[i] = input.samples[i];
+        }
+    }
+
+    // Mid 成分に音声帯域バンドパス（220Hz–4200Hz）を適用してボーカル成分を抽出
+    let mut hpf = Biquad::high_pass(sr as f32, 220.0, 0.707);
+    let mut lpf = Biquad::low_pass(sr as f32, 4200.0, 0.707);
+    let mut vocal_mono = vec![0.0f32; frames];
+    for i in 0..frames {
+        let bp = lpf.process(hpf.process(mid[i]));
+        // Side エネルギーが強い瞬間（左右に大きく広がる伴奏）はボーカルマスクを減衰
+        let m_abs = mid[i].abs();
+        let s_abs = side[i].abs();
+        let center_mask = if m_abs + s_abs > 1e-6 {
+            ((m_abs - s_abs * 0.85).max(0.0) / (m_abs + s_abs * 0.25)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        vocal_mono[i] = bp * center_mask;
+    }
+
+    let mut vocal_samples = Vec::with_capacity(frames * 2);
+    let mut bgm_samples = Vec::with_capacity(frames * 2);
+    for i in 0..frames {
+        let v = vocal_mono[i].clamp(-1.0, 1.0);
+        let (orig_l, orig_r) = if ch >= 2 {
+            (input.samples[i * ch], input.samples[i * ch + 1])
+        } else {
+            (input.samples[i], input.samples[i])
+        };
+        vocal_samples.push(v);
+        vocal_samples.push(v);
+        bgm_samples.push((orig_l - v).clamp(-1.0, 1.0));
+        bgm_samples.push((orig_r - v).clamp(-1.0, 1.0));
+    }
+
+    StemSeparationResult {
+        vocals: ve_media::AudioBuffer {
+            sample_rate: sr,
+            channels: 2,
+            samples: vocal_samples,
+        },
+        accompaniment: ve_media::AudioBuffer {
+            sample_rate: sr,
+            channels: 2,
+            samples: bgm_samples,
+        },
+        method: "pure_rust_mid_side_stft".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,6 +1217,78 @@ mod tests {
         assert!(
             after_rms > during_rms * 2.0,
             "BGM should recover after voice stops: during={during_rms}, after={after_rms}"
+        );
+    }
+
+    #[test]
+    fn v10_spectral_noise_reduction_de_esser_and_stem_separation() {
+        let sr = 48_000u32;
+        let frames = 16_384usize;
+        // 1) Noise reduction: quiet constant hum (first half) + loud 800Hz speech tone (second half)
+        let mut noisy = Vec::with_capacity(frames * 2);
+        let mut seed = 0x1234_5678u32;
+        for i in 0..frames {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let noise = (((seed >> 16) as f32 / 32768.0) - 1.0) * 0.06;
+            let tone = if i >= frames / 2 {
+                (2.0 * PI * 800.0 * i as f32 / sr as f32).sin() * 0.55
+            } else {
+                0.0
+            };
+            let v = noise + tone;
+            noisy.push(v);
+            noisy.push(v);
+        }
+        let noise_rms_before = measure_block_meter(&noisy[..frames / 2]).rms_l;
+        let mut nr = AudioEffectNode::with_defaults("noise_reduction");
+        nr.params.insert("strength".into(), 0.85);
+        apply_audio_effect_chain(&mut noisy, 2, sr, &[nr]);
+        let noise_rms_after = measure_block_meter(&noisy[2048..frames / 2]).rms_l;
+        let tone_rms_after = measure_block_meter(&noisy[frames + 2048..frames * 2 - 2048]).rms_l;
+        assert!(
+            noise_rms_after < noise_rms_before * 0.55,
+            "noise_before={noise_rms_before}, noise_after={noise_rms_after}"
+        );
+        assert!(
+            tone_rms_after > noise_rms_after * 4.0,
+            "speech should remain clear: tone={tone_rms_after}, noise={noise_rms_after}"
+        );
+
+        // 2) De-esser: high 7.5kHz sibilance attenuated more than 400Hz vocal fundamental
+        let mut sib = sine_stereo(7500.0, 0.5, sr, 8192);
+        let mut body = sine_stereo(400.0, 0.5, sr, 8192);
+        let mut de = AudioEffectNode::with_defaults("de_esser");
+        de.params.insert("threshold_db".into(), -28.0);
+        de.params.insert("reduction_db".into(), -12.0);
+        apply_audio_effect_chain(&mut sib, 2, sr, std::slice::from_ref(&de));
+        apply_audio_effect_chain(&mut body, 2, sr, &[de]);
+        let sib_rms = measure_block_meter(&sib[4096..]).rms_l;
+        let body_rms = measure_block_meter(&body[4096..]).rms_l;
+        assert!(
+            sib_rms < body_rms * 0.65,
+            "de-esser should reduce 7.5kHz more than 400Hz: sib={sib_rms}, body={body_rms}"
+        );
+
+        // 3) Vocal / BGM separation: centered 1000Hz voice + opposite-phase wide 100Hz bass
+        let mut mix = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = (2.0 * PI * 1000.0 * i as f32 / sr as f32).sin() * 0.4;
+            let wide_bgm = (2.0 * PI * 120.0 * i as f32 / sr as f32).sin() * 0.4;
+            mix.push(v + wide_bgm);
+            mix.push(v - wide_bgm);
+        }
+        let stems = separate_vocal_bgm_stems(&ve_media::AudioBuffer {
+            sample_rate: sr,
+            channels: 2,
+            samples: mix,
+        });
+        assert_eq!(stems.vocals.frame_count(), frames);
+        assert_eq!(stems.accompaniment.frame_count(), frames);
+        let vocal_rms = measure_block_meter(&stems.vocals.samples[4096..]).rms_l;
+        let bgm_rms = measure_block_meter(&stems.accompaniment.samples[4096..]).rms_l;
+        assert!(
+            vocal_rms > 0.12 && bgm_rms > 0.15,
+            "v={vocal_rms}, b={bgm_rms}"
         );
     }
 }

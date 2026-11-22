@@ -796,6 +796,252 @@ fn block_on_simple<F: Future>(fut: F) -> F::Output {
     }
 }
 
+/// v1.0 #18: Linear Premultiplied レイヤー合成用 WGSL コンピュートシェーダーソース
+pub const COMPOSITE_COMPUTE_WGSL_SOURCE: &str = include_str!("shaders/composite_compute.wgsl");
+
+/// v1.0 #18: `wgpu` コンピュートシェーダー（`@workgroup_size(8, 8)`）で
+/// Linear Premultiplied Alpha 合成（Normal / Add / Multiply / Screen）を並列実行するコンポジタ。
+pub struct WgpuComputeCompositor {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::ComputePipeline,
+    bgl: wgpu::BindGroupLayout,
+}
+
+impl WgpuComputeCompositor {
+    pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ve_composite_compute_wgsl"),
+            source: wgpu::ShaderSource::Wgsl(COMPOSITE_COMPUTE_WGSL_SOURCE.into()),
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ve_compute_comp_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ve_compute_comp_pl"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("ve_compute_comp_pipeline"),
+            layout: Some(&pl),
+            module: &shader,
+            entry_point: Some("cs_composite"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        Self {
+            device,
+            queue,
+            pipeline,
+            bgl,
+        }
+    }
+
+    /// ヘッドレス GPU アダプタで `WgpuComputeCompositor` を初期化する（GPU 非搭載環境では `None`）
+    pub fn try_headless() -> Option<Self> {
+        let instance = wgpu::Instance::default();
+        let adapter = block_on_simple(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+            ..Default::default()
+        }))
+        .ok()?;
+        let (device, queue) = block_on_simple(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("ve_compute_compositor_device"),
+            ..Default::default()
+        }))
+        .ok()?;
+        Some(Self::from_device(device, queue))
+    }
+
+    /// 同解像度の 2 枚の `LinearImage` を GPU コンピュートシェーダーで合成する
+    pub fn composite_linear_images(
+        &self,
+        dst: &LinearImage,
+        src: &LinearImage,
+        blend_mode: ve_core::BlendMode,
+        opacity: f32,
+    ) -> Option<LinearImage> {
+        if dst.width != src.width || dst.height != src.height || dst.width == 0 || dst.height == 0 {
+            return None;
+        }
+        let pixel_count = (dst.width as usize) * (dst.height as usize);
+        let byte_len = (pixel_count * 16) as u64;
+
+        let pack_pixels = |img: &LinearImage| -> Vec<u8> {
+            let mut bytes = Vec::with_capacity(pixel_count * 16);
+            for p in &img.pixels {
+                bytes.extend_from_slice(&p.r.to_le_bytes());
+                bytes.extend_from_slice(&p.g.to_le_bytes());
+                bytes.extend_from_slice(&p.b.to_le_bytes());
+                bytes.extend_from_slice(&p.a.to_le_bytes());
+            }
+            bytes
+        };
+
+        let dst_bytes = pack_pixels(dst);
+        let src_bytes = pack_pixels(src);
+
+        let dst_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ve_comp_dst"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let src_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ve_comp_src"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ve_comp_out"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let read_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ve_comp_read"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mode_u32: u32 = match blend_mode {
+            ve_core::BlendMode::Normal => 0,
+            ve_core::BlendMode::Add => 1,
+            ve_core::BlendMode::Multiply => 2,
+            ve_core::BlendMode::Screen => 3,
+        };
+        let mut uniform_bytes = [0u8; 16];
+        uniform_bytes[0..4].copy_from_slice(&dst.width.to_le_bytes());
+        uniform_bytes[4..8].copy_from_slice(&dst.height.to_le_bytes());
+        uniform_bytes[8..12].copy_from_slice(&mode_u32.to_le_bytes());
+        uniform_bytes[12..16].copy_from_slice(&opacity.clamp(0.0, 1.0).to_le_bytes());
+
+        let uniform_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ve_comp_uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.queue.write_buffer(&dst_buf, 0, &dst_bytes);
+        self.queue.write_buffer(&src_buf, 0, &src_bytes);
+        self.queue.write_buffer(&uniform_buf, 0, &uniform_bytes);
+
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ve_comp_bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dst_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: src_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: uniform_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ve_compute_comp_encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("ve_compute_comp_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(dst.width.div_ceil(8), dst.height.div_ceil(8), 1);
+        }
+        encoder.copy_buffer_to_buffer(&out_buf, 0, &read_buf, 0, byte_len);
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = read_buf.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().ok()?.ok()?;
+
+        let mapped = slice.get_mapped_range().ok()?;
+        let mut pixels = Vec::with_capacity(pixel_count);
+        for chunk in mapped.as_chunks::<16>().0 {
+            pixels.push(crate::color::LinearPremul {
+                r: f32::from_le_bytes(chunk[0..4].try_into().ok()?),
+                g: f32::from_le_bytes(chunk[4..8].try_into().ok()?),
+                b: f32::from_le_bytes(chunk[8..12].try_into().ok()?),
+                a: f32::from_le_bytes(chunk[12..16].try_into().ok()?),
+            });
+        }
+        drop(mapped);
+        read_buf.unmap();
+        Some(LinearImage {
+            width: dst.width,
+            height: dst.height,
+            pixels,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +1091,40 @@ mod tests {
                 "got {}",
                 out.pixels[0].r
             );
+        }
+    }
+
+    #[test]
+    fn v10_compute_compositor_shader_validates_and_runs_or_falls_back() {
+        // WGSL コンピュートシェーダー自体が naga により全環境で構文・型検証をパスすることを確認
+        crate::hot_shader::validate_wgsl(COMPOSITE_COMPUTE_WGSL_SOURCE)
+            .expect("composite_compute.wgsl must pass naga validation");
+
+        if let Some(comp) = WgpuComputeCompositor::try_headless() {
+            let dst = LinearImage::new(
+                8,
+                8,
+                crate::color::LinearPremul {
+                    r: 0.2,
+                    g: 0.2,
+                    b: 0.2,
+                    a: 1.0,
+                },
+            );
+            let src = LinearImage::new(
+                8,
+                8,
+                crate::color::LinearPremul {
+                    r: 0.4,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.5,
+                },
+            );
+            let out = comp
+                .composite_linear_images(&dst, &src, ve_core::BlendMode::Add, 1.0)
+                .expect("compute composite");
+            assert!((out.pixels[0].r - 0.6).abs() < 1e-3);
         }
     }
 }

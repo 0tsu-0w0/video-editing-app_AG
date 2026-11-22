@@ -2,27 +2,35 @@ pub mod animation;
 pub mod cache;
 pub mod camera;
 pub mod command;
+pub mod delivery;
 pub mod encoding;
 pub mod expression;
 pub mod folder;
 pub mod highlights;
 pub mod interop;
 pub mod lipsync;
+pub mod multicam;
 pub mod preset;
 pub mod project;
+pub mod registry;
 pub mod script_import;
+pub mod settings;
 pub mod template;
 pub mod text_edit;
 pub mod time;
 pub mod timeline_ops;
 
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
-pub use cache::{CacheError, PrecompCacheManager, content_hash_hex};
+pub use cache::{CacheError, PersistentFrameCache, PrecompCacheManager, content_hash_hex};
 pub use camera::{Camera3D, Light3D, Light3DType, Projected3D, Transform3D};
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
+pub use delivery::{
+    ArchivePackageSummary, DeliveryIssue, DeliveryReport, IssueSeverity, archive_project_to_zip,
+    crc32_ieee, validate_project_delivery,
+};
 pub use encoding::base64_encode;
 pub use expression::{
-    CompiledExpression, EXPRESSION_PROPERTIES, ExpressionContext, ExpressionError,
+    CompiledExpression, EXPRESSION_PROPERTIES, ExpressionContext, ExpressionError, LayerLookupFn,
     build_bake_expression_command, compile_expression, evaluate_expression, evaluate_item_property,
     evaluate_item_transform, expression_presets, item_base_property, item_expressions_use_audio,
 };
@@ -40,6 +48,10 @@ pub use lipsync::{
     CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
     evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
 };
+pub use multicam::{
+    MulticamAngle, MulticamCutPoint, MulticamGridLayout, build_multicam_switch_cut_commands,
+    build_multicam_sync_align_commands,
+};
 pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor, TextStylePreset};
 pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
@@ -50,9 +62,16 @@ pub use project::{
     TrackMatte, TrackMatteMode, TrackPointSample, Transform2D, TransitionKind, VectorFillMode,
     VectorShapeConfig,
 };
+pub use registry::{
+    ExtensionKind, RegistryEntry, SandboxPermission, official_registry_catalog, sha256_hex,
+    verify_and_install_extension,
+};
 pub use script_import::{
     ScriptBuildConfig, ScriptLine, build_script_timeline_commands, parse_script_auto,
     parse_script_csv, parse_script_markdown,
+};
+pub use settings::{
+    EditorAction, EditorKeymap, EditorUserSettings, KeymapPreset, UiLanguage, UiThemePreset, tr,
 };
 pub use template::{
     ExposedParam, ExposedParamKind, MotionTemplate, ProjectTemplate, ResponsiveTimeRegion,

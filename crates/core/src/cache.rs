@@ -176,6 +176,86 @@ impl PrecompCacheManager {
     }
 }
 
+/// v1.0 #18: アプリ再起動後も再利用できる SSD 永続フレームキャッシュ（`cache/frames/`）
+/// コンテンツハッシュキー＋LRU 容量上限管理で RGBA8 または Linear f32 フレームを安全に永続化する。
+#[derive(Debug)]
+pub struct PersistentFrameCache {
+    inner: PrecompCacheManager,
+    hits: u64,
+    misses: u64,
+}
+
+impl PersistentFrameCache {
+    const MAGIC: &'static [u8; 4] = b"VEFC";
+
+    pub fn open(dir: impl Into<PathBuf>, max_bytes: u64) -> Result<Self, CacheError> {
+        Ok(Self {
+            inner: PrecompCacheManager::new(dir, max_bytes)?,
+            hits: 0,
+            misses: 0,
+        })
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.inner.total_bytes()
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.inner.entry_count()
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// 決定論的フレームハッシュキーを生成する
+    pub fn frame_key(scene_signature: &str, width: u32, height: u32, frame_idx: i64) -> String {
+        let payload = format!("{scene_signature}|{width}x{height}|f{frame_idx}");
+        format!("f_{}", content_hash_hex(payload.as_bytes()))
+    }
+
+    /// RGBA8 フレーム（`width * height * 4` バイト）をディスクへ永続保存する
+    pub fn put_rgba8(
+        &mut self,
+        key: &str,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+    ) -> Result<PathBuf, CacheError> {
+        let mut buf = Vec::with_capacity(12 + rgba8.len());
+        buf.extend_from_slice(Self::MAGIC);
+        buf.extend_from_slice(&width.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        buf.extend_from_slice(rgba8);
+        self.inner.put(key, &buf)
+    }
+
+    /// ディスクキャッシュから RGBA8 フレームを読み出す（サイズ整合検証付き）
+    pub fn get_rgba8(&mut self, key: &str) -> Result<Option<(u32, u32, Vec<u8>)>, CacheError> {
+        let Some(raw) = self.inner.get(key)? else {
+            self.misses += 1;
+            return Ok(None);
+        };
+        if raw.len() < 12 || &raw[0..4] != Self::MAGIC {
+            self.misses += 1;
+            return Ok(None);
+        }
+        let w = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+        let h = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+        let expected = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+        if raw.len() != 12 + expected {
+            self.misses += 1;
+            return Ok(None);
+        }
+        self.hits += 1;
+        Ok(Some((w, h, raw[12..].to_vec())))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +301,27 @@ mod tests {
                 Err(CacheError::InvalidKey(_))
             ));
         }
+    }
+
+    #[test]
+    fn persistent_frame_cache_survives_reopen_and_enforces_lru() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("frames");
+        let key = PersistentFrameCache::frame_key("scene_sig_v1", 4, 2, 10);
+        let rgba = vec![128u8; 4 * 2 * 4];
+
+        {
+            let mut fc = PersistentFrameCache::open(&dir, 1024).unwrap();
+            fc.put_rgba8(&key, 4, 2, &rgba).unwrap();
+            assert_eq!(fc.entry_count(), 1);
+        }
+
+        // アプリ再起動をシミュレートして再オープンしても即ヒットする
+        let mut reopened = PersistentFrameCache::open(&dir, 1024).unwrap();
+        let loaded = reopened.get_rgba8(&key).unwrap().unwrap();
+        assert_eq!(loaded.0, 4);
+        assert_eq!(loaded.1, 2);
+        assert_eq!(loaded.2, rgba);
+        assert_eq!(reopened.hits(), 1);
     }
 }

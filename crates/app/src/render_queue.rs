@@ -367,6 +367,8 @@ impl RenderQueueState {
                         transparent_bg,
                         gpu_passes: gpu_passes.to_vec(),
                         shader_files: shader_files.to_vec(),
+                        worker_threads: 0,
+                        hw_decode: ve_media::HwDecodeBackend::Auto,
                     };
                     self.active_job_id = Some(job_id);
                     self.active_handle = Some(ExportJobHandle::start(req));

@@ -13,12 +13,13 @@ use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{
     AssetResolution, AudioReactiveBand, BlendMode, CharacterSpriteConfig, ColorPalette, EffectNode,
-    FilterTargetScope, ItemKind, LipSyncMode, MouthShape, PrecompCacheManager, Project,
-    ProjectFolder, RationalTime, RgbaColor, Scene, SceneId, ShapeKind, TimelineItem, Transform2D,
-    TransitionKind, content_hash_hex, evaluate_item_property, evaluate_item_transform,
-    evaluate_vowel_mouth, item_expressions_use_audio, resolve_mouth_png, rms_to_mouth,
+    FilterTargetScope, ItemKind, LipSyncMode, MouthShape, PersistentFrameCache,
+    PrecompCacheManager, Project, ProjectFolder, RationalTime, RgbaColor, Scene, SceneId,
+    ShapeKind, TimelineItem, Transform2D, TransitionKind, content_hash_hex, evaluate_item_property,
+    evaluate_item_transform, evaluate_vowel_mouth, item_expressions_use_audio, resolve_mouth_png,
+    rms_to_mouth,
 };
-use ve_media::{FfmpegCli, VideoStreamDecoder};
+use ve_media::{FfmpegCli, HwDecodeBackend, VideoStreamDecoder};
 use ve_plugin_api::PluginRegistry;
 
 /// 組み込み WGSL エフェクトチェーンシェーダーソース
@@ -43,8 +44,13 @@ pub struct RenderGraph {
     mem_precomp_cache: HashMap<String, (u64, LinearImage)>,
     mem_cache_tick: u64,
     disk_precomp_cache: Option<PrecompCacheManager>,
+    /// v1.0 #18: アプリ再起動後も再利用できる SSD 永続フレームキャッシュ（`cache/frames/`）
+    disk_frame_cache: Option<PersistentFrameCache>,
     project_folder: Option<ProjectFolder>,
     ffmpeg: FfmpegCli,
+    /// v1.0 #18: FFmpeg ハードウェアデコード設定（自動検出＋安全 Software フォールバック）
+    pub hw_decode: HwDecodeBackend,
+    resolved_hw_decode: Option<HwDecodeBackend>,
     /// true のときプレビュー用に軽量プロキシ (`cache/proxy/`) を優先使用（書き出し時は false で原本参照）
     pub use_proxies: bool,
     /// v0.9 #16: true のとき書き出し用高品質サブフレーム分割数でモーションブラーを合成（プレビュー時は false で軽量）
@@ -80,8 +86,11 @@ impl RenderGraph {
             mem_precomp_cache: HashMap::new(),
             mem_cache_tick: 0,
             disk_precomp_cache: None,
+            disk_frame_cache: None,
             project_folder: None,
             ffmpeg: FfmpegCli::default(),
+            hw_decode: HwDecodeBackend::Auto,
+            resolved_hw_decode: None,
             use_proxies: true,
             high_quality_motion_blur: false,
             proxy_paths: HashMap::new(),
@@ -97,6 +106,43 @@ impl RenderGraph {
             cache_hits: 0,
             cache_misses: 0,
         }
+    }
+
+    /// v1.0 #18: HW デコード設定を変更し、既存の常駐デコーダを再初期化する
+    pub fn set_hw_decode(&mut self, backend: HwDecodeBackend) {
+        if self.hw_decode != backend {
+            self.hw_decode = backend;
+            self.resolved_hw_decode = None;
+            self.video_streams.clear();
+        }
+    }
+
+    /// 実際に使用する HW デコードバックエンドを解決する（未解決時は初回自動判定）
+    pub fn effective_hw_decode(&mut self) -> HwDecodeBackend {
+        if let Some(resolved) = self.resolved_hw_decode {
+            return resolved;
+        }
+        let resolved = self.ffmpeg.resolve_hw_decoder(self.hw_decode);
+        self.resolved_hw_decode = Some(resolved);
+        resolved
+    }
+
+    /// v1.0 #18: SSD 永続フレームキャッシュ（`cache/frames/`）を有効化する
+    pub fn enable_disk_frame_cache(&mut self, cache_dir: PathBuf, max_bytes: u64) -> bool {
+        match PersistentFrameCache::open(cache_dir, max_bytes) {
+            Ok(fc) => {
+                self.disk_frame_cache = Some(fc);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 永続フレームキャッシュの統計情報 `(entries, total_bytes, hits, misses)`
+    pub fn disk_frame_cache_stats(&self) -> Option<(usize, u64, u64, u64)> {
+        self.disk_frame_cache
+            .as_ref()
+            .map(|c| (c.entry_count(), c.total_bytes(), c.hits(), c.misses()))
     }
 
     pub fn text_renderer(&self) -> &TextRenderer {
@@ -277,6 +323,54 @@ impl RenderGraph {
     ) -> Option<LinearImage> {
         let scene = project.scene(scene_id)?;
         Some(self.render_scene_inner(Some(project), scene, time, transparent_bg, 0))
+    }
+
+    /// v1.0 #18: SSD 永続フレームキャッシュ（`cache/frames/`）を優先参照して RGBA8 フレームを取得する。
+    /// 同一シーン状態・同一時刻であればアプリ再起動後もデコード＆合成をスキップして即座に返す。
+    pub fn render_project_scene_cached_rgba8(
+        &mut self,
+        project: &Project,
+        scene_id: SceneId,
+        time: RationalTime,
+        target_w: u32,
+        target_h: u32,
+        transparent_bg: bool,
+    ) -> Option<Vec<u8>> {
+        let scene = project.scene(scene_id)?;
+        let tw = target_w.max(1);
+        let th = target_h.max(1);
+        let frame_idx = time.to_frame_floor(scene.fps);
+
+        let cache_key = if self.disk_frame_cache.is_some() {
+            let scene_json = serde_json::to_vec(scene).unwrap_or_default();
+            let sig = format!(
+                "{}|t={transparent_bg}|p={}|mb={}",
+                content_hash_hex(&scene_json),
+                self.use_proxies,
+                self.high_quality_motion_blur
+            );
+            Some(PersistentFrameCache::frame_key(&sig, tw, th, frame_idx))
+        } else {
+            None
+        };
+
+        if let (Some(key), Some(fc)) = (cache_key.as_deref(), self.disk_frame_cache.as_mut())
+            && let Ok(Some((cw, ch, rgba))) = fc.get_rgba8(key)
+            && cw == tw
+            && ch == th
+        {
+            self.cache_hits += 1;
+            return Some(rgba);
+        }
+
+        let img =
+            self.render_project_scene_scaled(project, scene_id, time, tw, th, transparent_bg)?;
+        let rgba = img.to_rgba8_srgb();
+        if let (Some(key), Some(fc)) = (cache_key.as_deref(), self.disk_frame_cache.as_mut()) {
+            self.cache_misses += 1;
+            let _ = fc.put_rgba8(key, tw, th, &rgba);
+        }
+        Some(rgba)
     }
 
     /// プレビュー用の任意解像度 `(target_w, target_h)` へシーン全体の座標・文字サイズ・図形サイズを
@@ -1013,13 +1107,58 @@ impl RenderGraph {
                     .filter(|dec| dec.path == path && dec.fps == scene.fps)
                     .and_then(|dec| dec.read_frame_at(frame_idx));
 
-                if rgba_opt.is_none()
-                    && let Ok(mut new_stream) = self
+                if rgba_opt.is_none() {
+                    let hw = self.effective_hw_decode();
+                    let opened = self
                         .ffmpeg
-                        .open_video_stream(&path, frame_idx, scene.fps, tw, th)
-                {
-                    rgba_opt = new_stream.read_frame_at(frame_idx);
-                    if rgba_opt.is_some() {
+                        .open_video_stream_with_hwaccel(&path, frame_idx, scene.fps, tw, th, hw);
+                    let mut stream_opt = match opened {
+                        Ok(mut st) => {
+                            let first = st.read_frame_at(frame_idx);
+                            if first.is_some() {
+                                rgba_opt = first;
+                                Some(st)
+                            } else if hw != HwDecodeBackend::Software {
+                                // HW デコード初回失敗時は即座に Software へフォールバックして以降安定化
+                                self.resolved_hw_decode = Some(HwDecodeBackend::Software);
+                                if let Ok(mut sw_st) = self.ffmpeg.open_video_stream_with_hwaccel(
+                                    &path,
+                                    frame_idx,
+                                    scene.fps,
+                                    tw,
+                                    th,
+                                    HwDecodeBackend::Software,
+                                ) {
+                                    rgba_opt = sw_st.read_frame_at(frame_idx);
+                                    Some(sw_st)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        Err(_) if hw != HwDecodeBackend::Software => {
+                            self.resolved_hw_decode = Some(HwDecodeBackend::Software);
+                            if let Ok(mut sw_st) = self.ffmpeg.open_video_stream_with_hwaccel(
+                                &path,
+                                frame_idx,
+                                scene.fps,
+                                tw,
+                                th,
+                                HwDecodeBackend::Software,
+                            ) {
+                                rgba_opt = sw_st.read_frame_at(frame_idx);
+                                Some(sw_st)
+                            } else {
+                                None
+                            }
+                        }
+                        Err(_) => None,
+                    };
+                    if rgba_opt.is_some()
+                        && let Some(new_stream) = stream_opt.take()
+                    {
                         if self.video_streams.len() >= MAX_VIDEO_STREAMS
                             && !self.video_streams.contains_key(&stream_key)
                         {
@@ -2067,6 +2206,88 @@ fn rotate_linear_image(src: &LinearImage, angle_deg: f32) -> LinearImage {
     dst
 }
 
+/// v1.0 #18: マルチスレッド並列フレームバッチレンダリング（`std::thread::scope`）。
+/// 連続フレーム区間を各ワーカースレッドへ均等割り当てすることで、
+/// ワーカースレッドごとの常駐 FFmpeg デコーダ逐次読み出し性能とマルチコア並列化を両立する。
+#[allow(clippy::too_many_arguments)]
+pub fn render_frame_batch_parallel(
+    project: &Project,
+    scene_id: SceneId,
+    folder: Option<&ProjectFolder>,
+    frame_times: &[RationalTime],
+    transparent_bg: bool,
+    use_proxies: bool,
+    high_quality_motion_blur: bool,
+    hw_decode: HwDecodeBackend,
+    proxy_paths: &HashMap<Uuid, PathBuf>,
+    waveforms: &HashMap<Uuid, WaveformPeaks>,
+    worker_threads: usize,
+) -> Vec<Vec<u8>> {
+    if frame_times.is_empty() {
+        return Vec::new();
+    }
+    let avail = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let threads = worker_threads.clamp(1, avail.max(1)).min(frame_times.len());
+
+    let make_graph = || {
+        let mut g = RenderGraph::new();
+        g.set_project_folder(folder.cloned());
+        g.use_proxies = use_proxies;
+        g.high_quality_motion_blur = high_quality_motion_blur;
+        g.set_hw_decode(hw_decode);
+        for (&aid, p) in proxy_paths {
+            g.register_proxy(aid, p.clone());
+        }
+        for (&aid, wf) in waveforms {
+            g.register_waveform(aid, wf.clone());
+        }
+        g
+    };
+
+    if threads <= 1 {
+        let mut g = make_graph();
+        return frame_times
+            .iter()
+            .map(|&t| {
+                g.render_project_scene(project, scene_id, t, transparent_bg)
+                    .map(|img| img.to_rgba8_srgb())
+                    .unwrap_or_default()
+            })
+            .collect();
+    }
+
+    let chunk_size = frame_times.len().div_ceil(threads);
+    let mut chunk_outputs: Vec<Vec<Vec<u8>>> = Vec::with_capacity(threads);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(threads);
+        for chunk in frame_times.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                let mut g = make_graph();
+                let mut out = Vec::with_capacity(chunk.len());
+                for &t in chunk {
+                    let rgba = g
+                        .render_project_scene(project, scene_id, t, transparent_bg)
+                        .map(|img| img.to_rgba8_srgb())
+                        .unwrap_or_default();
+                    out.push(rgba);
+                }
+                out
+            }));
+        }
+        for h in handles {
+            chunk_outputs.push(h.join().unwrap_or_default());
+        }
+    });
+
+    let mut flat = Vec::with_capacity(frame_times.len());
+    for mut part in chunk_outputs {
+        flat.append(&mut part);
+    }
+    flat
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3012,5 +3233,56 @@ mod tests {
             )
             .unwrap();
         assert!(lit.pixels.iter().any(|p| p.r > 0.1));
+    }
+
+    #[test]
+    fn v10_persistent_frame_cache_persists_across_render_graph_instances() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("frames");
+
+        let mut proj = Project::new("DiskCacheTest", ProjectSettings::default());
+        let scene = proj.active_scene_mut().unwrap();
+        scene.width = 64;
+        scene.height = 36;
+        scene.layers[0].items.push(TimelineItem::new(
+            "Box",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Shape {
+                shape: ShapeKind::Rectangle,
+                width: 32.0,
+                height: 18.0,
+                color: RgbaColor {
+                    r: 0.2,
+                    g: 0.8,
+                    b: 0.4,
+                    a: 1.0,
+                },
+            },
+        ));
+
+        let t = RationalTime::from_seconds(0.5);
+        let first = {
+            let mut g = RenderGraph::new();
+            assert!(g.enable_disk_frame_cache(cache_dir.clone(), 4 * 1024 * 1024));
+            let rgba = g
+                .render_project_scene_cached_rgba8(&proj, proj.active_scene_id, t, 64, 36, false)
+                .unwrap();
+            assert_eq!(g.cache_misses, 1);
+            assert_eq!(g.cache_hits, 0);
+            rgba
+        };
+
+        // 再起動相当の新規 RenderGraph でも即キャッシュヒットし、同一ピクセルが返る
+        let mut g2 = RenderGraph::new();
+        assert!(g2.enable_disk_frame_cache(cache_dir, 4 * 1024 * 1024));
+        let second = g2
+            .render_project_scene_cached_rgba8(&proj, proj.active_scene_id, t, 64, 36, false)
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(g2.cache_hits, 1);
+        let stats = g2.disk_frame_cache_stats().unwrap();
+        assert_eq!(stats.0, 1);
+        assert_eq!(stats.2, 1);
     }
 }

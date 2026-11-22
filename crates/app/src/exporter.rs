@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -5,8 +6,12 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use ve_audio::AudioGraph;
 use ve_core::{Project, ProjectFolder, RationalTime, SceneId};
-use ve_media::{ExportConfig, ExportFormat, FfmpegCli, VideoEncoder, write_wav_pcm16};
-use ve_render::{GpuPostProcessPass, HeadlessGpuOffloader, RenderGraph};
+use ve_media::{
+    ExportConfig, ExportFormat, FfmpegCli, HwDecodeBackend, VideoEncoder, write_wav_pcm16,
+};
+use ve_render::{
+    GpuPostProcessPass, HeadlessGpuOffloader, RenderGraph, render_frame_batch_parallel,
+};
 
 #[derive(Debug, Clone)]
 pub struct ExportJobRequest {
@@ -18,6 +23,10 @@ pub struct ExportJobRequest {
     pub transparent_bg: bool,
     pub gpu_passes: Vec<GpuPostProcessPass>,
     pub shader_files: Vec<(String, PathBuf)>,
+    /// v1.0 #18: マルチスレッド並列レンダリングスレッド数（0 で自動 CPU コア数）
+    pub worker_threads: usize,
+    /// v1.0 #18: FFmpeg ハードウェアデコード設定
+    pub hw_decode: HwDecodeBackend,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +252,7 @@ fn run_export_worker(
     let mut rg = RenderGraph::new();
     rg.use_proxies = false; // 書き出し時は必ず高画質原本を参照
     rg.high_quality_motion_blur = true; // 書き出し時は高品質サブフレーム分割でモーションブラー合成
+    rg.set_hw_decode(req.hw_decode);
     rg.set_project_folder(req.folder.clone());
     for (id, path) in &req.shader_files {
         let _ = rg.hot_shaders.register_file(id.clone(), path);
@@ -279,82 +289,160 @@ fn run_export_worker(
         }
     };
     let resolved_enc = session.resolved_encoder();
-    let gpu_tag = if gpu_offloader.is_some() {
-        " + wgpu GPU"
+    let effective_workers = if req.worker_threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get().clamp(1, 8))
+            .unwrap_or(1)
     } else {
-        ""
+        req.worker_threads.clamp(1, 16)
+    };
+    let can_parallel_cpu =
+        effective_workers > 1 && gpu_offloader.is_none() && req.shader_files.is_empty();
+    let mode_tag = if gpu_offloader.is_some() {
+        " + wgpu GPU".to_string()
+    } else if can_parallel_cpu {
+        format!(" + {effective_workers}T 並列")
+    } else {
+        String::new()
     };
     update_progress(&progress, |p| {
         p.resolved_encoder = Some(resolved_enc);
-        p.stage = format!("エンコード中 ({}{gpu_tag})...", resolved_enc.display_name());
+        p.stage = format!(
+            "エンコード中 ({}{mode_tag})...",
+            resolved_enc.display_name()
+        );
     });
 
-    // 3. フレーム単位でレンダリング＆エンコード（毎フレームキャンセル確認）
-    for frame_idx in 0..total_frames {
-        if cancel_flag.load(Ordering::Relaxed) {
-            session.cancel();
-            if req.config.format != ExportFormat::PngSequence {
-                let _ = std::fs::remove_file(&req.output_path);
+    // 3. フレーム単位／マルチスレッド並列バッチでレンダリング＆エンコード
+    if can_parallel_cpu {
+        let batch_len = (effective_workers * 4).clamp(4, 32) as u64;
+        let empty_proxies = HashMap::new();
+        let empty_waveforms = HashMap::new();
+        let mut cursor = 0u64;
+        while cursor < total_frames {
+            if cancel_flag.load(Ordering::Relaxed) {
+                session.cancel();
+                if req.config.format != ExportFormat::PngSequence {
+                    let _ = std::fs::remove_file(&req.output_path);
+                }
+                update_progress(&progress, |p| {
+                    p.elapsed_sec = started.elapsed().as_secs_f64();
+                    p.eta_sec = None;
+                    p.stage = "キャンセル済み".into();
+                    p.cancelled = true;
+                    p.finished = true;
+                });
+                return;
             }
-            update_progress(&progress, |p| {
-                p.elapsed_sec = started.elapsed().as_secs_f64();
-                p.eta_sec = None;
-                p.stage = "キャンセル済み".into();
-                p.cancelled = true;
-                p.finished = true;
-            });
-            return;
+            let end = (cursor + batch_len).min(total_frames);
+            let times: Vec<RationalTime> = (cursor..end)
+                .map(|fi| RationalTime::from_frame(fi as i64, req.config.fps))
+                .collect();
+            let frames_rgba = render_frame_batch_parallel(
+                &req.project,
+                req.scene_id,
+                req.folder.as_ref(),
+                &times,
+                req.transparent_bg,
+                false,
+                true,
+                req.hw_decode,
+                &empty_proxies,
+                &empty_waveforms,
+                effective_workers,
+            );
+            for (offset, rgba) in frames_rgba.iter().enumerate() {
+                if let Err(e) = session.write_rgba8_frame(rgba) {
+                    session.cancel();
+                    update_progress(&progress, |p| {
+                        p.stage = format!("書き出し書き込みエラー: {e}");
+                        p.error = Some(e.to_string());
+                        p.finished = true;
+                    });
+                    return;
+                }
+                let done = cursor + offset as u64 + 1;
+                let elapsed = started.elapsed().as_secs_f64();
+                let eta = if done > 0 {
+                    Some((elapsed / done as f64) * total_frames.saturating_sub(done) as f64)
+                } else {
+                    None
+                };
+                update_progress(&progress, |p| {
+                    p.current_frame = done;
+                    p.elapsed_sec = elapsed;
+                    p.eta_sec = eta;
+                });
+            }
+            cursor = end;
         }
+    } else {
+        for frame_idx in 0..total_frames {
+            if cancel_flag.load(Ordering::Relaxed) {
+                session.cancel();
+                if req.config.format != ExportFormat::PngSequence {
+                    let _ = std::fs::remove_file(&req.output_path);
+                }
+                update_progress(&progress, |p| {
+                    p.elapsed_sec = started.elapsed().as_secs_f64();
+                    p.eta_sec = None;
+                    p.stage = "キャンセル済み".into();
+                    p.cancelled = true;
+                    p.finished = true;
+                });
+                return;
+            }
 
-        let t = RationalTime::from_frame(frame_idx as i64, req.config.fps);
-        let Some(linear) =
-            rg.render_project_scene(&req.project, req.scene_id, t, req.transparent_bg)
-        else {
-            session.cancel();
+            let t = RationalTime::from_frame(frame_idx as i64, req.config.fps);
+            let Some(linear) =
+                rg.render_project_scene(&req.project, req.scene_id, t, req.transparent_bg)
+            else {
+                session.cancel();
+                update_progress(&progress, |p| {
+                    p.stage = "フレーム描画に失敗しました".into();
+                    p.error = Some("render_project_scene returned None".into());
+                    p.finished = true;
+                });
+                return;
+            };
+
+            let linear = if let Some(offloader) = gpu_offloader.as_mut() {
+                offloader
+                    .apply_passes_readback(
+                        &linear,
+                        &rg.hot_shaders,
+                        &req.gpu_passes,
+                        t.as_seconds() as f32,
+                    )
+                    .unwrap_or(linear)
+            } else {
+                linear
+            };
+
+            if let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb()) {
+                session.cancel();
+                update_progress(&progress, |p| {
+                    p.stage = format!("書き出し書き込みエラー: {e}");
+                    p.error = Some(e.to_string());
+                    p.finished = true;
+                });
+                return;
+            }
+
+            let done = frame_idx + 1;
+            let elapsed = started.elapsed().as_secs_f64();
+            let eta = if done > 0 {
+                let per_frame = elapsed / done as f64;
+                Some(per_frame * total_frames.saturating_sub(done) as f64)
+            } else {
+                None
+            };
             update_progress(&progress, |p| {
-                p.stage = "フレーム描画に失敗しました".into();
-                p.error = Some("render_project_scene returned None".into());
-                p.finished = true;
+                p.current_frame = done;
+                p.elapsed_sec = elapsed;
+                p.eta_sec = eta;
             });
-            return;
-        };
-
-        let linear = if let Some(offloader) = gpu_offloader.as_mut() {
-            offloader
-                .apply_passes_readback(
-                    &linear,
-                    &rg.hot_shaders,
-                    &req.gpu_passes,
-                    t.as_seconds() as f32,
-                )
-                .unwrap_or(linear)
-        } else {
-            linear
-        };
-
-        if let Err(e) = session.write_rgba8_frame(&linear.to_rgba8_srgb()) {
-            session.cancel();
-            update_progress(&progress, |p| {
-                p.stage = format!("書き出し書き込みエラー: {e}");
-                p.error = Some(e.to_string());
-                p.finished = true;
-            });
-            return;
         }
-
-        let done = frame_idx + 1;
-        let elapsed = started.elapsed().as_secs_f64();
-        let eta = if done > 0 {
-            let per_frame = elapsed / done as f64;
-            Some(per_frame * total_frames.saturating_sub(done) as f64)
-        } else {
-            None
-        };
-        update_progress(&progress, |p| {
-            p.current_frame = done;
-            p.elapsed_sec = elapsed;
-            p.eta_sec = eta;
-        });
     }
 
     update_progress(&progress, |p| {
@@ -472,6 +560,8 @@ mod tests {
                 [0.05, 1.05, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             )],
             shader_files: Vec::new(),
+            worker_threads: 2,
+            hw_decode: HwDecodeBackend::Software,
         });
         let snap = handle.wait();
         assert!(snap.succeeded, "export failed: {:?}", snap.error);
@@ -503,6 +593,8 @@ mod tests {
             transparent_bg: false,
             gpu_passes: Vec::new(),
             shader_files: Vec::new(),
+            worker_threads: 1,
+            hw_decode: HwDecodeBackend::Software,
         });
         let snap = handle.wait();
         assert!(snap.succeeded, "wav export failed: {:?}", snap.error);
@@ -539,6 +631,8 @@ mod tests {
             transparent_bg: false,
             gpu_passes: Vec::new(),
             shader_files: Vec::new(),
+            worker_threads: 2,
+            hw_decode: HwDecodeBackend::Software,
         });
         handle.cancel();
         let snap = handle.wait();
