@@ -366,6 +366,9 @@ pub struct PlaybackSettings {
     /// 既知の元素材長（ループ折り返し・逆再生基準に使用）
     #[serde(default)]
     pub source_duration: Option<RationalTime>,
+    /// v2.0 #22: スロー再生時のオプティカルフロー中間フレーム補間を有効化
+    #[serde(default)]
+    pub optical_flow_interp: bool,
 }
 
 impl Default for PlaybackSettings {
@@ -374,6 +377,7 @@ impl Default for PlaybackSettings {
             speed: 1.0,
             loop_playback: false,
             source_duration: None,
+            optical_flow_interp: false,
         }
     }
 }
@@ -1595,6 +1599,12 @@ pub struct Scene {
     /// タイムラインマーカー一覧（YouTube チャプター生成対応）
     #[serde(default)]
     pub markers: Vec<TimelineMarker>,
+    /// v2.0 #21: ノードベース合成グラフ（Fusion / Nuke スタイル）
+    #[serde(default)]
+    pub node_graph: crate::node_graph::NodeCompositeGraph,
+    /// v2.0 #24: タイムコード付きレビューコメント（Frame.io / YouTube 互換）
+    #[serde(default)]
+    pub review_comments: Vec<crate::collab::ReviewComment>,
     pub layers: Vec<Layer>,
 }
 
@@ -1613,6 +1623,8 @@ impl Scene {
             color_grade: SceneColorGrade::default(),
             motion_blur: MotionBlurConfig::default(),
             markers: Vec::new(),
+            node_graph: crate::node_graph::NodeCompositeGraph::default(),
+            review_comments: Vec::new(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),

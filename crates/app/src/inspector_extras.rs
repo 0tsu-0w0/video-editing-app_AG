@@ -907,6 +907,21 @@ pub fn show_video_effects_and_presets_ui(
                 ("opacity", 0.6),
             ],
         ),
+        (
+            "AI自動切り抜き",
+            "ai_segment",
+            &[
+                ("sensitivity", 0.55),
+                ("edge_feather_px", 1.5),
+                ("skin_boost", 0.65),
+                ("despill_strength", 0.35),
+            ],
+        ),
+        (
+            "AI超解像復元",
+            "ai_super_res",
+            &[("sharpen", 0.55), ("denoise", 0.2)],
+        ),
     ];
 
     ui.horizontal_wrapped(|ui| {

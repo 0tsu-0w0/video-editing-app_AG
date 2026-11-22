@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.0] - 2026-11-21
+
+次世代 AI ＆ ノード合成・共同編集フロンティア v2.0 マイルストーン（#21〜#24）をすべて実装し、全 24 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・3 ワークスペース・全 **58 MCP ツール**）。
+
+### #21 ノードベース合成グラフ（第 3 ワークスペース：Fusion / Nuke スタイル）
+* `ve-core`: `node_graph` モジュール（`NodeCompositeGraph`・11 種ノード：`LayerInput` / `SolidColor` / `Effect` / `ChannelSplit`［RGB/Alpha/Luma/3D Depth］/ `ChannelMerge` / `Transform` / `Merge`［`mask` 入力対応］/ `MaskCombine` / `ColorCorrect` / `DepthFog` / `Output`、Kahn トポロジカルソート＆サイクル検出、自動整列、双方向変換 `from_scene_layers` ＆ `sync_node_graph_to_scene_layers`、`EditCommand::SetNodeGraph`）を追加
+* `ve-render`: `node_eval::evaluate_node_composite_graph` を `RenderGraph` に統合し、ノードグラフ有効時に 3D 深度パケット付きトポロジカル評価を実行
+* `ve-app` / `ve-mcp`: 第 3 ワークスペース `WorkspaceMode::NodeComposite`＆インタラクティブノードキャンバス `Pane::NodeGraph`（ドラッグ配置・ベジェ配線・バイパス・ズーム/パン・双方向同期）および MCP `manage_node_graph` を追加
+
+### #22 ローカル AI セグメンテーション ＆ インテリジェント自動リフレーム
+* `ve-render`: 完全オフライン（クラウド送信ゼロ）の `ai_vision` モジュールを実装 — ローカル推論ステータス検出（Pure-Rust 内蔵＋オプショナル `models/*.onnx` / `VE_LOCAL_ONNX_BIN`）、グリーンバック不要人物切り抜き `apply_ai_segmentation`（`ai_segment` エフェクト統合）、顔・肌色＋動き＋エッジ顕著性＋ゼロ位相平滑化の `analyze_scene_auto_reframe`＆`build_auto_reframe_commands`、Lanczos-3＋エッジ誘導ローカル超解像（`upscale_super_resolution` / `ai_super_res`）、双方向オクルージョン保護オプティカルフロー補間（`estimate_optical_flow` / `interpolate_frame_optical_flow`）を `RenderGraph` の `PlaybackSettings::optical_flow_interp` へ統合
+* `ve-app` / `ve-mcp`: フロンティアスタジオ「🧠 ローカル AI ビジョン」タブ（被写体軌跡グラフ付き）および MCP `run_local_ai_vision` を追加
+
+### #23 マルチエージェント AI 編集ディレクター（MCP オーケストレーション ＆ 編集レシピ）
+* `ve-core`: `recipe` モジュール（`EditRecipe`・5 専門ロール `AgentRole`・`VisualCheckExpectation`・Pure-Rust YAML/JSON シリアライザ＆パーサ・`{{var}}` 変数展開・履歴マクロ自動記録 `record_recipe_from_commands`・標準ディレクターレシピ 3 種・`ProjectFolder::recipes_dir()` CRUD）を追加
+* `ve-mcp` / `ve-app`: `director` オーケストレータ（人間承認ゲート `AwaitingApproval`・`render_frame_preview` 相当の自動視覚自己検査 `inspect_preview_frame_metrics`・Undo ロールバック対応）、MCP `orchestrate_edit_recipe`（全 **58 MCP ツール**）、およびフロンティアスタジオ「🤖 AI 編集ディレクター」UI を追加
+
+### #24 共同編集・差分マージ ＆ タイムコードレビュー（Git-Friendly NLE）
+* `ve-core`: `collab` モジュール（意味的タイムライン差分 `diff_projects`・3-Way 意味的ブランチマージ `merge_projects_three_way`［非競合自動統合＋競合解決 `KeepOurs`/`KeepTheirs`/`KeepBothDuplicate`＋1 ステップ Undo 可能な `ReplaceProjectSnapshot`］・Frame.io CSV/JSON＆YouTube タイムスタンプレビューコメント入出力・ステータス別カラー付きマーカー自動変換・`ProjectFolder::snapshots_dir()` CRUD）を追加
+* `ve-app` / `ve-mcp`: フロンティアスタジオ「🤝 共同編集・Diff＆レビュー」UI（カラー付き Diff・クリックシーク・3-Way 競合解決・Frame.io/YouTube 入出力）および MCP `collab_diff_and_review` を追加
+
 ## [1.0.0] - 2026-11-21
 
 長尺・大規模・プロ品質のプロダクション完成版マイルストーン v1.0（#17〜#20）をすべて実装しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **54 MCP ツール**）。

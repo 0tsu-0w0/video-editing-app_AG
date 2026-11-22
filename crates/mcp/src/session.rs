@@ -1,13 +1,19 @@
 use std::sync::{Arc, Mutex};
-use ve_core::{CommandBus, ItemId, Project, ProjectFolder, RationalTime};
+use ve_core::{
+    CommandBus, EditRecipe, ItemId, Project, ProjectFolder, RationalTime, RecipeRunState,
+};
 
-/// GUI と 内蔵 MCP サーバーが共有するプロジェクト・CommandBus・選択状態
+/// GUI と 内蔵 MCP サーバーが共有するプロジェクト・CommandBus・選択状態・AIディレクター状態
 pub struct EditorSession {
     pub project: Project,
     pub bus: CommandBus,
     pub selected_items: Vec<ItemId>,
     pub playhead: RationalTime,
     pub folder: Option<ProjectFolder>,
+    /// v2.0 #23: マルチエージェント AI 編集ディレクターのアクティブレシピ
+    pub active_recipe: Option<EditRecipe>,
+    /// v2.0 #23: マルチエージェント AI 編集ディレクターの実行状態（承認ゲート・視覚自己検査ログ）
+    pub recipe_run: Option<RecipeRunState>,
 }
 
 impl EditorSession {
@@ -18,6 +24,8 @@ impl EditorSession {
             selected_items: Vec::new(),
             playhead: RationalTime::ZERO,
             folder: None,
+            active_recipe: None,
+            recipe_run: None,
         }
     }
 
@@ -29,6 +37,8 @@ impl EditorSession {
             selected_items: Vec::new(),
             playhead: RationalTime::ZERO,
             folder: Some(folder),
+            active_recipe: None,
+            recipe_run: None,
         }
     }
 }

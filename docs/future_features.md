@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-21  
-> **v0.1〜v1.0 完了済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・**マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・全 54 MCP ツール**。  
-> 以下に **v0.8〜v1.0（✅ 実装済み）および v1.1+ / v2.0 ビジョンまでの全 24 項目** をマイルストーン順に整理しています。
+> **v0.1〜v2.0 全 24 項目完了済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・**第 3 ワークスペース「ノード合成空間（Fusion/Nuke スタイル）」＆双方向レイヤー同期・完全オフライン ローカル AI ビジョン（グリーンバック不要切り抜き／顔・被写体追尾 9:16 自動リフレーム／ローカル超解像／オプティカルフロースロー補間）・マルチエージェント AI 編集ディレクター（YAML/JSON レシピ・人間承認ゲート・視覚自己検査）・Git-Friendly NLE 視覚タイムライン Diff＆3-Way 意味的ブランチマージ＆Frame.io/YouTube レビューコメント連携・全 58 MCP ツール**。  
+> 以下に **v0.8〜v2.0（✅ 全 24 項目実装済み）** をマイルストーン順に整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -12,7 +12,7 @@ flowchart LR
   V08["✅ v0.8\nテキストベース編集\nビート検出・3D LUT/スコープ"]
   V09["✅ v0.9\nエクスプレッション\n.mogrtテンプレート・パーティクル"]
   V10["✅ v1.0 本番版\nマルチカム・HWデコード/並列合成\nプロ音声・配布エコシステム"]
-  V20["🚀 v1.1+ / v2.0\nノード合成空間・ローカルAI切り抜き\n自律AIディレクター・共同レビュー"]
+  V20["✅ v2.0 フロンティア版\nノード合成空間・ローカルAI切り抜き\n自律AIディレクター・共同レビュー"]
 
   V07 --> V08 --> V09 --> V10 --> V20
 ```
@@ -26,7 +26,7 @@ flowchart LR
 | **v0.8** | 爆速カット＆音ハメ＆カラーグレーディング強化 | **#11〜#13** | ✅ 完了 |
 | **v0.9** | AE 級プロシージャル表現・テンプレート量産・高度 2D/3D 合成 | **#14〜#16** | ✅ 完了 |
 | **v1.0** | プロダクション完成版（マルチカム・HW 並列性能・プロ音声・配布基盤） | **#17〜#20** | ✅ 完了 |
-| **v1.1+ / v2.0** | 次世代 AI ＆ ノード合成・共同編集フロンティア | **#21〜#24** | 🔭 構想 |
+| **v2.0** | 次世代 AI ＆ ノード合成・共同編集フロンティア | **#21〜#24** | ✅ 完了 |
 
 ---
 
@@ -109,25 +109,38 @@ flowchart LR
 ### 20. ~~v1.0 品質保証・カスタマイズ・配布エコシステム~~ ✅ 実装済み（v1.0）
 - **目的**: OSS プロジェクトとして誰もが安心して日常利用・拡張開発・配布できる完成度へ仕上げる。
 - **実装内容**:
-  - `ve-core` / `ve-app` / `ve-mcp`: カスタムキーバインド（`AviUtl2` / `Premiere Pro` / `DaVinci Resolve` / `After Effects` プリセット＆JSON 入出力）、多言語 UI（日本語 / 英語 `tr`）、テーマ 4 種（Dark Studio / Midnight OLED / High Contrast / Light Daylight）＆フォント倍率アクセシビリティ、`manage_ecosystem` ツール（全 **54 MCP ツール**）
+  - `ve-core` / `ve-app` / `ve-mcp`: カスタムキーバインド（`AviUtl2` / `Premiere Pro` / `DaVinci Resolve` / `After Effects` プリセット＆JSON 入出力）、多言語 UI（日本語 / 英語 `tr`）、テーマ 4 種（Dark Studio / Midnight OLED / High Contrast / Light Daylight）＆フォント倍率アクセシビリティ、`manage_ecosystem` ツール
   - `ve-core` / `ve-app`: FIPS 180-4 Pure-Rust SHA-256 署名検証＆サンドボックス権限明示付き公式拡張レジストリブラウザ（`official_registry_catalog` / `verify_and_install_extension`）
   - 配布自動化＆品質保証: Windows `winget` マニフェスト（`packaging/winget/`）・macOS Universal `.app` Bundle・Linux AppDir（`packaging/linux/ve-app.desktop`）対応 `.github/workflows/release.yml`、およびゴールデン視覚回帰テストスイート（`crates/render/tests/visual_regression.rs`）
 
 ---
 
-## 🚀 v1.1+ / v2.0 ビジョン（次世代 AI ＆ ノード合成フロンティア）
+## ✅ v2.0（実装済み・フロンティア版）：次世代 AI ＆ ノード合成・共同編集フロンティア
 
-### 21. ノードベース合成グラフ（第 3 ワークスペース：Fusion / Nuke スタイル）
-- **構想**: 現在の 2 空間（メイン編集空間 / モーション合成空間）に加え、複雑なエフェクト分岐・チャンネル分離（RGB/Alpha/Depth）・マスク合流・3D 合成パスを視覚的に配線できる「ノード合成空間」を導入。既存 `RenderGraph` と双方向変換し、レイヤー編集とノード合成をシームレスに往復可能にする。
+### 21. ~~ノードベース合成グラフ（第 3 ワークスペース：Fusion / Nuke スタイル）~~ ✅ 実装済み（v2.0）
+- **目的**: メイン編集空間／モーション合成空間に加え、複雑なエフェクト分岐・チャンネル分離（RGB/Alpha/Luma/3D Depth）・マスク合流・3D 深度フォグを視覚的に配線できる第 3 ワークスペースを導入し、レイヤー編集とシームレスに双方向往復できるようにする。
+- **実装内容**:
+  - `ve-core`: `node_graph` モジュール — `NodeCompositeGraph`・11 種ノード（`LayerInput` / `SolidColor` / `Effect` / `ChannelSplit` / `ChannelMerge` / `Transform` / `Merge`［`mask` 入力付き］/ `MaskCombine` / `ColorCorrect` / `DepthFog` / `Output`）、Kahn トポロジカルソート＆サイクル検出、自動整列、双方向変換（`NodeCompositeGraph::from_scene_layers` ＆ `sync_node_graph_to_scene_layers`）、`EditCommand::SetNodeGraph`（Undo 対応）
+  - `ve-render`: `node_eval::evaluate_node_composite_graph` を `RenderGraph` に統合し、ノードグラフ有効時に 3D 深度パケット付きでトポロジカル評価
+  - `ve-app` / `ve-mcp`: 第 3 ワークスペース `WorkspaceMode::NodeComposite`＆`Pane::NodeGraph`（ドラッグ配置・ベジェ配線・バイパス・ズーム/パン・ノードインスペクタ・双方向同期ボタン）および MCP `manage_node_graph` ツール
 
-### 22. ローカル AI セグメンテーション ＆ インテリジェント自動リフレーム
-- **構想**: オプショナルなローカル推論バックエンド（ONNX Runtime 等、オフライン完結・クラウド送信ゼロ）を連携し、グリーンバック不要の人物切り抜き（自動ロトブラシ）、被写体・顔追尾による 16:9→9:16 自動パンリフレーム、ローカル超解像・オプティカルフロー補間による滑らかスローモーションを実現。
+### 22. ~~ローカル AI セグメンテーション ＆ インテリジェント自動リフレーム~~ ✅ 実装済み（v2.0）
+- **目的**: クラウド送信ゼロ・オフライン完結のローカル推論により、グリーンバック不要の人物切り抜き・顔/被写体追尾 9:16 自動リフレーム・ローカル超解像・滑らかオプティカルフロースローを実現する。
+- **実装内容**:
+  - `ve-render`: `ai_vision` モジュール — 完全オフライン保証 `LocalVisionBackend`（Pure-Rust 内蔵エンジン＋オプショナル `models/*.onnx` / `VE_LOCAL_ONNX_BIN` ローカル検出）、グリーンバック不要の人物切り抜き `apply_ai_segmentation`（外周背景クラスタ＋肌色保護＋エッジ保存ジョイントバイラテラル精製＋背景色デスピル、`ai_segment` エフェクト統合）、顔/肌色＋動き＋エッジ顕著性＋ゼロ位相平滑化による `analyze_scene_auto_reframe`＆`build_auto_reframe_commands`、Lanczos-3＋エッジ誘導ローカル超解像（`upscale_super_resolution` / `ai_super_res`）、双方向オクルージョン保護オプティカルフロー補間（`estimate_optical_flow` / `interpolate_frame_optical_flow`）を `RenderGraph` の `PlaybackSettings::optical_flow_interp` へ統合
+  - `ve-app` / `ve-mcp`: フロンティアスタジオ「🧠 ローカル AI ビジョン」タブ（軌跡プレビュー付き）および MCP `run_local_ai_vision` ツール
 
-### 23. マルチエージェント AI 編集ディレクター（MCP オーケストレーション ＆ 編集レシピ）
-- **構想**: 内蔵 MCP（54+ ツール）を土台に、「企画・台本 → 素材選定 → 粗編集 → テロップ・BGM・SE 配置 → `render_frame_preview` 視覚自己検査 → 修正」を人間承認ゲート付きで反復支援する編集レシピ（再現可能なマクロ YAML/JSON）の記録・共有基盤を構築。
+### 23. ~~マルチエージェント AI 編集ディレクター（MCP オーケストレーション ＆ 編集レシピ）~~ ✅ 実装済み（v2.0）
+- **目的**: 内蔵 MCP ツール群を土台に、複数専門ロールによる「企画・台本 → 素材選定 → 粗編集 → 演出/音声 → `render_frame_preview` 視覚自己検査」を人間承認ゲート付きで再現・共有できるようにする。
+- **実装内容**:
+  - `ve-core`: `recipe` モジュール — `EditRecipe`・`AgentRole`（5 専門ロール）・`VisualCheckExpectation`・Pure-Rust ゼロ依存 YAML/JSON シリアライザ＆パーサ（`serialize_recipe_yaml` / `parse_recipe_json_or_yaml`）・`{{var}}` 変数展開・履歴マクロ自動記録（`record_recipe_from_commands`）・標準ディレクターレシピ 3 種・`ProjectFolder::recipes_dir()` 永続化 CRUD
+  - `ve-mcp` / `ve-app`: `director` オーケストレータ（デッドロック・再帰安全、`start_recipe_run` / `run_recipe_until_gate` / `approve_current_gate` / `reject_current_gate`［Undo ロールバック対応］/ `inspect_preview_frame_metrics` 視覚自己検査）、MCP `orchestrate_edit_recipe` ツール（全 **58 MCP ツール**）、およびフロンティアスタジオ「🤖 AI 編集ディレクター」UI
 
-### 24. 共同編集・差分マージ ＆ タイムコードレビュー（Git-Friendly NLE）
-- **構想**: 1 フォルダ管理＋決定論的 JSON スキーマの強みを最大限に活かし、タイムラインの視覚的 Diff 比較・ブランチマージ・タイムコード付きレビューコメント（Frame.io / YouTube 限定公開レビュー互換 CSV/JSON インポート＆マーカー自動変換）を実現。
+### 24. ~~共同編集・差分マージ ＆ タイムコードレビュー（Git-Friendly NLE）~~ ✅ 実装済み（v2.0）
+- **目的**: 1 フォルダ管理＋決定論的 JSON スキーマの強みを活かし、タイムライン視覚 Diff・3-Way 意味的ブランチマージ・Frame.io / YouTube レビューコメント連携を実現する。
+- **実装内容**:
+  - `ve-core`: `collab` モジュール — 意味的タイムライン差分 `diff_projects` / `format_diff_report`、3-Way 意味的ブランチマージ `merge_projects_three_way`（非競合自動統合＋`KeepOurs`/`KeepTheirs`/`KeepBothDuplicate` 競合解決＋1 ステップ Undo 可能な `EditCommand::ReplaceProjectSnapshot`）、Frame.io CSV/JSON＆YouTube タイムスタンプコメント入出力（`import_review_comments_csv` / `json` / `import_youtube_review_comments` / `export_review_comments_csv`）、ステータス別カラー付きタイムラインマーカー自動変換（`build_review_comments_to_markers_commands`）、および `ProjectFolder::snapshots_dir()` CRUD
+  - `ve-app` / `ve-mcp`: フロンティアスタジオ「🤝 共同編集・Diff＆レビュー」UI（カラー付き Diff・クリックシーク・3-Way 競合解決ラジオ・Frame.io/YouTube レビュー入出力）および MCP `collab_diff_and_review` ツール
 
 ---
 

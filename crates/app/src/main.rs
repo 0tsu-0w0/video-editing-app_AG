@@ -14,6 +14,7 @@ mod render_queue;
 mod timeline;
 mod v09_panels;
 mod v10_panels;
+mod v20_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -36,6 +37,7 @@ use timeline::{TimelinePlaybackAction, TimelineState};
 use uuid::Uuid;
 use v09_panels::V09PanelsState;
 use v10_panels::{V10PanelsState, apply_user_visuals};
+use v20_panels::V20PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
@@ -58,6 +60,8 @@ enum WorkspaceMode {
     MainEdit,
     /// モーション合成空間（AEライク: グラフエディタ・マット・エフェクトチェーン）
     MotionComposite,
+    /// v2.0 #21: ノード合成空間（Fusion / Nuke スタイル: ノードグラフ配線・チャンネル分離・マスク合流）
+    NodeComposite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,7 @@ enum Pane {
     Preview,
     Timeline,
     GraphEditor,
+    NodeGraph,
     Inspector,
     AssetBrowser,
     AudioAi3D,
@@ -97,6 +102,21 @@ fn build_dock_state(mode: WorkspaceMode) -> DockState<Pane> {
             let [_tl, _ge] = surface.split_right(bottom, 0.52, vec![Pane::GraphEditor]);
             dock
         }
+        WorkspaceMode::NodeComposite => {
+            let mut dock = DockState::new(vec![Pane::Preview]);
+            let surface = dock.main_surface_mut();
+            let [top, _bottom] = surface.split_below(
+                egui_dock::NodeIndex::root(),
+                0.44,
+                vec![Pane::NodeGraph, Pane::Timeline],
+            );
+            let [_left, _right] = surface.split_right(
+                top,
+                0.62,
+                vec![Pane::Inspector, Pane::AssetBrowser, Pane::AudioAi3D],
+            );
+            dock
+        }
     }
 }
 
@@ -116,6 +136,7 @@ struct EditorApp {
     color_scopes: ColorScopesState,
     v09_panels: V09PanelsState,
     v10_panels: V10PanelsState,
+    v20_panels: V20PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -312,6 +333,7 @@ impl EditorApp {
             color_scopes: ColorScopesState::default(),
             v09_panels: V09PanelsState::default(),
             v10_panels: V10PanelsState::default(),
+            v20_panels: V20PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -615,9 +637,11 @@ impl TabViewer for EditorTabViewer<'_> {
             Pane::Preview => "プレビュー (wgpu Linear f16)".into(),
             Pane::Timeline => "タイムライン".into(),
             Pane::GraphEditor => "グラフエディタ (値 / 速度)".into(),
+            Pane::NodeGraph => "🔀 ノード合成グラフ (Fusion/Nuke)".into(),
             Pane::Inspector => match self.app.workspace_mode {
                 WorkspaceMode::MainEdit => "インスペクタ / MCP / 日本語IME".into(),
                 WorkspaceMode::MotionComposite => "AEモーション・エフェクト・マット".into(),
+                WorkspaceMode::NodeComposite => "ノード合成インスペクタ / MCP".into(),
             },
             Pane::AssetBrowser => "🗂 アセット・エイリアス・監視".into(),
             Pane::AudioAi3D => "🎙 音声自動化・立ち絵・3D".into(),
@@ -924,6 +948,12 @@ impl TabViewer for EditorTabViewer<'_> {
             Pane::GraphEditor => {
                 let mut sess = self.app.session.lock().unwrap();
                 self.app.graph_editor.show(ui, &mut sess);
+            }
+            Pane::NodeGraph => {
+                let mut sess = self.app.session.lock().unwrap();
+                if self.app.v20_panels.show_node_graph_pane(ui, &mut sess) {
+                    self.app.preview_dirty = true;
+                }
             }
             Pane::Inspector => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1925,6 +1955,16 @@ impl eframe::App for EditorApp {
                 {
                     self.switch_workspace(WorkspaceMode::MotionComposite);
                 }
+                if ui
+                    .selectable_label(
+                        self.workspace_mode == WorkspaceMode::NodeComposite,
+                        "🔀 ノード合成空間 (Fusion/Nuke)",
+                    )
+                    .on_hover_text("v2.0 #21: 第3ワークスペース — チャンネル分離・マスク合流・3D深度合成をノード配線")
+                    .clicked()
+                {
+                    self.switch_workspace(WorkspaceMode::NodeComposite);
+                }
 
                 ui.separator();
                 ui.label("シーン:");
@@ -1995,6 +2035,16 @@ impl eframe::App for EditorApp {
                     .clicked()
                 {
                     // toggle_value already flipped show_studio_window
+                }
+                if ui
+                    .toggle_value(
+                        &mut self.v20_panels.show_frontier_window,
+                        "🚀 AI・共同編集",
+                    )
+                    .on_hover_text("v2.0 フロンティアスタジオ（ローカルAI切り抜き/リフレーム/超解像・AI編集ディレクター・タイムラインDiff＆レビュー）")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_frontier_window
                 }
                 if ui
                     .toggle_value(
@@ -2456,6 +2506,14 @@ impl eframe::App for EditorApp {
             }
         }
 
+        // v2.0 #22/#23/#24: フロンティアスタジオ（ローカルAIビジョン・AI編集ディレクター・共同編集＆レビュー）
+        if self.v20_panels.show_frontier_window
+            && self.v20_panels.show_frontier_window(&ctx, &self.session)
+        {
+            self.ram_preview.clear();
+            self.preview_dirty = true;
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2482,7 +2540,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v1.0.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v2.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };
