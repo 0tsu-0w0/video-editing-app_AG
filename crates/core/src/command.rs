@@ -371,6 +371,16 @@ pub enum EditCommand {
     ReplaceProjectSnapshot {
         project: Box<Project>,
     },
+    /// v2.1 #26: アイテムの 4 点コーナーピン合成（ホモグラフィ射影変換）を更新する
+    SetCornerPin {
+        item_id: ItemId,
+        corner_pin: crate::project::CornerPinConfig,
+    },
+    /// v2.1 #28: テキストアイテムのワード単位キネティック字幕設定を更新する
+    SetKineticSubtitle {
+        item_id: ItemId,
+        kinetic: crate::kinetic_sub::KineticSubtitleConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -443,6 +453,8 @@ impl EditCommand {
             Self::SetOpticalFlowInterp { .. } => "set_optical_flow_interp",
             Self::SetReviewComments { .. } => "set_review_comments",
             Self::ReplaceProjectSnapshot { .. } => "replace_project_snapshot",
+            Self::SetCornerPin { .. } => "set_corner_pin",
+            Self::SetKineticSubtitle { .. } => "set_kinetic_subtitle",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1668,6 +1680,19 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             project: next_project,
         } => {
             *project = (**next_project).clone();
+            Ok(())
+        }
+        EditCommand::SetCornerPin {
+            item_id,
+            corner_pin,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.corner_pin = *corner_pin;
+            Ok(())
+        }
+        EditCommand::SetKineticSubtitle { item_id, kinetic } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.kinetic_subtitle = kinetic.clone();
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

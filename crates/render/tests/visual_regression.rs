@@ -239,3 +239,70 @@ fn golden_v20_node_graph_and_ai_vision_determinism() {
         "NodeCompositeGraph::from_scene_layers must reproduce layer composition bit-for-bit"
     );
 }
+
+#[test]
+fn golden_v21_curves_hsl_corner_pin_and_kinetic_subtitles() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        scene.color_grade.enabled = true;
+        scene.color_grade.curves = ve_core::ColorCurves::preset_warm_cinema();
+        scene.color_grade.hsl_qualifier = ve_core::HslQualifier {
+            enabled: true,
+            hue_center_deg: 200.0,
+            hue_width_deg: 40.0,
+            sat_scale: 1.25,
+            ..ve_core::HslQualifier::default()
+        };
+        if let Some(item) = scene.layers[0].items.first_mut() {
+            item.corner_pin = ve_core::CornerPinConfig {
+                enabled: true,
+                tl: [0.15, 0.12],
+                tr: [0.85, 0.18],
+                br: [0.92, 0.88],
+                bl: [0.08, 0.86],
+                feather_px: 1.5,
+            };
+        }
+        let mut sub = TimelineItem::new(
+            "Kinetic Sub",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(2.0),
+            ItemKind::Text {
+                content: "今日は 最高の 動画編集 です".into(),
+                font_family: "Sans".into(),
+                font_size: 28.0,
+                color: RgbaColor::WHITE,
+                animator: ve_core::TextAnimator::default(),
+            },
+        );
+        sub.kinetic_subtitle.enabled = true;
+        sub.transform.x = 20.0;
+        sub.transform.y = 110.0;
+        scene.layers[2].items.push(sub);
+    }
+
+    let t1 = RationalTime::from_seconds(0.4);
+    let t2 = RationalTime::from_seconds(1.5);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let a1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let a2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    assert_eq!(a1, a2, "v2.1 rendering must be bit-for-bit deterministic");
+
+    let later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t2, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let changed = a1.iter().zip(later.iter()).filter(|(x, y)| x != y).count();
+    assert!(
+        changed > 200,
+        "v2.1 kinetic subtitles + motion must visibly progress over time: changed={changed}"
+    );
+}

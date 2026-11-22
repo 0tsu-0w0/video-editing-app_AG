@@ -668,6 +668,10 @@ impl RenderGraph {
                             if !item.masks.is_empty() {
                                 crate::mask_tracker::apply_bezier_masks(&mut item_img, &item.masks);
                             }
+                            if item.corner_pin.enabled {
+                                item_img =
+                                    crate::vfx_track::apply_corner_pin(&item_img, &item.corner_pin);
+                            }
 
                             let (mut draw_x, mut draw_y) =
                                 (tf.x + layer.offset_x, tf.y + layer.offset_y);
@@ -969,10 +973,25 @@ impl RenderGraph {
                 let palette = project
                     .map(|p| &p.color_palette)
                     .unwrap_or(&default_palette);
+                let scaled_font_size = *font_size * tf.scale_y.max(0.1);
+                let kinetic_buf;
+                let effective_content: &str = if item.kinetic_subtitle.enabled {
+                    let dur_s = item.duration.as_seconds().max(1e-4);
+                    let progress = (local_time.as_seconds() / dur_s).clamp(0.0, 1.0) as f32;
+                    kinetic_buf = ve_core::generate_kinetic_inline_markup(
+                        content,
+                        progress,
+                        scaled_font_size,
+                        &item.kinetic_subtitle,
+                    );
+                    &kinetic_buf
+                } else {
+                    content
+                };
                 Some(self.text_renderer.render_text_styled(
-                    content,
+                    effective_content,
                     font_family,
-                    *font_size * tf.scale_y.max(0.1),
+                    scaled_font_size,
                     *color,
                     animator,
                     &item.text_style,

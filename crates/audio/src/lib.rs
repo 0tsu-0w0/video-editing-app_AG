@@ -5,6 +5,7 @@ pub mod mixer;
 pub mod multicam;
 pub mod output;
 pub mod recorder;
+pub mod spatial_master;
 pub mod waveform;
 
 pub use beats::{
@@ -22,4 +23,8 @@ pub use mixer::{AudioClip, AudioGraph};
 pub use multicam::{AudioSyncEstimate, estimate_audio_offset_xcorr};
 pub use output::{AudioEngineState, AudioOutputError};
 pub use recorder::{VoiceoverError, VoiceoverRecorder};
+pub use spatial_master::{
+    apply_binaural_spatial_3d, apply_multiband_compressor_3band, apply_true_peak_limiter,
+    measure_true_peak_dbtp,
+};
 pub use waveform::{WaveformBucket, WaveformPeaks};

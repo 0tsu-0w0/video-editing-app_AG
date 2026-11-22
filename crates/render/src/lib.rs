@@ -10,6 +10,7 @@ pub mod psd_sprite;
 pub mod sprite;
 pub mod text;
 pub mod v09_fx;
+pub mod vfx_track;
 
 pub use ai_vision::{
     AutoReframeConfig, LocalVisionBackend, LocalVisionStatus, MotionVector, OpticalFlowConfig,
@@ -21,8 +22,8 @@ pub use ai_vision::{
 pub use color::{LinearImage, LinearPremul, linear_to_srgb, srgb_to_linear};
 pub use color_grading::{
     BUILTIN_LUT_PRESETS, CubeLut3D, HIST_BINS, PARADE_BINS, PARADE_COLS, VECTORSCOPE_SIZE,
-    VideoScopeData, WAVEFORM_BINS, WAVEFORM_COLS, apply_scene_color_grade, compute_video_scopes,
-    emit_sample_cube_luts,
+    VideoScopeData, WAVEFORM_BINS, WAVEFORM_COLS, apply_hsl_qualifier_rgb, apply_scene_color_grade,
+    compute_auto_color_match, compute_video_scopes, emit_sample_cube_luts, evaluate_tone_curve_lut,
 };
 pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph, render_frame_batch_parallel};
 pub use hot_shader::{
@@ -39,4 +40,9 @@ pub use sprite::{load_png_linear, render_placeholder_character, scale_linear_ima
 pub use text::{StyledSpan, TextRenderer, parse_inline_text_spans, strip_inline_tags};
 pub use v09_fx::{
     apply_3d_lighting_tint, build_drop_shadow_image, render_particle_emitter, render_vector_shape,
+};
+pub use vfx_track::{
+    CameraMotionSample, StabilizeConfig, analyze_camera_shake, apply_corner_pin,
+    build_stabilize_commands, compute_shake_compensation, estimate_global_frame_motion, invert_3x3,
+    solve_unit_square_to_quad_homography,
 };

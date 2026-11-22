@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.1.0] - 2026-11-21
+
+シネマ＆クリエイタースタジオ v2.1 マイルストーン（#25〜#28）をすべて実装し、全 28 ロードマップ項目を達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **62 MCP ツール**）。
+
+### #25 プロ・カラーグレーディング完成（RGB/マスタートーンカーブ・HSL 二次色補正・ショット間自動カラーマッチ）
+* `ve-core` / `ve-render`: `ColorCurves`（Master/R/G/B 制御点＋プリセット 3 種）および Fritsch-Carlson 単調 3 次エルミートスプライン補間 `evaluate_tone_curve_lut`（オーバーシュート無し）、`HslQualifier`＆`apply_hsl_qualifier_rgb`（特定色相・彩度・輝度のソフト抽出＋色相シフト/彩度/輝度補正＋非選択モノクロ暗転マット可視化）、および Reinhard 方式統計カラーマッチ `compute_auto_color_match` を `apply_scene_color_grade` へ統合
+* `ve-app` / `ve-mcp`: シネマ＆クリエイタースタジオ「🎨 トーンカーブ / HSL / カラーマッチ」タブ（ドラッグ制御点＆スプライン描画キャンバス付）および MCP `pro_color_match_and_grade` を追加
+
+### #26 自動 2D 手ぶれ補正 ＆ 平面 4 点コーナーピン合成（VFX トラッキング拡張）
+* `ve-core` / `ve-render`: 8×8 部分ピボット付きガウス消去法による厳密 $3\times 3$ 射影ホモグラフィ `solve_unit_square_to_quad_homography`＆`apply_corner_pin`（エッジアンチエイリアスフェザー付・`EditCommand::SetCornerPin`）を `RenderGraph` に統合。さらに 4 象限マルチパッチカメラ運動推定 `estimate_global_frame_motion`・ゼロ位相平滑化手ぶれ補正 `analyze_camera_shake`・自動クロップ拡大＋1-Undo キーフレーム生成 `build_stabilize_commands` を実装
+* `ve-app` / `ve-mcp`: 「📹 手ぶれ補正 / 4点コーナーピン」タブ（ブレ軌跡スパークライン＋ドラッグ操作可能な 4 隅射影クワッドキャンバス）および MCP `vfx_stabilize_and_corner_pin` を追加
+
+### #27 3D 空間オーディオ（バイノーラルパンナー）＆ マスタリング DSP スイート
+* `ve-audio` / `ve-core`: Woodworth 球面頭部モデルの ITD 両耳間時間差（端数サンプル補間）・ILD 両耳間レベル差・頭部回折シャドウ LPF・距離減衰・空間初期反射を備える `apply_binaural_spatial_3d`（`"spatial_3d"`）、位相滑らかな 3 バンド独立ダイナミクス `apply_multiband_compressor_3band`（`"multiband_comp"`）、および ITU-R BS.1770 準拠の 4× Catmull-Rom オーバーサンプリング True-Peak 計測 `measure_true_peak_dbtp`＆ブリックウォールリミッター `apply_true_peak_limiter`（`"true_peak_limiter"`、既定 `-1.0 dBTP` 厳守）を `apply_audio_effect_chain` に統合
+* `ve-app` / `ve-mcp`: 「🎧 3D空間オーディオ / マスタリング」タブ（360° インタラクティブトップダウンレーダー＋True-Peak/LUFS 放送安全判定）および MCP `spatial_and_master_audio` を追加
+
+### #28 ダイナミック・キネティック字幕 ＆ 多言語字幕ローカライズ切替
+* `ve-core` / `ve-render`: `kinetic_sub` モジュール — 日本語・英語ハイブリッドのワード／文節トークナイザー `tokenize_kinetic_words`、4 種ハイライトモード（`WordPopColor` / `KaraokeSweep` / `ProgressiveReveal` / `KeywordPulse`）による毎フレーム動的 AviUtl2 `<#RRGGBB><sNN>` マークアップ生成 `generate_kinetic_inline_markup`（`RenderGraph` 統合・`EditCommand::SetKineticSubtitle`）、および多言語字幕テーブル抽出・スプレッドシート互換 CSV 入出力・1-Undo 言語一括切替（`extract_localization_table` / `export_localization_csv` / `import_localization_csv` / `build_apply_locale_commands`）を実装
+* `ve-app` / `ve-mcp`: 「💬 キネティック字幕 / 多言語切替」タブ（ライブプレビューバー＆CSV エディタ付）および MCP `kinetic_subtitles_and_localize`（全 **62 MCP ツール**）を追加
+
 ## [2.0.0] - 2026-11-21
 
 次世代 AI ＆ ノード合成・共同編集フロンティア v2.0 マイルストーン（#21〜#24）をすべて実装し、全 24 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・3 ワークスペース・全 **58 MCP ツール**）。

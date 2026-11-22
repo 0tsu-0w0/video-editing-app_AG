@@ -275,6 +275,23 @@ impl AudioEffectNode {
                 params.insert("threshold_db".into(), -22.0);
                 params.insert("reduction_db".into(), -9.0);
             }
+            "spatial_3d" => {
+                params.insert("azimuth_deg".into(), 0.0);
+                params.insert("elevation_deg".into(), 0.0);
+                params.insert("distance".into(), 1.5);
+                params.insert("room_mix".into(), 0.15);
+            }
+            "multiband_comp" => {
+                params.insert("low_thresh_db".into(), -20.0);
+                params.insert("mid_thresh_db".into(), -18.0);
+                params.insert("high_thresh_db".into(), -22.0);
+                params.insert("ratio".into(), 3.0);
+                params.insert("makeup_db".into(), 2.0);
+            }
+            "true_peak_limiter" => {
+                params.insert("ceiling_dbtp".into(), -1.0);
+                params.insert("release_ms".into(), 60.0);
+            }
             _ => {}
         }
         Self {
@@ -1318,7 +1335,64 @@ pub struct TimelineItem {
     /// v1.0 #19: クリップグルーピング／映像・音声リンク識別子（同一 group_id で連動移動・削除）
     #[serde(default)]
     pub group_id: Option<Uuid>,
+    /// v2.1 #26: 平面 4 点コーナーピン合成（ホモグラフィ射影変換）
+    #[serde(default)]
+    pub corner_pin: CornerPinConfig,
+    /// v2.1 #28: ワード単位ダイナミック・キネティック字幕設定
+    #[serde(default)]
+    pub kinetic_subtitle: crate::kinetic_sub::KineticSubtitleConfig,
     pub kind: ItemKind,
+}
+
+/// v2.1 #26: 平面 4 点コーナーピン（モニター・スマホ・看板への射影合成用正規化四隅座標）
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CornerPinConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 左上 (0..=1)
+    #[serde(default = "default_pin_tl")]
+    pub tl: [f32; 2],
+    /// 右上 (0..=1)
+    #[serde(default = "default_pin_tr")]
+    pub tr: [f32; 2],
+    /// 右下 (0..=1)
+    #[serde(default = "default_pin_br")]
+    pub br: [f32; 2],
+    /// 左下 (0..=1)
+    #[serde(default = "default_pin_bl")]
+    pub bl: [f32; 2],
+    /// エッジのアンチエイリアス／フェザー幅 (px)
+    #[serde(default = "default_pin_feather")]
+    pub feather_px: f32,
+}
+
+fn default_pin_tl() -> [f32; 2] {
+    [0.0, 0.0]
+}
+fn default_pin_tr() -> [f32; 2] {
+    [1.0, 0.0]
+}
+fn default_pin_br() -> [f32; 2] {
+    [1.0, 1.0]
+}
+fn default_pin_bl() -> [f32; 2] {
+    [0.0, 1.0]
+}
+fn default_pin_feather() -> f32 {
+    1.0
+}
+
+impl Default for CornerPinConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tl: default_pin_tl(),
+            tr: default_pin_tr(),
+            br: default_pin_br(),
+            bl: default_pin_bl(),
+            feather_px: default_pin_feather(),
+        }
+    }
 }
 
 impl TimelineItem {
@@ -1347,6 +1421,8 @@ impl TimelineItem {
             expressions: BTreeMap::new(),
             template_binding: None,
             group_id: None,
+            corner_pin: CornerPinConfig::default(),
+            kinetic_subtitle: crate::kinetic_sub::KineticSubtitleConfig::default(),
             kind,
         }
     }
@@ -1526,7 +1602,142 @@ impl TimelineMarker {
     }
 }
 
-/// v0.8 #13: 非破壊シーンカラーグレーディング（3-Way Lift/Gamma/Gain・色温度/ティント・.cube 3D LUT）
+/// v2.1 #25: RGB / マスタートーンカーブ（モノトーン3次スプライン補間用制御点列）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColorCurves {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_curve_identity")]
+    pub master: Vec<[f32; 2]>,
+    #[serde(default = "default_curve_identity")]
+    pub red: Vec<[f32; 2]>,
+    #[serde(default = "default_curve_identity")]
+    pub green: Vec<[f32; 2]>,
+    #[serde(default = "default_curve_identity")]
+    pub blue: Vec<[f32; 2]>,
+}
+
+fn default_curve_identity() -> Vec<[f32; 2]> {
+    vec![[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]
+}
+
+impl Default for ColorCurves {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            master: default_curve_identity(),
+            red: default_curve_identity(),
+            green: default_curve_identity(),
+            blue: default_curve_identity(),
+        }
+    }
+}
+
+impl ColorCurves {
+    pub fn preset_s_curve() -> Self {
+        Self {
+            enabled: true,
+            master: vec![
+                [0.0, 0.0],
+                [0.25, 0.19],
+                [0.5, 0.5],
+                [0.75, 0.82],
+                [1.0, 1.0],
+            ],
+            ..Self::default()
+        }
+    }
+
+    pub fn preset_film_fade() -> Self {
+        Self {
+            enabled: true,
+            master: vec![
+                [0.0, 0.06],
+                [0.25, 0.24],
+                [0.5, 0.52],
+                [0.75, 0.78],
+                [1.0, 0.96],
+            ],
+            ..Self::default()
+        }
+    }
+
+    pub fn preset_warm_cinema() -> Self {
+        Self {
+            enabled: true,
+            master: vec![[0.0, 0.02], [0.5, 0.52], [1.0, 1.0]],
+            red: vec![[0.0, 0.0], [0.5, 0.55], [1.0, 1.0]],
+            green: default_curve_identity(),
+            blue: vec![[0.0, 0.04], [0.5, 0.45], [1.0, 0.94]],
+        }
+    }
+}
+
+/// v2.1 #25: HSL 二次色補正（特定色相レンジ抽出＋色相シフト・彩度・輝度調整＋マットハイライト可視化）
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HslQualifier {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 抽出する中心色相（0..360 度、例: 肌色=25°, 青空=210°, 緑=120°）
+    #[serde(default = "default_hsl_center")]
+    pub hue_center_deg: f32,
+    /// 抽出幅（片側度数 5..=120°）
+    #[serde(default = "default_hsl_width")]
+    pub hue_width_deg: f32,
+    /// 最低彩度しきい値 (0.0..=1.0)
+    #[serde(default = "default_hsl_sat_min")]
+    pub sat_min: f32,
+    /// 最低輝度しきい値 (0.0..=1.0)
+    #[serde(default)]
+    pub luma_min: f32,
+    /// キー境界のソフト幅 (0.02..=1.0)
+    #[serde(default = "default_hsl_softness")]
+    pub softness: f32,
+    /// 抽出領域へ適用する色相シフト（-180..=180 度）
+    #[serde(default)]
+    pub hue_shift_deg: f32,
+    /// 抽出領域へ適用する彩度倍率（0.0..=2.5）
+    #[serde(default = "default_one_f32")]
+    pub sat_scale: f32,
+    /// 抽出領域へ適用する輝度オフセット（-0.5..=0.5）
+    #[serde(default)]
+    pub luma_offset: f32,
+    /// true のとき非選択領域をモノクロ暗転させ、キー抽出範囲を視覚確認する
+    #[serde(default)]
+    pub show_matte_overlay: bool,
+}
+
+fn default_hsl_center() -> f32 {
+    25.0
+}
+fn default_hsl_width() -> f32 {
+    30.0
+}
+fn default_hsl_sat_min() -> f32 {
+    0.12
+}
+fn default_hsl_softness() -> f32 {
+    0.25
+}
+
+impl Default for HslQualifier {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hue_center_deg: default_hsl_center(),
+            hue_width_deg: default_hsl_width(),
+            sat_min: default_hsl_sat_min(),
+            luma_min: 0.05,
+            softness: default_hsl_softness(),
+            hue_shift_deg: 0.0,
+            sat_scale: 1.0,
+            luma_offset: 0.0,
+            show_matte_overlay: false,
+        }
+    }
+}
+
+/// v0.8 #13 + v2.1 #25: 非破壊シーンカラーグレーディング（3-Way・RGBカーブ・HSL二次補正・.cube 3D LUT）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneColorGrade {
     pub enabled: bool,
@@ -1552,6 +1763,12 @@ pub struct SceneColorGrade {
     /// 3D LUT 適用強度 (0.0..=1.0)
     #[serde(default = "default_one_f32")]
     pub lut_intensity: f32,
+    /// v2.1 #25: RGB / マスタートーンカーブ
+    #[serde(default)]
+    pub curves: ColorCurves,
+    /// v2.1 #25: HSL 二次色補正クオリファイア
+    #[serde(default)]
+    pub hsl_qualifier: HslQualifier,
 }
 
 impl Default for SceneColorGrade {
@@ -1568,6 +1785,8 @@ impl Default for SceneColorGrade {
             gain: [1.0, 1.0, 1.0],
             lut_path: None,
             lut_intensity: 1.0,
+            curves: ColorCurves::default(),
+            hsl_qualifier: HslQualifier::default(),
         }
     }
 }

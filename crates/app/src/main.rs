@@ -15,6 +15,7 @@ mod timeline;
 mod v09_panels;
 mod v10_panels;
 mod v20_panels;
+mod v21_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -38,6 +39,7 @@ use uuid::Uuid;
 use v09_panels::V09PanelsState;
 use v10_panels::{V10PanelsState, apply_user_visuals};
 use v20_panels::V20PanelsState;
+use v21_panels::V21PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
@@ -137,6 +139,7 @@ struct EditorApp {
     v09_panels: V09PanelsState,
     v10_panels: V10PanelsState,
     v20_panels: V20PanelsState,
+    v21_panels: V21PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -334,6 +337,7 @@ impl EditorApp {
             v09_panels: V09PanelsState::default(),
             v10_panels: V10PanelsState::default(),
             v20_panels: V20PanelsState::default(),
+            v21_panels: V21PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -2048,6 +2052,16 @@ impl eframe::App for EditorApp {
                 }
                 if ui
                     .toggle_value(
+                        &mut self.v21_panels.show_window,
+                        "🎞 シネマ＆クリエイター",
+                    )
+                    .on_hover_text("v2.1 シネマ＆クリエイタースタジオ（RGBトーンカーブ/HSL二次補正/自動カラーマッチ・自動手ぶれ補正/4点コーナーピン・3D空間オーディオ/True-Peakマスタリング・キネティック字幕/多言語切替）")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_window
+                }
+                if ui
+                    .toggle_value(
                         &mut self.v10_panels.show_settings_window,
                         tr(self.user_settings.language, "settings_title"),
                     )
@@ -2514,6 +2528,22 @@ impl eframe::App for EditorApp {
             self.preview_dirty = true;
         }
 
+        // v2.1 #25〜#28: シネマ＆クリエイタースタジオ（トーンカーブ/HSL/カラーマッチ・手ぶれ補正/4点ピン・3D空間音響/True-Peak・キネティック字幕/多言語切替）
+        if self.v21_panels.show_window {
+            let selected_item = self
+                .session
+                .lock()
+                .ok()
+                .and_then(|s| s.selected_items.first().copied());
+            if self
+                .v21_panels
+                .show_cinema_creator_window(&ctx, &self.session, selected_item)
+            {
+                self.ram_preview.clear();
+                self.preview_dirty = true;
+            }
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2540,7 +2570,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v2.0.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v2.1.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

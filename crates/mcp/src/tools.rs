@@ -9,35 +9,38 @@ use ve_ai::{
 };
 use ve_audio::{
     AudioGraph, BeatDetectionConfig, detect_audio_beats, estimate_audio_offset_xcorr,
-    separate_vocal_bgm_stems,
+    measure_integrated_lufs, measure_true_peak_dbtp, separate_vocal_bgm_stems,
 };
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode, Camera3D,
-    ChannelSelector, CharacterSpriteConfig, CommandSource, CompositeNode, CompositeNodeKind,
-    ConflictResolution, CubicBezier, EditCommand, EditorKeymap, EffectNode, EffectPreset,
-    FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, KeymapPreset,
-    Light3DType, LipSyncMode, MaskMode, MaskVertex, MediaKind, MotionPreset, MulticamCutPoint,
-    NodeCompositeGraph, ParticleConfig, ParticlePreset, ProjectTemplate, PsdCharacterConfig,
-    RationalTime, ReviewComment, ReviewSource, ReviewStatus, RgbaColor, SceneColorGrade,
-    ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem,
-    TimelineMarker, TrackMatte, TrackMatteMode, UiLanguage, UiThemePreset, VectorShapeConfig,
-    archive_project_to_zip, base64_encode, build_align_commands, build_bake_expression_command,
-    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
-    build_fit_duration_to_layer_commands, build_instantiate_template_command,
-    build_jump_cut_commands, build_motion_preset_commands, build_multicam_switch_cut_commands,
-    build_multicam_sync_align_commands, build_replace_text_commands,
-    build_review_comments_to_markers_commands, build_script_timeline_commands,
-    build_shorts_clip_scene_command, build_strip_filler_words_commands,
-    build_text_based_delete_commands, build_text_based_reorder_commands, builtin_motion_templates,
-    builtin_project_templates, compile_expression, detect_speech_intervals_from_rms, diff_projects,
-    evaluate_item_property, export_ass_subtitles, export_otio_json, export_review_comments_csv,
+    ChannelSelector, CharacterSpriteConfig, ColorCurves, CommandSource, CompositeNode,
+    CompositeNodeKind, ConflictResolution, CornerPinConfig, CubicBezier, EditCommand, EditorKeymap,
+    EffectNode, EffectPreset, FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig,
+    Keyframe, KeymapPreset, KineticHighlightMode, KineticSubtitleConfig, Light3DType, LipSyncMode,
+    LocalizationEntry, LocalizationTable, MaskMode, MaskVertex, MediaKind, MotionPreset,
+    MulticamCutPoint, NodeCompositeGraph, ParticleConfig, ParticlePreset, ProjectTemplate,
+    PsdCharacterConfig, RationalTime, ReviewComment, ReviewSource, ReviewStatus, RgbaColor,
+    SceneColorGrade, ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator,
+    TextStylePreset, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode, UiLanguage,
+    UiThemePreset, VectorShapeConfig, archive_project_to_zip, base64_encode, build_align_commands,
+    build_apply_locale_commands, build_bake_expression_command, build_beat_cut_commands,
+    build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
+    build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
+    build_multicam_switch_cut_commands, build_multicam_sync_align_commands,
+    build_replace_text_commands, build_review_comments_to_markers_commands,
+    build_script_timeline_commands, build_shorts_clip_scene_command,
+    build_strip_filler_words_commands, build_text_based_delete_commands,
+    build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
+    compile_expression, detect_speech_intervals_from_rms, diff_projects, evaluate_item_property,
+    export_ass_subtitles, export_localization_csv, export_otio_json, export_review_comments_csv,
     export_review_comments_json, export_srt_subtitles, extract_highlight_candidates,
-    extract_motion_template_from_scene, extract_transcript_entries, format_diff_report,
-    format_youtube_chapters, import_review_comments_csv, import_review_comments_json,
-    import_youtube_review_comments, merge_projects_three_way, official_registry_catalog,
-    parse_ass_subtitles, parse_aviutl_exo, parse_script_auto, parse_srt_subtitles,
-    search_text_items, subtitle_entries_to_commands, sync_node_graph_to_scene_layers,
-    validate_project_delivery, verify_and_install_extension, wrap_subtitle_japanese,
+    extract_localization_table, extract_motion_template_from_scene, extract_transcript_entries,
+    format_diff_report, format_youtube_chapters, import_localization_csv,
+    import_review_comments_csv, import_review_comments_json, import_youtube_review_comments,
+    merge_projects_three_way, official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo,
+    parse_script_auto, parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
+    sync_node_graph_to_scene_layers, validate_project_delivery, verify_and_install_extension,
+    wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, HwDecodeBackend, VideoEncoder, decode_audio_file,
@@ -45,8 +48,9 @@ use ve_media::{
 };
 use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
 use ve_render::{
-    AutoReframeConfig, LocalVisionBackend, RenderGraph, analyze_scene_auto_reframe,
-    build_auto_reframe_commands, detect_local_vision_status, emit_sample_cube_luts, validate_wgsl,
+    AutoReframeConfig, LocalVisionBackend, RenderGraph, StabilizeConfig, analyze_camera_shake,
+    analyze_scene_auto_reframe, build_auto_reframe_commands, build_stabilize_commands,
+    compute_auto_color_match, detect_local_vision_status, emit_sample_cube_luts, validate_wgsl,
 };
 
 const MAX_BATCH_COMMANDS: usize = 500;
@@ -1015,6 +1019,130 @@ pub fn tool_definitions() -> Value {
                     "format": { "type": "string", "enum": ["frameio_csv", "json", "youtube_text"] },
                     "content": { "type": "string" },
                     "only_unresolved": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "pro_color_match_and_grade",
+            "description": "v2.1 #25: RGB/マスタートーンカーブ（Fritsch-Carlson単調スプライン）・HSL二次色補正クオリファイア（マット可視化付）・ショット間自動カラーマッチを実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set_curves", "set_hsl_qualifier", "auto_match_timecodes"]
+                    },
+                    "enabled": { "type": "boolean" },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["identity", "s_curve", "film_fade", "warm_cinema"]
+                    },
+                    "master": { "type": "array" },
+                    "red": { "type": "array" },
+                    "green": { "type": "array" },
+                    "blue": { "type": "array" },
+                    "hue_center_deg": { "type": "number" },
+                    "hue_width_deg": { "type": "number" },
+                    "sat_min": { "type": "number" },
+                    "luma_min": { "type": "number" },
+                    "softness": { "type": "number" },
+                    "hue_shift_deg": { "type": "number" },
+                    "sat_scale": { "type": "number" },
+                    "luma_offset": { "type": "number" },
+                    "show_matte_overlay": { "type": "boolean" },
+                    "reference_time_sec": { "type": "number" },
+                    "target_time_sec": { "type": "number" },
+                    "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "vfx_stabilize_and_corner_pin",
+            "description": "v2.1 #26: 自動2D手ぶれ補正（ゼロ位相平滑化＋自動クロップ拡大キーフレーム生成）＆ 平面4点コーナーピン射影合成（3x3ホモグラフィ）を実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action", "id"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["analyze_and_stabilize", "set_corner_pin", "reset_corner_pin"]
+                    },
+                    "id": { "type": "string" },
+                    "smoothness": { "type": "number" },
+                    "max_shift_ratio": { "type": "number" },
+                    "sample_interval_sec": { "type": "number" },
+                    "stabilize_rotation": { "type": "boolean" },
+                    "auto_crop_zoom": { "type": "boolean" },
+                    "apply": { "type": "boolean" },
+                    "enabled": { "type": "boolean" },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["reset", "monitor_tilt", "billboard_left", "perspective_floor"]
+                    },
+                    "tl": { "type": "array" },
+                    "tr": { "type": "array" },
+                    "br": { "type": "array" },
+                    "bl": { "type": "array" },
+                    "feather_px": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "spatial_and_master_audio",
+            "description": "v2.1 #27: 3Dバイノーラル空間オーディオパンナー（ITD+ILD+頭部シャドウ）・3バンドマルチバンドコンプレッサー・4x True-Peakブリックウォールリミッター・dBTP/LUFS計測を操作する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add_spatial_3d", "add_multiband_comp", "add_true_peak_limiter", "measure_master_true_peak"]
+                    },
+                    "id": { "type": "string" },
+                    "azimuth_deg": { "type": "number" },
+                    "elevation_deg": { "type": "number" },
+                    "distance": { "type": "number" },
+                    "room_mix": { "type": "number" },
+                    "low_thresh_db": { "type": "number" },
+                    "mid_thresh_db": { "type": "number" },
+                    "high_thresh_db": { "type": "number" },
+                    "ratio": { "type": "number" },
+                    "makeup_db": { "type": "number" },
+                    "ceiling_dbtp": { "type": "number" },
+                    "release_ms": { "type": "number" },
+                    "duration_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "kinetic_subtitles_and_localize",
+            "description": "v2.1 #28: ワード単位キネティック字幕（カラオケ/ワードポップ/強調語パルス）の一括設定 ＆ 多言語字幕ローカライズCSVテーブル抽出・1-Undo言語一括切替を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set_kinetic_style", "extract_localization_table", "apply_locale_translations"]
+                    },
+                    "id": { "type": "string" },
+                    "enabled": { "type": "boolean" },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["word_pop_color", "karaoke_sweep", "progressive_reveal", "keyword_pulse"]
+                    },
+                    "active_color": { "type": "string" },
+                    "inactive_color": { "type": "string" },
+                    "emphasis_color": { "type": "string" },
+                    "pop_scale": { "type": "number" },
+                    "keywords": { "type": "array" },
+                    "source_locale": { "type": "string" },
+                    "target_locales": { "type": "array" },
+                    "format": { "type": "string", "enum": ["json", "csv"] },
+                    "locale": { "type": "string" },
+                    "csv": { "type": "string" },
+                    "translations": { "type": "object" }
                 }
             }
         }
@@ -5867,6 +5995,759 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 other => Err(format!("unknown collab_diff_and_review action: {other}")),
             }
         }
+        "pro_color_match_and_grade" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let parse_curve_pts = |key: &str| -> Option<Vec<[f32; 2]>> {
+                let arr = args.get(key)?.as_array()?;
+                let pts: Vec<[f32; 2]> = arr
+                    .iter()
+                    .take(16)
+                    .filter_map(|p| {
+                        let pair = p.as_array()?;
+                        if pair.len() < 2 {
+                            return None;
+                        }
+                        let x = pair[0].as_f64()?;
+                        let y = pair[1].as_f64()?;
+                        if !x.is_finite() || !y.is_finite() {
+                            return None;
+                        }
+                        Some([x.clamp(0.0, 1.0) as f32, y.clamp(0.0, 1.0) as f32])
+                    })
+                    .collect();
+                if pts.len() >= 2 { Some(pts) } else { None }
+            };
+
+            match action {
+                "set_curves" => {
+                    let mut grade = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .color_grade
+                        .clone();
+                    if let Some(preset) = args.get("preset").and_then(Value::as_str) {
+                        grade.curves = match preset {
+                            "s_curve" => ColorCurves::preset_s_curve(),
+                            "film_fade" => ColorCurves::preset_film_fade(),
+                            "warm_cinema" => ColorCurves::preset_warm_cinema(),
+                            _ => ColorCurves::default(),
+                        };
+                    }
+                    if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                        grade.curves.enabled = en;
+                    } else if args.get("preset").is_none() {
+                        grade.curves.enabled = true;
+                    }
+                    if let Some(pts) = parse_curve_pts("master") {
+                        grade.curves.master = pts;
+                    }
+                    if let Some(pts) = parse_curve_pts("red") {
+                        grade.curves.red = pts;
+                    }
+                    if let Some(pts) = parse_curve_pts("green") {
+                        grade.curves.green = pts;
+                    }
+                    if let Some(pts) = parse_curve_pts("blue") {
+                        grade.curves.blue = pts;
+                    }
+                    if grade.curves.enabled {
+                        grade.enabled = true;
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetSceneColorGrade {
+                                grade: grade.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&grade.curves).unwrap_or_default() }]
+                    }))
+                }
+                "set_hsl_qualifier" => {
+                    let mut grade = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .color_grade
+                        .clone();
+                    let mut q = grade.hsl_qualifier;
+                    q.enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    if args.get("hue_center_deg").is_some() {
+                        q.hue_center_deg = finite_clamped(
+                            args.get("hue_center_deg"),
+                            f64::from(q.hue_center_deg),
+                            0.0,
+                            360.0,
+                        ) as f32;
+                    }
+                    if args.get("hue_width_deg").is_some() {
+                        q.hue_width_deg = finite_clamped(
+                            args.get("hue_width_deg"),
+                            f64::from(q.hue_width_deg),
+                            5.0,
+                            120.0,
+                        ) as f32;
+                    }
+                    if args.get("sat_min").is_some() {
+                        q.sat_min =
+                            finite_clamped(args.get("sat_min"), f64::from(q.sat_min), 0.0, 1.0)
+                                as f32;
+                    }
+                    if args.get("luma_min").is_some() {
+                        q.luma_min =
+                            finite_clamped(args.get("luma_min"), f64::from(q.luma_min), 0.0, 1.0)
+                                as f32;
+                    }
+                    if args.get("softness").is_some() {
+                        q.softness =
+                            finite_clamped(args.get("softness"), f64::from(q.softness), 0.02, 1.0)
+                                as f32;
+                    }
+                    if args.get("hue_shift_deg").is_some() {
+                        q.hue_shift_deg = finite_clamped(
+                            args.get("hue_shift_deg"),
+                            f64::from(q.hue_shift_deg),
+                            -180.0,
+                            180.0,
+                        ) as f32;
+                    }
+                    if args.get("sat_scale").is_some() {
+                        q.sat_scale =
+                            finite_clamped(args.get("sat_scale"), f64::from(q.sat_scale), 0.0, 2.5)
+                                as f32;
+                    }
+                    if args.get("luma_offset").is_some() {
+                        q.luma_offset = finite_clamped(
+                            args.get("luma_offset"),
+                            f64::from(q.luma_offset),
+                            -0.5,
+                            0.5,
+                        ) as f32;
+                    }
+                    if let Some(m) = args.get("show_matte_overlay").and_then(Value::as_bool) {
+                        q.show_matte_overlay = m;
+                    }
+                    grade.hsl_qualifier = q;
+                    if q.enabled {
+                        grade.enabled = true;
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetSceneColorGrade {
+                                grade: grade.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&grade.hsl_qualifier).unwrap_or_default() }]
+                    }))
+                }
+                "auto_match_timecodes" => {
+                    let ref_sec =
+                        finite_clamped(args.get("reference_time_sec"), 0.0, 0.0, 86_400.0);
+                    let tgt_sec = finite_clamped(
+                        args.get("target_time_sec"),
+                        s.playhead.as_seconds(),
+                        0.0,
+                        86_400.0,
+                    );
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let scene_id = s.project.active_scene_id;
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let ref_img = rg
+                        .render_project_scene_scaled(
+                            &s.project,
+                            scene_id,
+                            RationalTime::from_seconds(ref_sec),
+                            320,
+                            180,
+                            false,
+                        )
+                        .ok_or_else(|| "failed to render reference frame".to_string())?;
+                    let tgt_img = rg
+                        .render_project_scene_scaled(
+                            &s.project,
+                            scene_id,
+                            RationalTime::from_seconds(tgt_sec),
+                            320,
+                            180,
+                            false,
+                        )
+                        .ok_or_else(|| "failed to render target frame".to_string())?;
+
+                    let matched = compute_auto_color_match(&ref_img, &tgt_img);
+                    let mut next_grade = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .color_grade
+                        .clone();
+                    next_grade.enabled = true;
+                    next_grade.lift = matched.lift;
+                    next_grade.gain = matched.gain;
+                    next_grade.saturation = matched.saturation;
+
+                    if apply {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::SetSceneColorGrade {
+                                    grade: next_grade.clone(),
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "applied": apply,
+                                "reference_time_sec": ref_sec,
+                                "target_time_sec": tgt_sec,
+                                "matched_grade": next_grade
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown pro_color_match_and_grade action: {other}")),
+            }
+        }
+        "vfx_stabilize_and_corner_pin" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let item_id = parse_uuid(args, "id")?;
+
+            let parse_pt2 = |key: &str, fallback: [f32; 2]| -> [f32; 2] {
+                args.get(key)
+                    .and_then(Value::as_array)
+                    .filter(|a| a.len() >= 2)
+                    .and_then(|a| {
+                        let x = a[0].as_f64()?;
+                        let y = a[1].as_f64()?;
+                        if x.is_finite() && y.is_finite() {
+                            Some([x.clamp(-0.5, 1.5) as f32, y.clamp(-0.5, 1.5) as f32])
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(fallback)
+            };
+
+            match action {
+                "analyze_and_stabilize" => {
+                    let cfg = StabilizeConfig {
+                        sample_interval_sec: finite_clamped(
+                            args.get("sample_interval_sec"),
+                            0.2,
+                            0.05,
+                            2.0,
+                        ),
+                        smoothness: finite_clamped(args.get("smoothness"), 0.78, 0.1, 0.95) as f32,
+                        max_shift_ratio: finite_clamped(
+                            args.get("max_shift_ratio"),
+                            0.08,
+                            0.01,
+                            0.25,
+                        ) as f32,
+                        stabilize_rotation: args
+                            .get("stabilize_rotation")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
+                        auto_crop_zoom: args
+                            .get("auto_crop_zoom")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
+                    };
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let scene_id = s.project.active_scene_id;
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let samples = analyze_camera_shake(&mut rg, &s.project, scene_id, &cfg);
+                    let cmds = {
+                        let scene = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        build_stabilize_commands(scene, item_id, &samples, &cfg)
+                    };
+                    let max_dx = samples
+                        .iter()
+                        .map(|sm| sm.comp_x.abs())
+                        .fold(0.0f32, f32::max);
+                    let max_dy = samples
+                        .iter()
+                        .map(|sm| sm.comp_y.abs())
+                        .fold(0.0f32, f32::max);
+                    let max_rot = samples
+                        .iter()
+                        .map(|sm| sm.comp_rot_deg.abs())
+                        .fold(0.0f32, f32::max);
+                    let gen_count = cmds.len();
+                    let applied = if apply && !cmds.is_empty() {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: format!("自動手ぶれ補正 ({} サンプル)", samples.len()),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        true
+                    } else {
+                        false
+                    };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": item_id,
+                                "sample_count": samples.len(),
+                                "max_comp_x": max_dx,
+                                "max_comp_y": max_dy,
+                                "max_comp_rot_deg": max_rot,
+                                "generated_commands": gen_count,
+                                "applied": applied
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "set_corner_pin" => {
+                    let mut pin = s
+                        .project
+                        .active_scene()
+                        .and_then(|sc| {
+                            sc.layers
+                                .iter()
+                                .flat_map(|l| l.items.iter())
+                                .find(|i| i.id == item_id)
+                                .map(|i| i.corner_pin)
+                        })
+                        .ok_or_else(|| format!("item not found: {item_id}"))?;
+                    if let Some(preset) = args.get("preset").and_then(Value::as_str) {
+                        pin = match preset {
+                            "monitor_tilt" => CornerPinConfig {
+                                enabled: true,
+                                tl: [0.14, 0.12],
+                                tr: [0.88, 0.08],
+                                br: [0.92, 0.86],
+                                bl: [0.10, 0.90],
+                                feather_px: 1.5,
+                            },
+                            "billboard_left" => CornerPinConfig {
+                                enabled: true,
+                                tl: [0.06, 0.08],
+                                tr: [0.76, 0.18],
+                                br: [0.76, 0.82],
+                                bl: [0.06, 0.92],
+                                feather_px: 1.5,
+                            },
+                            "perspective_floor" => CornerPinConfig {
+                                enabled: true,
+                                tl: [0.24, 0.35],
+                                tr: [0.76, 0.35],
+                                br: [0.96, 0.94],
+                                bl: [0.04, 0.94],
+                                feather_px: 2.0,
+                            },
+                            _ => CornerPinConfig::default(),
+                        };
+                    }
+                    pin.enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    pin.tl = parse_pt2("tl", pin.tl);
+                    pin.tr = parse_pt2("tr", pin.tr);
+                    pin.br = parse_pt2("br", pin.br);
+                    pin.bl = parse_pt2("bl", pin.bl);
+                    if args.get("feather_px").is_some() {
+                        pin.feather_px = finite_clamped(
+                            args.get("feather_px"),
+                            f64::from(pin.feather_px),
+                            0.0,
+                            16.0,
+                        ) as f32;
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetCornerPin {
+                                item_id,
+                                corner_pin: pin,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&pin).unwrap_or_default() }]
+                    }))
+                }
+                "reset_corner_pin" => {
+                    let pin = CornerPinConfig::default();
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetCornerPin {
+                                item_id,
+                                corner_pin: pin,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&pin).unwrap_or_default() }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown vfx_stabilize_and_corner_pin action: {other}"
+                )),
+            }
+        }
+        "spatial_and_master_audio" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let opt_item_id = if args.get("id").is_some() {
+                Some(parse_uuid(args, "id")?)
+            } else {
+                None
+            };
+
+            match action {
+                "add_spatial_3d" => {
+                    let mut node = AudioEffectNode::with_defaults("spatial_3d");
+                    node.params.insert(
+                        "azimuth_deg".into(),
+                        finite_clamped(args.get("azimuth_deg"), 0.0, -180.0, 180.0) as f32,
+                    );
+                    node.params.insert(
+                        "elevation_deg".into(),
+                        finite_clamped(args.get("elevation_deg"), 0.0, -90.0, 90.0) as f32,
+                    );
+                    node.params.insert(
+                        "distance".into(),
+                        finite_clamped(args.get("distance"), 1.5, 0.3, 25.0) as f32,
+                    );
+                    node.params.insert(
+                        "room_mix".into(),
+                        finite_clamped(args.get("room_mix"), 0.12, 0.0, 0.6) as f32,
+                    );
+                    let effect_id = node.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddAudioEffect {
+                                item_id: opt_item_id,
+                                effect: node.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "effect_id": effect_id, "target": opt_item_id, "effect": node }).to_string() }]
+                    }))
+                }
+                "add_multiband_comp" => {
+                    let mut node = AudioEffectNode::with_defaults("multiband_comp");
+                    node.params.insert(
+                        "low_thresh_db".into(),
+                        finite_clamped(args.get("low_thresh_db"), -18.0, -48.0, 0.0) as f32,
+                    );
+                    node.params.insert(
+                        "mid_thresh_db".into(),
+                        finite_clamped(args.get("mid_thresh_db"), -16.0, -48.0, 0.0) as f32,
+                    );
+                    node.params.insert(
+                        "high_thresh_db".into(),
+                        finite_clamped(args.get("high_thresh_db"), -20.0, -48.0, 0.0) as f32,
+                    );
+                    node.params.insert(
+                        "ratio".into(),
+                        finite_clamped(args.get("ratio"), 3.0, 1.0, 20.0) as f32,
+                    );
+                    node.params.insert(
+                        "makeup_db".into(),
+                        finite_clamped(args.get("makeup_db"), 1.5, -12.0, 24.0) as f32,
+                    );
+                    let effect_id = node.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddAudioEffect {
+                                item_id: opt_item_id,
+                                effect: node.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "effect_id": effect_id, "target": opt_item_id, "effect": node }).to_string() }]
+                    }))
+                }
+                "add_true_peak_limiter" => {
+                    let mut node = AudioEffectNode::with_defaults("true_peak_limiter");
+                    node.params.insert(
+                        "ceiling_dbtp".into(),
+                        finite_clamped(args.get("ceiling_dbtp"), -1.0, -12.0, -0.1) as f32,
+                    );
+                    node.params.insert(
+                        "release_ms".into(),
+                        finite_clamped(args.get("release_ms"), 60.0, 10.0, 500.0) as f32,
+                    );
+                    let effect_id = node.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddAudioEffect {
+                                item_id: opt_item_id,
+                                effect: node.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "effect_id": effect_id, "target": opt_item_id, "effect": node }).to_string() }]
+                    }))
+                }
+                "measure_master_true_peak" => {
+                    let scene_id = s.project.active_scene_id;
+                    let total_dur = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.total_duration().as_seconds().max(0.5))
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let dur_sec =
+                        finite_clamped(args.get("duration_sec"), total_dur.min(15.0), 0.1, 60.0);
+                    let sr = s.project.settings.audio_sample_rate.max(8_000);
+                    let graph =
+                        AudioGraph::from_project_scene(&s.project, scene_id, s.folder.as_ref(), sr);
+                    let pcm =
+                        graph.render_range(RationalTime::ZERO, RationalTime::from_seconds(dur_sec));
+                    let true_peak_dbtp = measure_true_peak_dbtp(&pcm, graph.channels);
+                    let integrated_lufs = measure_integrated_lufs(&pcm, sr);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "duration_sec": dur_sec,
+                                "sample_rate": sr,
+                                "true_peak_dbtp": true_peak_dbtp,
+                                "integrated_lufs": integrated_lufs,
+                                "broadcast_safe": true_peak_dbtp <= -1.0
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown spatial_and_master_audio action: {other}")),
+            }
+        }
+        "kinetic_subtitles_and_localize" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+
+            match action {
+                "set_kinetic_style" => {
+                    let mut cfg = KineticSubtitleConfig {
+                        enabled: args.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                        ..KineticSubtitleConfig::default()
+                    };
+                    if let Some(m) = args.get("mode").and_then(Value::as_str) {
+                        cfg.mode = match m {
+                            "karaoke_sweep" => KineticHighlightMode::KaraokeSweep,
+                            "progressive_reveal" => KineticHighlightMode::ProgressiveReveal,
+                            "keyword_pulse" => KineticHighlightMode::KeywordPulse,
+                            _ => KineticHighlightMode::WordPopColor,
+                        };
+                    }
+                    if let Some(hex) = args.get("active_color").and_then(Value::as_str)
+                        && let Some(c) = RgbaColor::from_hex(hex)
+                    {
+                        cfg.active_color = c;
+                    }
+                    if let Some(hex) = args.get("inactive_color").and_then(Value::as_str)
+                        && let Some(c) = RgbaColor::from_hex(hex)
+                    {
+                        cfg.inactive_color = c;
+                    }
+                    if let Some(hex) = args.get("emphasis_color").and_then(Value::as_str)
+                        && let Some(c) = RgbaColor::from_hex(hex)
+                    {
+                        cfg.emphasis_color = c;
+                    }
+                    if args.get("pop_scale").is_some() {
+                        cfg.pop_scale = finite_clamped(
+                            args.get("pop_scale"),
+                            f64::from(cfg.pop_scale),
+                            1.0,
+                            1.8,
+                        ) as f32;
+                    }
+                    if let Some(arr) = args.get("keywords").and_then(Value::as_array) {
+                        cfg.auto_emphasize_keywords = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .filter(|k| !k.trim().is_empty())
+                            .take(64)
+                            .collect();
+                    }
+
+                    let target_ids: Vec<Uuid> = if args.get("id").is_some() {
+                        vec![parse_uuid(args, "id")?]
+                    } else {
+                        let scene = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        scene
+                            .layers
+                            .iter()
+                            .flat_map(|l| l.items.iter())
+                            .filter(|i| matches!(i.kind, ItemKind::Text { .. }))
+                            .map(|i| i.id)
+                            .collect()
+                    };
+                    if target_ids.is_empty() {
+                        return Err("対象となるテキスト／字幕アイテムがありません".into());
+                    }
+                    let count = target_ids.len();
+                    let cmd = if count == 1 {
+                        EditCommand::SetKineticSubtitle {
+                            item_id: target_ids[0],
+                            kinetic: cfg.clone(),
+                        }
+                    } else {
+                        EditCommand::Batch {
+                            label: format!("キネティック字幕一括設定 ({count}件)"),
+                            commands: target_ids
+                                .into_iter()
+                                .map(|id| EditCommand::SetKineticSubtitle {
+                                    item_id: id,
+                                    kinetic: cfg.clone(),
+                                })
+                                .collect(),
+                        }
+                    };
+                    s.bus
+                        .execute(&mut s.project, cmd, CommandSource::Mcp, None)
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "updated_count": count, "config": cfg }).to_string() }]
+                    }))
+                }
+                "extract_localization_table" => {
+                    let src_loc = args
+                        .get("source_locale")
+                        .and_then(Value::as_str)
+                        .unwrap_or("ja");
+                    let scene = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let mut table = extract_localization_table(scene, src_loc);
+                    if let Some(arr) = args.get("target_locales").and_then(Value::as_array) {
+                        for v in arr {
+                            if let Some(loc) = v.as_str().map(str::trim)
+                                && !loc.is_empty()
+                                && !table.locales.iter().any(|l| l == loc)
+                            {
+                                table.locales.push(loc.to_string());
+                            }
+                        }
+                    }
+                    let fmt = args.get("format").and_then(Value::as_str).unwrap_or("json");
+                    let text = if fmt == "csv" {
+                        export_localization_csv(&table)
+                    } else {
+                        serde_json::to_string_pretty(&table).unwrap_or_default()
+                    };
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "apply_locale_translations" => {
+                    let locale = args
+                        .get("locale")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'locale'".to_string())?;
+                    let table = if let Some(csv) = args.get("csv").and_then(Value::as_str) {
+                        import_localization_csv(csv)
+                    } else if let Some(map) = args.get("translations").and_then(Value::as_object) {
+                        let mut entries = Vec::new();
+                        for (k, v) in map {
+                            if let (Ok(id), Some(txt)) = (Uuid::parse_str(k), v.as_str()) {
+                                let mut tr = BTreeMap::new();
+                                tr.insert(locale.to_string(), txt.to_string());
+                                entries.push(LocalizationEntry {
+                                    item_id: id,
+                                    item_name: String::new(),
+                                    start_sec: 0.0,
+                                    translations: tr,
+                                });
+                            }
+                        }
+                        LocalizationTable {
+                            locales: vec![locale.to_string()],
+                            entries,
+                        }
+                    } else {
+                        return Err("missing 'csv' or 'translations'".into());
+                    };
+                    let cmds = {
+                        let scene = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        build_apply_locale_commands(scene, &table, locale)
+                    };
+                    let applied_count = cmds.len();
+                    if applied_count > 0 {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: format!("字幕言語切替 [{locale}] ({applied_count}件)"),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": json!({ "locale": locale, "applied_count": applied_count }).to_string() }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown kinetic_subtitles_and_localize action: {other}"
+                )),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -6520,7 +7401,7 @@ mod tests {
 
         // Verify exact MCP tool count = 58 (v2.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 58);
+        assert_eq!(defs.as_array().unwrap().len(), 62);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -6715,7 +7596,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 58);
+        assert_eq!(defs.as_array().unwrap().len(), 62);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -6992,7 +7873,224 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 58);
+        assert_eq!(defs.as_array().unwrap().len(), 62);
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v21_mcp_tools_color_vfx_spatial_and_kinetic() {
+        let proj = Project::new("McpV21", ProjectSettings::default());
+        let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+        // 0. Add a shape clip + 2 text clips
+        let shp_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 0, "name": "MonitorScreen", "kind": "shape", "start_sec": 0.0, "duration_sec": 3.0, "width": 320.0, "height": 240.0}),
+        )
+        .unwrap();
+        let shp_id = serde_json::from_str::<Value>(shp_res["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let sub1_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 1, "name": "Sub1", "kind": "text", "content": "重要な ポイント です", "start_sec": 0.0, "duration_sec": 2.0}),
+        )
+        .unwrap();
+        let sub1_id =
+            serde_json::from_str::<Value>(sub1_res["content"][0]["text"].as_str().unwrap())
+                .unwrap()["created_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+        let sub2_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 1, "name": "Sub2", "kind": "text", "content": "今すぐ チェック！", "start_sec": 2.0, "duration_sec": 2.0}),
+        )
+        .unwrap();
+        let sub2_id =
+            serde_json::from_str::<Value>(sub2_res["content"][0]["text"].as_str().unwrap())
+                .unwrap()["created_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+        // 1. #25 pro_color_match_and_grade
+        call_tool(
+            &session,
+            "pro_color_match_and_grade",
+            &json!({"action": "set_curves", "preset": "s_curve"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "pro_color_match_and_grade",
+            &json!({"action": "set_hsl_qualifier", "hue_center_deg": 210.0, "sat_scale": 1.35, "show_matte_overlay": false}),
+        )
+        .unwrap();
+        let cm = call_tool(
+            &session,
+            "pro_color_match_and_grade",
+            &json!({"action": "auto_match_timecodes", "reference_time_sec": 0.2, "target_time_sec": 1.5, "apply": true}),
+        )
+        .unwrap();
+        assert!(
+            cm["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"applied\":true")
+        );
+        {
+            let g = session.lock().unwrap();
+            let cg = &g.project.active_scene().unwrap().color_grade;
+            assert!(cg.enabled);
+            assert!(cg.curves.enabled);
+            assert!(cg.hsl_qualifier.enabled);
+            assert!((cg.hsl_qualifier.hue_center_deg - 210.0).abs() < 1e-3);
+        }
+
+        // 2. #26 vfx_stabilize_and_corner_pin
+        call_tool(
+            &session,
+            "vfx_stabilize_and_corner_pin",
+            &json!({"action": "set_corner_pin", "id": shp_id, "preset": "monitor_tilt", "feather_px": 2.0}),
+        )
+        .unwrap();
+        let stab = call_tool(
+            &session,
+            "vfx_stabilize_and_corner_pin",
+            &json!({"action": "analyze_and_stabilize", "id": shp_id, "smoothness": 0.8, "apply": true}),
+        )
+        .unwrap();
+        assert!(
+            stab["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"applied\":true")
+        );
+        {
+            let g = session.lock().unwrap();
+            let shp = &g.project.active_scene().unwrap().layers[0].items[0];
+            assert!(shp.corner_pin.enabled);
+            assert!(!shp.keyframes.is_empty());
+        }
+
+        // 3. #27 spatial_and_master_audio
+        call_tool(
+            &session,
+            "spatial_and_master_audio",
+            &json!({"action": "add_spatial_3d", "azimuth_deg": 65.0, "distance": 1.2, "room_mix": 0.15}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "spatial_and_master_audio",
+            &json!({"action": "add_multiband_comp", "ratio": 3.5, "makeup_db": 1.0}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "spatial_and_master_audio",
+            &json!({"action": "add_true_peak_limiter", "ceiling_dbtp": -1.0, "release_ms": 50.0}),
+        )
+        .unwrap();
+        let tp = call_tool(
+            &session,
+            "spatial_and_master_audio",
+            &json!({"action": "measure_master_true_peak", "duration_sec": 1.0}),
+        )
+        .unwrap();
+        assert!(
+            tp["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"broadcast_safe\":true")
+        );
+        {
+            let g = session.lock().unwrap();
+            let mfx = &g.project.active_scene().unwrap().master_audio_effects;
+            assert_eq!(mfx.len(), 3);
+            assert_eq!(mfx[0].effect_type, "spatial_3d");
+            assert_eq!(mfx[1].effect_type, "multiband_comp");
+            assert_eq!(mfx[2].effect_type, "true_peak_limiter");
+        }
+
+        // 4. #28 kinetic_subtitles_and_localize
+        let kin = call_tool(
+            &session,
+            "kinetic_subtitles_and_localize",
+            &json!({
+                "action": "set_kinetic_style",
+                "mode": "karaoke_sweep",
+                "pop_scale": 1.25,
+                "active_color": "#ffdd33"
+            }),
+        )
+        .unwrap();
+        assert!(
+            kin["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"updated_count\":2")
+        );
+
+        let csv_res = call_tool(
+            &session,
+            "kinetic_subtitles_and_localize",
+            &json!({"action": "extract_localization_table", "source_locale": "ja", "target_locales": ["en"], "format": "csv"}),
+        )
+        .unwrap();
+        let csv_txt = csv_res["content"][0]["text"].as_str().unwrap();
+        assert!(csv_txt.contains("item_id,start_sec,item_name,ja,en"));
+
+        let loc_apply = call_tool(
+            &session,
+            "kinetic_subtitles_and_localize",
+            &json!({
+                "action": "apply_locale_translations",
+                "locale": "en",
+                "translations": {
+                    sub1_id.clone(): "Important key point",
+                    sub2_id.clone(): "Check it out now!"
+                }
+            }),
+        )
+        .unwrap();
+        assert!(
+            loc_apply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"applied_count\":2")
+        );
+        {
+            let g = session.lock().unwrap();
+            let subs = &g.project.active_scene().unwrap().layers[1].items;
+            assert!(subs[0].kinetic_subtitle.enabled);
+            if let ItemKind::Text { content, .. } = &subs[0].kind {
+                assert_eq!(content, "Important key point");
+            } else {
+                panic!("expected text item");
+            }
+        }
+        // 1-Undo reverts both localized subtitles back to Japanese
+        {
+            let mut g = session.lock().unwrap();
+            let s = &mut *g;
+            assert!(s.bus.undo(&mut s.project));
+            if let ItemKind::Text { content, .. } =
+                &s.project.active_scene().unwrap().layers[1].items[0].kind
+            {
+                assert_eq!(content, "重要な ポイント です");
+            }
+        }
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 62);
     }
 }

@@ -3,7 +3,7 @@
 use crate::color::{LinearImage, LinearPremul, linear_to_srgb, srgb_to_linear};
 use std::fs;
 use std::path::{Path, PathBuf};
-use ve_core::SceneColorGrade;
+use ve_core::{HslQualifier, SceneColorGrade};
 
 pub const WAVEFORM_COLS: usize = 128;
 pub const WAVEFORM_BINS: usize = 64;
@@ -326,7 +326,291 @@ fn parse_rgb_triplet(s: &str, line_no: usize) -> Result<[f32; 3], String> {
     Ok([r, g, b])
 }
 
-/// シーン全体へ非破壊カラーグレーディング（露出・色温度/ティント・3-Way Lift/Gamma/Gain・コントラスト・彩度・3D LUT）を適用する
+/// v2.1 #25: 制御点列から Fritsch-Carlson 単調 3 次エルミート補間（オーバーシュート無し）で
+/// 256 段階トーンカーブ LUT を構築する。
+pub fn evaluate_tone_curve_lut(points: &[[f32; 2]]) -> [f32; 256] {
+    let mut lut = [0.0f32; 256];
+    for (i, slot) in lut.iter_mut().enumerate() {
+        *slot = i as f32 / 255.0;
+    }
+    if points.len() < 2 {
+        return lut;
+    }
+
+    let mut sorted: Vec<[f32; 2]> = points
+        .iter()
+        .map(|p| [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0)])
+        .collect();
+    sorted.sort_by(|a, b| a[0].total_cmp(&b[0]));
+
+    // x が重複・極近接した点を統合
+    let mut pts: Vec<[f32; 2]> = Vec::with_capacity(sorted.len());
+    for p in sorted {
+        if let Some(last) = pts.last_mut()
+            && (p[0] - last[0]).abs() < 1e-4
+        {
+            last[1] = p[1];
+            continue;
+        }
+        pts.push(p);
+    }
+    let n = pts.len();
+    if n < 2 {
+        return lut;
+    }
+
+    // 区間傾き Δ_i
+    let mut h = vec![0.0f32; n - 1];
+    let mut delta = vec![0.0f32; n - 1];
+    for i in 0..(n - 1) {
+        h[i] = (pts[i + 1][0] - pts[i][0]).max(1e-5);
+        delta[i] = (pts[i + 1][1] - pts[i][1]) / h[i];
+    }
+
+    // 初期接線 m_i
+    let mut m = vec![0.0f32; n];
+    m[0] = delta[0];
+    m[n - 1] = delta[n - 2];
+    for i in 1..(n - 1) {
+        if delta[i - 1] * delta[i] <= 0.0 {
+            m[i] = 0.0;
+        } else {
+            m[i] = 0.5 * (delta[i - 1] + delta[i]);
+        }
+    }
+
+    // Fritsch-Carlson 単調性クランプ（α^2 + β^2 <= 9）
+    for i in 0..(n - 1) {
+        if delta[i].abs() < 1e-6 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let alpha = m[i] / delta[i];
+            let beta = m[i + 1] / delta[i];
+            let s = alpha * alpha + beta * beta;
+            if s > 9.0 {
+                let tau = 3.0 / s.sqrt();
+                m[i] = tau * alpha * delta[i];
+                m[i + 1] = tau * beta * delta[i];
+            }
+        }
+    }
+
+    let mut seg = 0usize;
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let x = i as f32 / 255.0;
+        if x <= pts[0][0] {
+            *slot = pts[0][1];
+            continue;
+        }
+        if x >= pts[n - 1][0] {
+            *slot = pts[n - 1][1];
+            continue;
+        }
+        while seg + 1 < n - 1 && x > pts[seg + 1][0] {
+            seg += 1;
+        }
+        let dx = h[seg];
+        let t = ((x - pts[seg][0]) / dx).clamp(0.0, 1.0);
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+        let y =
+            h00 * pts[seg][1] + h10 * dx * m[seg] + h01 * pts[seg + 1][1] + h11 * dx * m[seg + 1];
+        *slot = y.clamp(0.0, 1.0);
+    }
+    lut
+}
+
+#[inline]
+fn sample_curve_lut(lut: &[f32; 256], v: f32) -> f32 {
+    let scaled = v.clamp(0.0, 1.0) * 255.0;
+    let i0 = (scaled.floor() as usize).min(255);
+    let i1 = (i0 + 1).min(255);
+    let frac = scaled - i0 as f32;
+    lut[i0] + (lut[i1] - lut[i0]) * frac
+}
+
+#[inline]
+fn rgb_to_hsl(rgb: [f32; 3]) -> [f32; 3] {
+    let r = rgb[0].clamp(0.0, 1.0);
+    let g = rgb[1].clamp(0.0, 1.0);
+    let b = rgb[2].clamp(0.0, 1.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = 0.5 * (max + min);
+    let d = max - min;
+    if d < 1e-6 {
+        return [0.0, 0.0, l];
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min).max(1e-6)
+    } else {
+        d / (max + min).max(1e-6)
+    };
+    let mut h = if (max - r).abs() < 1e-6 {
+        ((g - b) / d) + if g < b { 6.0 } else { 0.0 }
+    } else if (max - g).abs() < 1e-6 {
+        ((b - r) / d) + 2.0
+    } else {
+        ((r - g) / d) + 4.0
+    };
+    h *= 60.0;
+    [h.rem_euclid(360.0), s.clamp(0.0, 1.0), l.clamp(0.0, 1.0)]
+}
+
+#[inline]
+fn hsl_to_rgb(hsl: [f32; 3]) -> [f32; 3] {
+    let h = hsl[0].rem_euclid(360.0);
+    let s = hsl[1].clamp(0.0, 1.0);
+    let l = hsl[2].clamp(0.0, 1.0);
+    if s < 1e-6 {
+        return [l, l, l];
+    }
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - 0.5 * c;
+    let (r1, g1, b1) = match h {
+        v if v < 60.0 => (c, x, 0.0),
+        v if v < 120.0 => (x, c, 0.0),
+        v if v < 180.0 => (0.0, c, x),
+        v if v < 240.0 => (0.0, x, c),
+        v if v < 300.0 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [
+        (r1 + m).clamp(0.0, 1.0),
+        (g1 + m).clamp(0.0, 1.0),
+        (b1 + m).clamp(0.0, 1.0),
+    ]
+}
+
+#[inline]
+fn smoothstep01(t: f32) -> f32 {
+    let x = t.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// v2.1 #25: HSL 二次色補正クオリファイア（特定色相・彩度・輝度領域のソフト抽出＋色相/彩度/輝度補正＋マット可視化）
+pub fn apply_hsl_qualifier_rgb(rgb: [f32; 3], q: &HslQualifier) -> [f32; 3] {
+    if !q.enabled {
+        return rgb;
+    }
+    let [h, s, l] = rgb_to_hsl(rgb);
+    let center = q.hue_center_deg.rem_euclid(360.0);
+    let diff = (h - center).abs();
+    let hue_dist = diff.min(360.0 - diff);
+
+    let width = q.hue_width_deg.clamp(5.0, 120.0);
+    let soft = q.softness.clamp(0.02, 1.0);
+    let hue_feather = (width * soft).max(3.0);
+    let hue_w = if hue_dist <= width {
+        1.0
+    } else if hue_dist >= width + hue_feather {
+        0.0
+    } else {
+        1.0 - smoothstep01((hue_dist - width) / hue_feather)
+    };
+
+    let sat_feather = (soft * 0.25).max(0.02);
+    let sat_min = q.sat_min.clamp(0.0, 1.0);
+    let sat_w = smoothstep01((s - (sat_min - sat_feather)) / (2.0 * sat_feather));
+
+    let luma_feather = (soft * 0.25).max(0.02);
+    let luma_min = q.luma_min.clamp(0.0, 1.0);
+    let luma_w = smoothstep01((l - (luma_min - luma_feather)) / (2.0 * luma_feather));
+
+    let matte = (hue_w * sat_w * luma_w).clamp(0.0, 1.0);
+    let graded = hsl_to_rgb([
+        (h + q.hue_shift_deg).rem_euclid(360.0),
+        (s * q.sat_scale.clamp(0.0, 2.5)).clamp(0.0, 1.0),
+        (l + q.luma_offset.clamp(-0.5, 0.5)).clamp(0.0, 1.0),
+    ]);
+
+    let out = [
+        rgb[0] + (graded[0] - rgb[0]) * matte,
+        rgb[1] + (graded[1] - rgb[1]) * matte,
+        rgb[2] + (graded[2] - rgb[2]) * matte,
+    ];
+    if q.show_matte_overlay {
+        let gray = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) * 0.22;
+        [
+            gray + (out[0] - gray) * matte,
+            gray + (out[1] - gray) * matte,
+            gray + (out[2] - gray) * matte,
+        ]
+    } else {
+        out
+    }
+}
+
+/// v2.1 #25: リファレンス画像とターゲット画像の RGB 統計（平均・標準偏差・彩度広がり）から
+/// Reinhard 方式で非破壊 `SceneColorGrade`（Lift / Gain / Saturation）を自動算出する（Auto Shot Color Match）。
+pub fn compute_auto_color_match(reference: &LinearImage, target: &LinearImage) -> SceneColorGrade {
+    fn channel_stats(img: &LinearImage) -> ([f32; 3], [f32; 3], f32) {
+        let total = img.pixels.len();
+        if total == 0 {
+            return ([0.5; 3], [0.2; 3], 0.1);
+        }
+        let stride = (total / 16_000).max(1);
+        let mut sum = [0.0f64; 3];
+        let mut sum_sq = [0.0f64; 3];
+        let mut chroma_sum = 0.0f64;
+        let mut count = 0u64;
+        for px in img.pixels.iter().step_by(stride) {
+            if px.a <= 1e-4 {
+                continue;
+            }
+            let inv_a = 1.0 / px.a;
+            let sr = f64::from(linear_to_srgb((px.r * inv_a).clamp(0.0, 1.0)));
+            let sg = f64::from(linear_to_srgb((px.g * inv_a).clamp(0.0, 1.0)));
+            let sb = f64::from(linear_to_srgb((px.b * inv_a).clamp(0.0, 1.0)));
+            let c = [sr, sg, sb];
+            for ((s, sq), val) in sum.iter_mut().zip(sum_sq.iter_mut()).zip(c) {
+                *s += val;
+                *sq += val * val;
+            }
+            let mx = sr.max(sg).max(sb);
+            let mn = sr.min(sg).min(sb);
+            chroma_sum += mx - mn;
+            count += 1;
+        }
+        if count == 0 {
+            return ([0.5; 3], [0.2; 3], 0.1);
+        }
+        let inv_n = 1.0 / count as f64;
+        let mean = std::array::from_fn(|ch| (sum[ch] * inv_n) as f32);
+        let std = std::array::from_fn(|ch| {
+            let m = sum[ch] * inv_n;
+            (sum_sq[ch] * inv_n - m * m).max(0.0).sqrt() as f32
+        });
+        (mean, std, (chroma_sum * inv_n) as f32)
+    }
+
+    let (ref_m, ref_s, ref_c) = channel_stats(reference);
+    let (tgt_m, tgt_s, tgt_c) = channel_stats(target);
+
+    // `apply_scene_color_grade` の式 `y = x * gain + lift * (1 - x)` は
+    // `gain - lift = slope` かつ `tgt_m * slope + lift = ref_m` を厳密に満たす
+    let slopes: [f32; 3] =
+        std::array::from_fn(|ch| (ref_s[ch] / tgt_s[ch].max(0.04)).clamp(0.65, 1.65));
+    let lift = std::array::from_fn(|ch| (ref_m[ch] - tgt_m[ch] * slopes[ch]).clamp(-0.35, 0.35));
+    let gain = std::array::from_fn(|ch| (slopes[ch] + lift[ch]).clamp(0.45, 2.0));
+    let sat = (ref_c / tgt_c.max(0.04)).clamp(0.7, 1.45);
+
+    SceneColorGrade {
+        enabled: true,
+        saturation: sat,
+        lift,
+        gain,
+        ..SceneColorGrade::default()
+    }
+}
+
+/// シーン全体へ非破壊カラーグレーディング（露出・色温度/ティント・3-Way Lift/Gamma/Gain・コントラスト・彩度・RGBトーンカーブ・HSL二次補正・3D LUT）を適用する
 pub fn apply_scene_color_grade(
     img: &mut LinearImage,
     grade: &SceneColorGrade,
@@ -353,6 +637,18 @@ pub fn apply_scene_color_grade(
     ];
     let gain = grade.gain;
     let lut_mix = grade.lut_intensity.clamp(0.0, 1.0);
+
+    // v2.1 #25: トーンカーブ LUT をループ外で事前構築（ゼロ割り当て＆高速化）
+    let curves_luts = if grade.curves.enabled {
+        Some((
+            evaluate_tone_curve_lut(&grade.curves.master),
+            evaluate_tone_curve_lut(&grade.curves.red),
+            evaluate_tone_curve_lut(&grade.curves.green),
+            evaluate_tone_curve_lut(&grade.curves.blue),
+        ))
+    } else {
+        None
+    };
 
     for px in &mut img.pixels {
         let a = px.a;
@@ -388,6 +684,21 @@ pub fn apply_scene_color_grade(
         sr = (luma + (sr - luma) * sat).clamp(0.0, 1.0);
         sg = (luma + (sg - luma) * sat).clamp(0.0, 1.0);
         sb = (luma + (sb - luma) * sat).clamp(0.0, 1.0);
+
+        // 2.5. v2.1 #25: RGB / マスタートーンカーブ（Fritsch-Carlson 単調スプライン）
+        if let Some((ref ml, ref rl, ref gl, ref bl)) = curves_luts {
+            sr = sample_curve_lut(rl, sample_curve_lut(ml, sr));
+            sg = sample_curve_lut(gl, sample_curve_lut(ml, sg));
+            sb = sample_curve_lut(bl, sample_curve_lut(ml, sb));
+        }
+
+        // 2.6. v2.1 #25: HSL 二次色補正クオリファイア
+        if grade.hsl_qualifier.enabled {
+            let [nr, ng, nb] = apply_hsl_qualifier_rgb([sr, sg, sb], &grade.hsl_qualifier);
+            sr = nr;
+            sg = ng;
+            sb = nb;
+        }
 
         // 3. `.cube` 3D LUT（四面体補間）
         if let Some(lut3d) = lut
@@ -672,5 +983,79 @@ DOMAIN_MAX 1.0 1.0 1.0
         assert!(scopes.vectorscope_max > 0);
         assert!(scopes.hist_max > 0);
         assert!(scopes.avg_luma_ire > 20.0 && scopes.avg_luma_ire < 80.0);
+    }
+
+    #[test]
+    fn v21_tone_curves_hsl_qualifier_and_auto_color_match_work() {
+        // 1. S-curve 単調性＆コントラスト強調検証
+        let curves = ve_core::ColorCurves::preset_s_curve();
+        let lut = evaluate_tone_curve_lut(&curves.master);
+        for pair in lut.windows(2) {
+            assert!(
+                pair[1] >= pair[0] - 1e-5,
+                "Fritsch-Carlson spline must remain monotone: {} -> {}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert!(lut[64] < 64.0 / 255.0, "S-curve must darken shadows");
+        assert!(lut[192] > 192.0 / 255.0, "S-curve must lift highlights");
+
+        // 2. HSL Secondary Qualifier: 青空(240°)のみ選択して彩度強調・赤(0°)は無影響
+        let q = HslQualifier {
+            enabled: true,
+            hue_center_deg: 240.0,
+            hue_width_deg: 35.0,
+            sat_min: 0.1,
+            luma_min: 0.05,
+            softness: 0.2,
+            hue_shift_deg: -30.0,
+            sat_scale: 1.4,
+            luma_offset: 0.08,
+            show_matte_overlay: false,
+        };
+        let blue = [0.15, 0.25, 0.75];
+        let red = [0.80, 0.15, 0.15];
+        let blue_out = apply_hsl_qualifier_rgb(blue, &q);
+        let red_out = apply_hsl_qualifier_rgb(red, &q);
+        assert!(
+            (blue_out[1] - blue[1]).abs() > 0.05,
+            "blue sky should be shifted by HSL qualifier: {blue:?} -> {blue_out:?}"
+        );
+        assert!(
+            (red_out[0] - red[0]).abs() < 1e-3 && (red_out[1] - red[1]).abs() < 1e-3,
+            "red must be untouched by blue HSL qualifier: {red:?} -> {red_out:?}"
+        );
+
+        // 3. Auto Shot Color Match: 暗く青みがかったターゲットを暖色リファレンスへ寄せる
+        let reference = LinearImage::new(
+            16,
+            16,
+            LinearPremul::from_srgb_straight(RgbaColor {
+                r: 0.78,
+                g: 0.56,
+                b: 0.34,
+                a: 1.0,
+            }),
+        );
+        let mut target = LinearImage::new(
+            16,
+            16,
+            LinearPremul::from_srgb_straight(RgbaColor {
+                r: 0.25,
+                g: 0.32,
+                b: 0.52,
+                a: 1.0,
+            }),
+        );
+        let matched_grade = compute_auto_color_match(&reference, &target);
+        apply_scene_color_grade(&mut target, &matched_grade, None);
+        let p = target.pixels[0];
+        assert!(
+            p.r > p.b,
+            "matched target should shift warm (R > B) like reference: r={}, b={}",
+            p.r,
+            p.b
+        );
     }
 }
