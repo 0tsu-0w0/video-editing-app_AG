@@ -1,8 +1,10 @@
 use crate::animation::Keyframe;
 use crate::camera::{Camera3D, Transform3D};
+use crate::collab::ReviewComment;
 use crate::expression::compile_expression;
 use crate::folder::{FolderError, HistoryEntry, ProjectFolder};
 use crate::lipsync::CharacterSpriteConfig;
+use crate::node_graph::NodeCompositeGraph;
 use crate::preset::ColorPalette;
 use crate::project::{
     AudioDuckingConfig, AudioEffectNode, AudioReactiveConfig, BezierMask, BlendMode, EffectId,
@@ -352,6 +354,23 @@ pub enum EditCommand {
         bus: String,
         send_reverb: f32,
     },
+    /// v2.0 #21: アクティブシーンのノードベース合成グラフを更新する
+    SetNodeGraph {
+        graph: NodeCompositeGraph,
+    },
+    /// v2.0 #22: 動画クリップのオプティカルフロー中間フレーム補間フラグを更新する
+    SetOpticalFlowInterp {
+        item_id: ItemId,
+        enabled: bool,
+    },
+    /// v2.0 #24: アクティブシーンのタイムコード付きレビューコメント一覧を更新する
+    SetReviewComments {
+        comments: Vec<ReviewComment>,
+    },
+    /// v2.0 #24: 3-Way ブランチマージ結果を 1 ステップ Undo 可能に適用する
+    ReplaceProjectSnapshot {
+        project: Box<Project>,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -420,6 +439,10 @@ impl EditCommand {
             Self::RollTrim { .. } => "roll_trim",
             Self::SlideTrim { .. } => "slide_trim",
             Self::SetLayerMixer { .. } => "set_layer_mixer",
+            Self::SetNodeGraph { .. } => "set_node_graph",
+            Self::SetOpticalFlowInterp { .. } => "set_optical_flow_interp",
+            Self::SetReviewComments { .. } => "set_review_comments",
+            Self::ReplaceProjectSnapshot { .. } => "replace_project_snapshot",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -515,6 +538,17 @@ impl CommandBus {
 
     pub fn redo_len(&self) -> usize {
         self.redo_stack.len()
+    }
+
+    /// v2.0 #23: Undo スタック上の直近実行コマンド列を古い順で返す（編集レシピの自動記録用）
+    pub fn recent_commands(&self, limit: usize) -> Vec<EditCommand> {
+        let len = self.undo_stack.len();
+        let skip = len.saturating_sub(limit);
+        self.undo_stack
+            .iter()
+            .skip(skip)
+            .map(|r| r.command.clone())
+            .collect()
     }
 
     /// コマンドを実行する。`coalesce_key` が直前の Undo レコードと一致する場合は1つの Undo 単位に統合する。
@@ -890,6 +924,8 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 color_grade: SceneColorGrade::default(),
                 motion_blur: MotionBlurConfig::default(),
                 markers: Vec::new(),
+                node_graph: NodeCompositeGraph::default(),
+                review_comments: Vec::new(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -1602,6 +1638,36 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 bus.trim().to_string()
             };
             layer.send_reverb = send_reverb.clamp(0.0, 1.0);
+            Ok(())
+        }
+        EditCommand::SetNodeGraph { graph } => {
+            if let Err(err) = graph.topological_order() {
+                return Err(CommandError::InvalidExpression(err.to_string()));
+            }
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            scene.node_graph = graph.clone();
+            Ok(())
+        }
+        EditCommand::SetOpticalFlowInterp { item_id, enabled } => {
+            let item = find_item_mut(project, *item_id)?;
+            item.playback.optical_flow_interp = *enabled;
+            Ok(())
+        }
+        EditCommand::SetReviewComments { comments } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut sorted = comments.clone();
+            sorted.sort_by_key(|c| c.time);
+            scene.review_comments = sorted;
+            Ok(())
+        }
+        EditCommand::ReplaceProjectSnapshot {
+            project: next_project,
+        } => {
+            *project = (**next_project).clone();
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

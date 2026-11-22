@@ -769,6 +769,31 @@ impl RenderGraph {
             }
         }
 
+        // v2.0 #21: ノード合成空間（NodeCompositeGraph）が有効な場合はトポロジカル順にノード評価を実行
+        if scene.node_graph.enabled && !scene.node_graph.nodes.is_empty() {
+            let packets: Vec<Option<crate::node_eval::LayerRenderPacket>> = layer_outputs
+                .iter()
+                .map(|opt| {
+                    opt.as_ref()
+                        .map(|(img, _, depth)| crate::node_eval::LayerRenderPacket {
+                            image: img.clone(),
+                            depth: *depth,
+                        })
+                })
+                .collect();
+            if let Some(node_canvas) = crate::node_eval::evaluate_node_composite_graph(
+                &scene.node_graph,
+                &packets,
+                w,
+                h,
+                time.as_seconds(),
+                &self.plugins,
+                transparent_bg,
+            ) {
+                return node_canvas;
+            }
+        }
+
         // トラックマット適用（split_at_mut でフルフレームクローンを回避）
         let mut consumed_matte_layers = vec![false; scene.layers.len()];
         for (layer_idx, layer) in scene.layers.iter().enumerate() {
@@ -1084,98 +1109,46 @@ impl RenderGraph {
                 let (path, is_proxy) = self.resolve_asset_path(proj, *asset_id, true)?;
                 let src_sec = item.evaluate_source_time_sec(local_time, *source_offset, None);
                 let src_time = RationalTime::from_seconds(src_sec).max(RationalTime::ZERO);
-                let frame_idx = src_time.to_frame_floor(scene.fps).max(0);
                 let tw = ((canvas_w as f32) * tf.scale_x.max(0.01))
                     .round()
                     .clamp(1.0, 4096.0) as u32;
                 let th = ((canvas_h as f32) * tf.scale_y.max(0.01))
                     .round()
                     .clamp(1.0, 4096.0) as u32;
-                let key = (*asset_id, frame_idx, tw, th, is_proxy);
 
-                if let Some((tick, cached)) = self.video_frame_cache.get_mut(&key) {
-                    self.video_frame_tick = self.video_frame_tick.wrapping_add(1);
-                    *tick = self.video_frame_tick;
-                    return Some(cached.clone());
-                }
-
-                // 常駐 FFmpeg ストリームデコーダ経由で高速連続フレーム取得（毎フレーム起動を回避）
-                let stream_key = (*asset_id, tw, th, is_proxy);
-                let mut rgba_opt = self
-                    .video_streams
-                    .get_mut(&stream_key)
-                    .filter(|dec| dec.path == path && dec.fps == scene.fps)
-                    .and_then(|dec| dec.read_frame_at(frame_idx));
-
-                if rgba_opt.is_none() {
-                    let hw = self.effective_hw_decode();
-                    let opened = self
-                        .ffmpeg
-                        .open_video_stream_with_hwaccel(&path, frame_idx, scene.fps, tw, th, hw);
-                    let mut stream_opt = match opened {
-                        Ok(mut st) => {
-                            let first = st.read_frame_at(frame_idx);
-                            if first.is_some() {
-                                rgba_opt = first;
-                                Some(st)
-                            } else if hw != HwDecodeBackend::Software {
-                                // HW デコード初回失敗時は即座に Software へフォールバックして以降安定化
-                                self.resolved_hw_decode = Some(HwDecodeBackend::Software);
-                                if let Ok(mut sw_st) = self.ffmpeg.open_video_stream_with_hwaccel(
-                                    &path,
-                                    frame_idx,
-                                    scene.fps,
-                                    tw,
-                                    th,
-                                    HwDecodeBackend::Software,
-                                ) {
-                                    rgba_opt = sw_st.read_frame_at(frame_idx);
-                                    Some(sw_st)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        Err(_) if hw != HwDecodeBackend::Software => {
-                            self.resolved_hw_decode = Some(HwDecodeBackend::Software);
-                            if let Ok(mut sw_st) = self.ffmpeg.open_video_stream_with_hwaccel(
+                // v2.0 #22: スロー再生時のオプティカルフロー中間フレーム補間
+                if item.playback.optical_flow_interp && item.playback.speed.abs() < 0.999 {
+                    let exact_f = src_time.as_seconds() * scene.fps.as_f64().max(1.0);
+                    let f0 = exact_f.floor().max(0.0) as i64;
+                    let frac = (exact_f - f0 as f64) as f32;
+                    if frac > 0.04
+                        && frac < 0.96
+                        && let (Some(img_a), Some(img_b)) = (
+                            self.decode_video_frame_at(
+                                *asset_id, &path, is_proxy, scene.fps, f0, tw, th,
+                            ),
+                            self.decode_video_frame_at(
+                                *asset_id,
                                 &path,
-                                frame_idx,
+                                is_proxy,
                                 scene.fps,
+                                f0 + 1,
                                 tw,
                                 th,
-                                HwDecodeBackend::Software,
-                            ) {
-                                rgba_opt = sw_st.read_frame_at(frame_idx);
-                                Some(sw_st)
-                            } else {
-                                None
-                            }
-                        }
-                        Err(_) => None,
-                    };
-                    if rgba_opt.is_some()
-                        && let Some(new_stream) = stream_opt.take()
+                            ),
+                        )
                     {
-                        if self.video_streams.len() >= MAX_VIDEO_STREAMS
-                            && !self.video_streams.contains_key(&stream_key)
-                        {
-                            self.video_streams.clear();
-                        }
-                        self.video_streams.insert(stream_key, new_stream);
+                        return Some(crate::ai_vision::interpolate_frame_optical_flow(
+                            &img_a,
+                            &img_b,
+                            frac,
+                            &crate::ai_vision::OpticalFlowConfig::default(),
+                        ));
                     }
                 }
 
-                let rgba = rgba_opt.or_else(|| {
-                    self.ffmpeg
-                        .decode_frame_rgba8(&path, src_time.as_seconds(), tw, th)
-                        .ok()
-                })?;
-                let decoded = LinearImage::from_rgba8_srgb(tw, th, &rgba);
-                self.insert_video_frame(key, decoded.clone());
-                Some(decoded)
+                let frame_idx = src_time.to_frame_floor(scene.fps).max(0);
+                self.decode_video_frame_at(*asset_id, &path, is_proxy, scene.fps, frame_idx, tw, th)
             }
             ItemKind::AudioSpectrum {
                 linked_audio_layer,
@@ -1451,6 +1424,105 @@ impl RenderGraph {
             }
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_video_frame_at(
+        &mut self,
+        asset_id: Uuid,
+        path: &std::path::Path,
+        is_proxy: bool,
+        fps: ve_core::FrameRate,
+        frame_idx: i64,
+        tw: u32,
+        th: u32,
+    ) -> Option<LinearImage> {
+        let frame_idx = frame_idx.max(0);
+        let key = (asset_id, frame_idx, tw, th, is_proxy);
+
+        if let Some((tick, cached)) = self.video_frame_cache.get_mut(&key) {
+            self.video_frame_tick = self.video_frame_tick.wrapping_add(1);
+            *tick = self.video_frame_tick;
+            return Some(cached.clone());
+        }
+
+        // 常駐 FFmpeg ストリームデコーダ経由で高速連続フレーム取得（毎フレーム起動を回避）
+        let stream_key = (asset_id, tw, th, is_proxy);
+        let mut rgba_opt = self
+            .video_streams
+            .get_mut(&stream_key)
+            .filter(|dec| dec.path == path && dec.fps == fps)
+            .and_then(|dec| dec.read_frame_at(frame_idx));
+
+        if rgba_opt.is_none() {
+            let hw = self.effective_hw_decode();
+            let opened = self
+                .ffmpeg
+                .open_video_stream_with_hwaccel(path, frame_idx, fps, tw, th, hw);
+            let mut stream_opt = match opened {
+                Ok(mut st) => {
+                    let first = st.read_frame_at(frame_idx);
+                    if first.is_some() {
+                        rgba_opt = first;
+                        Some(st)
+                    } else if hw != HwDecodeBackend::Software {
+                        self.resolved_hw_decode = Some(HwDecodeBackend::Software);
+                        if let Ok(mut sw_st) = self.ffmpeg.open_video_stream_with_hwaccel(
+                            path,
+                            frame_idx,
+                            fps,
+                            tw,
+                            th,
+                            HwDecodeBackend::Software,
+                        ) {
+                            rgba_opt = sw_st.read_frame_at(frame_idx);
+                            Some(sw_st)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(_) if hw != HwDecodeBackend::Software => {
+                    self.resolved_hw_decode = Some(HwDecodeBackend::Software);
+                    if let Ok(mut sw_st) = self.ffmpeg.open_video_stream_with_hwaccel(
+                        path,
+                        frame_idx,
+                        fps,
+                        tw,
+                        th,
+                        HwDecodeBackend::Software,
+                    ) {
+                        rgba_opt = sw_st.read_frame_at(frame_idx);
+                        Some(sw_st)
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
+            };
+            if rgba_opt.is_some()
+                && let Some(new_stream) = stream_opt.take()
+            {
+                if self.video_streams.len() >= MAX_VIDEO_STREAMS
+                    && !self.video_streams.contains_key(&stream_key)
+                {
+                    self.video_streams.clear();
+                }
+                self.video_streams.insert(stream_key, new_stream);
+            }
+        }
+
+        let fallback_sec = RationalTime::from_frame(frame_idx, fps).as_seconds();
+        let rgba = rgba_opt.or_else(|| {
+            self.ffmpeg
+                .decode_frame_rgba8(path, fallback_sec, tw, th)
+                .ok()
+        })?;
+        let decoded = LinearImage::from_rgba8_srgb(tw, th, &rgba);
+        self.insert_video_frame(key, decoded.clone());
+        Some(decoded)
+    }
 }
 
 fn apply_group_transform(src: &LinearImage, tf: Transform2D) -> LinearImage {
@@ -1498,7 +1570,7 @@ fn apply_effect_chain(
     }
 }
 
-fn apply_named_effect(
+pub(crate) fn apply_named_effect(
     image: &mut LinearImage,
     effect_type: &str,
     params: &BTreeMap<String, f32>,
@@ -1506,6 +1578,23 @@ fn apply_named_effect(
     plugins: &PluginRegistry,
 ) {
     match effect_type {
+        "ai_segment" => {
+            let cfg = crate::ai_vision::SegmentationConfig {
+                sensitivity: params.get("sensitivity").copied().unwrap_or(0.55),
+                edge_feather_px: params.get("edge_feather_px").copied().unwrap_or(1.5),
+                fg_bias: params.get("fg_bias").copied().unwrap_or(0.45),
+                skin_boost: params.get("skin_boost").copied().unwrap_or(0.65),
+                refine_iters: params.get("refine_iters").copied().unwrap_or(2.0).round() as u32,
+                despill_strength: params.get("despill_strength").copied().unwrap_or(0.35),
+                invert: params.get("invert").copied().unwrap_or(0.0) >= 0.5,
+            };
+            crate::ai_vision::apply_ai_segmentation(image, &cfg);
+        }
+        "ai_super_res" => {
+            let sharpen = params.get("sharpen").copied().unwrap_or(0.55);
+            let denoise = params.get("denoise").copied().unwrap_or(0.2);
+            crate::ai_vision::apply_ai_super_res_detail(image, sharpen, denoise);
+        }
         "brightness" => {
             let gain = params.get("gain").copied().unwrap_or(1.0).max(0.0);
             for px in &mut image.pixels {
@@ -2148,7 +2237,7 @@ pub(crate) fn box_blur_separable(image: &mut LinearImage, radius: i32) {
 }
 
 /// Linear Premultiplied 画像を中心軸まわりに指定角度（度）でバイリニア回転する
-fn rotate_linear_image(src: &LinearImage, angle_deg: f32) -> LinearImage {
+pub(crate) fn rotate_linear_image(src: &LinearImage, angle_deg: f32) -> LinearImage {
     let rad = angle_deg.to_radians();
     let cos = rad.cos();
     let sin = rad.sin();

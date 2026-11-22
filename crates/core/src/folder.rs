@@ -1,5 +1,6 @@
 use crate::preset::{EffectPreset, ItemAlias, TextStylePreset};
 use crate::project::{AssetRef, Project};
+use crate::recipe::{EditRecipe, parse_recipe_json_or_yaml, serialize_recipe_yaml};
 use crate::template::{MotionTemplate, ProjectTemplate};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -143,6 +144,21 @@ impl ProjectFolder {
         self.root.join("backups")
     }
 
+    /// v2.0 #22: オプショナルなローカル AI モデル（ONNX 等、オフライン専用）格納ディレクトリ (`models/`)
+    pub fn models_dir(&self) -> PathBuf {
+        self.root.join("models")
+    }
+
+    /// v2.0 #23: AI 編集ディレクターレシピ（YAML / JSON）格納ディレクトリ (`recipes/`)
+    pub fn recipes_dir(&self) -> PathBuf {
+        self.root.join("recipes")
+    }
+
+    /// v2.0 #24: Git-Friendly NLE ブランチ比較・3-Way マージ用スナップショット格納ディレクトリ (`snapshots/`)
+    pub fn snapshots_dir(&self) -> PathBuf {
+        self.root.join("snapshots")
+    }
+
     /// v1.0 #20: プロジェクト／ユーザー設定ファイル (`editor_settings.json`)
     pub fn user_settings_path(&self) -> PathBuf {
         self.root.join("editor_settings.json")
@@ -179,6 +195,9 @@ impl ProjectFolder {
         fs::create_dir_all(self.cache_proxy_dir())?;
         fs::create_dir_all(self.exports_dir())?;
         fs::create_dir_all(self.backups_dir())?;
+        fs::create_dir_all(self.models_dir())?;
+        fs::create_dir_all(self.recipes_dir())?;
+        fs::create_dir_all(self.snapshots_dir())?;
         if !self.history_jsonl_path().exists() {
             fs::File::create(self.history_jsonl_path())?;
         }
@@ -538,6 +557,103 @@ impl ProjectFolder {
             return Err(FolderError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "backup path outside project backups directory",
+            )));
+        }
+        let data = fs::read_to_string(&canonical_file)?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    /// v2.0 #23: AI 編集ディレクターレシピを `recipes/<safe_name>.yaml` へ保存する
+    pub fn save_recipe(&self, recipe: &EditRecipe) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.recipes_dir())?;
+        let file_name = format!("{}.yaml", sanitize_alias_filename(&recipe.name));
+        let path = self.recipes_dir().join(file_name);
+        let yaml = serialize_recipe_yaml(recipe).map_err(|e| {
+            FolderError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })?;
+        fs::write(&path, yaml)?;
+        Ok(path)
+    }
+
+    /// `recipes/` 内の保存済み YAML / JSON レシピを名前順で全件読み込む
+    pub fn load_recipes(&self) -> Vec<EditRecipe> {
+        let Ok(entries) = fs::read_dir(self.recipes_dir()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ext_ok = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                e.eq_ignore_ascii_case("yaml")
+                    || e.eq_ignore_ascii_case("yml")
+                    || e.eq_ignore_ascii_case("json")
+            });
+            if path.is_file()
+                && ext_ok
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(recipe) = parse_recipe_json_or_yaml(&text)
+            {
+                out.push(recipe);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    pub fn delete_recipe(&self, name: &str) -> Result<(), FolderError> {
+        let base = sanitize_alias_filename(name);
+        for ext in ["yaml", "yml", "json"] {
+            let path = self.recipes_dir().join(format!("{base}.{ext}"));
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// v2.0 #24: Git-Friendly 差分比較・3-Way ブランチマージ用の決定論的 JSON スナップショットを `snapshots/<name>.json` へ保存する
+    pub fn save_snapshot(&self, name: &str, project: &Project) -> Result<PathBuf, FolderError> {
+        fs::create_dir_all(self.snapshots_dir())?;
+        let file_name = format!("{}.json", sanitize_alias_filename(name));
+        let path = self.snapshots_dir().join(file_name);
+        let json = serde_json::to_string_pretty(project)?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// `snapshots/` に保存されているスナップショット名一覧を昇順で返す
+    pub fn list_snapshots(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(self.snapshots_dir()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+            })
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// `snapshots/<name>.json` を読み込む（パストラバーサル防止付き）
+    pub fn load_snapshot(&self, name: &str) -> Result<Project, FolderError> {
+        let file_name = format!("{}.json", sanitize_alias_filename(name));
+        let path = self.snapshots_dir().join(file_name);
+        let canonical_dir = fs::canonicalize(self.snapshots_dir())?;
+        let canonical_file = fs::canonicalize(&path)?;
+        if !canonical_file.starts_with(&canonical_dir) {
+            return Err(FolderError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "snapshot path outside project snapshots directory",
             )));
         }
         let data = fs::read_to_string(&canonical_file)?;

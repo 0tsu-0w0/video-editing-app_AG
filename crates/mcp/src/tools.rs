@@ -12,26 +12,31 @@ use ve_audio::{
     separate_vocal_bgm_stems,
 };
 use ve_core::{
-    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, Camera3D,
-    CharacterSpriteConfig, CommandSource, CubicBezier, EditCommand, EditorKeymap, EffectNode,
-    EffectPreset, FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe,
-    KeymapPreset, Light3DType, LipSyncMode, MaskMode, MaskVertex, MediaKind, MotionPreset,
-    MulticamCutPoint, ParticleConfig, ParticlePreset, ProjectTemplate, PsdCharacterConfig,
-    RationalTime, RgbaColor, SceneColorGrade, ScriptBuildConfig, ShapeKind, TemplateParamValue,
-    TextAnimator, TextStylePreset, TimelineItem, TimelineMarker, TrackMatte, TrackMatteMode,
-    UiLanguage, UiThemePreset, VectorShapeConfig, archive_project_to_zip, base64_encode,
-    build_align_commands, build_bake_expression_command, build_beat_cut_commands,
-    build_beat_markers_command, build_close_gaps_commands, build_fit_duration_to_layer_commands,
-    build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
-    build_multicam_switch_cut_commands, build_multicam_sync_align_commands,
-    build_replace_text_commands, build_script_timeline_commands, build_shorts_clip_scene_command,
-    build_strip_filler_words_commands, build_text_based_delete_commands,
-    build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
-    compile_expression, detect_speech_intervals_from_rms, evaluate_item_property,
-    export_ass_subtitles, export_otio_json, export_srt_subtitles, extract_highlight_candidates,
-    extract_motion_template_from_scene, extract_transcript_entries, format_youtube_chapters,
-    official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo, parse_script_auto,
-    parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
+    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode, Camera3D,
+    ChannelSelector, CharacterSpriteConfig, CommandSource, CompositeNode, CompositeNodeKind,
+    ConflictResolution, CubicBezier, EditCommand, EditorKeymap, EffectNode, EffectPreset,
+    FrameRate, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe, KeymapPreset,
+    Light3DType, LipSyncMode, MaskMode, MaskVertex, MediaKind, MotionPreset, MulticamCutPoint,
+    NodeCompositeGraph, ParticleConfig, ParticlePreset, ProjectTemplate, PsdCharacterConfig,
+    RationalTime, ReviewComment, ReviewSource, ReviewStatus, RgbaColor, SceneColorGrade,
+    ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem,
+    TimelineMarker, TrackMatte, TrackMatteMode, UiLanguage, UiThemePreset, VectorShapeConfig,
+    archive_project_to_zip, base64_encode, build_align_commands, build_bake_expression_command,
+    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
+    build_fit_duration_to_layer_commands, build_instantiate_template_command,
+    build_jump_cut_commands, build_motion_preset_commands, build_multicam_switch_cut_commands,
+    build_multicam_sync_align_commands, build_replace_text_commands,
+    build_review_comments_to_markers_commands, build_script_timeline_commands,
+    build_shorts_clip_scene_command, build_strip_filler_words_commands,
+    build_text_based_delete_commands, build_text_based_reorder_commands, builtin_motion_templates,
+    builtin_project_templates, compile_expression, detect_speech_intervals_from_rms, diff_projects,
+    evaluate_item_property, export_ass_subtitles, export_otio_json, export_review_comments_csv,
+    export_review_comments_json, export_srt_subtitles, extract_highlight_candidates,
+    extract_motion_template_from_scene, extract_transcript_entries, format_diff_report,
+    format_youtube_chapters, import_review_comments_csv, import_review_comments_json,
+    import_youtube_review_comments, merge_projects_three_way, official_registry_catalog,
+    parse_ass_subtitles, parse_aviutl_exo, parse_script_auto, parse_srt_subtitles,
+    search_text_items, subtitle_entries_to_commands, sync_node_graph_to_scene_layers,
     validate_project_delivery, verify_and_install_extension, wrap_subtitle_japanese,
 };
 use ve_media::{
@@ -39,7 +44,10 @@ use ve_media::{
     write_wav_pcm16,
 };
 use ve_plugin_api::{PluginRegistry, WasmPluginManager, emit_sample_wasm_plugins};
-use ve_render::{RenderGraph, emit_sample_cube_luts, validate_wgsl};
+use ve_render::{
+    AutoReframeConfig, LocalVisionBackend, RenderGraph, analyze_scene_auto_reframe,
+    build_auto_reframe_commands, detect_local_vision_status, emit_sample_cube_luts, validate_wgsl,
+};
 
 const MAX_BATCH_COMMANDS: usize = 500;
 const ALLOWED_TTS_AUDIO_EXTS: &[&str] = &["wav", "mp3", "flac", "ogg", "m4a", "aac"];
@@ -895,6 +903,120 @@ pub fn tool_definitions() -> Value {
                     "parallel_export_threads": { "type": "integer" }
                 }
             }
+        },
+        {
+            "name": "manage_node_graph",
+            "description": "v2.0 #21: 第3ワークスペース（Fusion/Nukeスタイル・ノードベース合成グラフ）の生成・双方向レイヤー同期・ノード追加/接続/削除・有効化を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get_graph", "from_layers", "sync_to_layers", "set_enabled", "add_node", "connect", "remove_node", "validate"]
+                    },
+                    "enabled": { "type": "boolean" },
+                    "node_type": {
+                        "type": "string",
+                        "enum": ["layer_input", "solid_color", "effect", "channel_split", "channel_merge", "transform", "merge", "mask_combine", "color_correct", "depth_fog", "output"]
+                    },
+                    "name": { "type": "string" },
+                    "layer_index": { "type": "integer" },
+                    "effect_type": { "type": "string" },
+                    "channel": { "type": "string", "enum": ["rgba", "red", "green", "blue", "alpha", "luma", "depth"] },
+                    "blend_mode": { "type": "string", "enum": ["normal", "add", "multiply", "screen"] },
+                    "matte_mode": { "type": "string", "enum": ["alpha", "alpha_inverted", "luma", "luma_inverted"] },
+                    "params": { "type": "object" },
+                    "from_node": { "type": "string" },
+                    "from_port": { "type": "string" },
+                    "to_node": { "type": "string" },
+                    "to_port": { "type": "string" },
+                    "node_id": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "run_local_ai_vision",
+            "description": "v2.0 #22: 完全オフライン（クラウド送信ゼロ）のローカル AI ビジョン（グリーンバック不要人物切り抜き・顔/被写体追尾 9:16 自動リフレーム・ローカル超解像・オプティカルフロースロー補間）を実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "apply_segmentation", "auto_reframe", "apply_super_resolution", "set_optical_flow_slowmo"]
+                    },
+                    "id": { "type": "string" },
+                    "sensitivity": { "type": "number" },
+                    "edge_feather_px": { "type": "number" },
+                    "skin_boost": { "type": "number" },
+                    "despill_strength": { "type": "number" },
+                    "invert": { "type": "boolean" },
+                    "target_width": { "type": "integer" },
+                    "target_height": { "type": "integer" },
+                    "sample_interval_sec": { "type": "number" },
+                    "smoothing_strength": { "type": "number" },
+                    "apply": { "type": "boolean" },
+                    "sharpen": { "type": "number" },
+                    "denoise": { "type": "number" },
+                    "enabled": { "type": "boolean" },
+                    "speed": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "orchestrate_edit_recipe",
+            "description": "v2.0 #23: マルチエージェント AI 編集ディレクター（YAML/JSON 編集レシピの記録・共有・人間承認ゲート付きステップ実行・render_frame_preview 視覚自己検査・Undo ロールバック）を操作する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list_recipes", "save_recipe", "import_recipe", "export_yaml", "record_from_history", "start_run", "step", "run_until_gate", "approve_gate", "reject_gate", "get_status"]
+                    },
+                    "recipe_name": { "type": "string" },
+                    "recipe_text": { "type": "string" },
+                    "recipe": { "type": "object" },
+                    "variables": { "type": "object" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "limit": { "type": "integer" },
+                    "auto_run": { "type": "boolean" },
+                    "continue_after": { "type": "boolean" },
+                    "rollback_last": { "type": "boolean" },
+                    "skip_step": { "type": "boolean" },
+                    "reason": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "collab_diff_and_review",
+            "description": "v2.0 #24: Git-Friendly NLE のスナップショット保存・視覚的タイムライン Diff・3-Way 意味的ブランチマージ・Frame.io/YouTube レビューコメント入出力＆マーカー自動変換を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["save_snapshot", "list_snapshots", "diff_snapshots", "merge_three_way", "add_review_comment", "resolve_review_comment", "import_reviews", "export_reviews", "convert_reviews_to_markers"]
+                    },
+                    "name": { "type": "string" },
+                    "base_snapshot": { "type": "string" },
+                    "target_snapshot": { "type": "string" },
+                    "theirs_snapshot": { "type": "string" },
+                    "apply": { "type": "boolean" },
+                    "resolutions": { "type": "object" },
+                    "time_sec": { "type": "number" },
+                    "author": { "type": "string" },
+                    "body": { "type": "string" },
+                    "comment_id": { "type": "string" },
+                    "status": { "type": "string", "enum": ["open", "in_progress", "resolved"] },
+                    "format": { "type": "string", "enum": ["frameio_csv", "json", "youtube_text"] },
+                    "content": { "type": "string" },
+                    "only_unresolved": { "type": "boolean" }
+                }
+            }
         }
     ]) {
         tools.extend(v10_extra);
@@ -939,6 +1061,11 @@ fn parse_params_map(val: Option<&Value>) -> BTreeMap<String, f32> {
 }
 
 pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Result<Value, String> {
+    // v2.0 #23: AI 編集ディレクターは内部で他 MCP ツールを再帰的に呼び出すため、ロック取得前に独立ディスパッチする
+    if name == "orchestrate_edit_recipe" {
+        return crate::director::handle_orchestrate_tool(session, args);
+    }
+
     let mut guard = session
         .lock()
         .map_err(|_| "session lock poisoned".to_string())?;
@@ -4910,6 +5037,836 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 other => Err(format!("unknown manage_ecosystem action: {other}")),
             }
         }
+        "manage_node_graph" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing string argument 'action'".to_string())?;
+            let s = &mut *guard;
+            match action {
+                "get_graph" => {
+                    let scene = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let text = serde_json::to_string_pretty(&scene.node_graph).unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "from_layers" => {
+                    let graph = {
+                        let scene = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        NodeCompositeGraph::from_scene_layers(scene)
+                    };
+                    let node_count = graph.nodes.len();
+                    let conn_count = graph.connections.len();
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetNodeGraph { graph },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let text = serde_json::to_string_pretty(&json!({
+                        "status": "generated_from_layers",
+                        "enabled": true,
+                        "node_count": node_count,
+                        "connection_count": conn_count,
+                    }))
+                    .unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "sync_to_layers" => {
+                    let mut next_project = s.project.clone();
+                    let summary = {
+                        let scene = next_project
+                            .active_scene_mut()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        let graph = scene.node_graph.clone();
+                        sync_node_graph_to_scene_layers(&graph, scene)
+                    };
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::ReplaceProjectSnapshot {
+                                project: Box::new(next_project),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let text = serde_json::to_string_pretty(&summary).unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "set_enabled" => {
+                    let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    let mut graph = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .node_graph
+                        .clone();
+                    graph.enabled = enabled;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetNodeGraph { graph },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "enabled": enabled }).to_string() }] }),
+                    )
+                }
+                "add_node" => {
+                    let node_type = args
+                        .get("node_type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing string argument 'node_type'".to_string())?;
+                    let mut graph = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .node_graph
+                        .clone();
+                    let kind = match node_type {
+                        "layer_input" => CompositeNodeKind::LayerInput {
+                            layer_index: args
+                                .get("layer_index")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0) as usize,
+                        },
+                        "solid_color" => CompositeNodeKind::SolidColor {
+                            color: RgbaColor::WHITE,
+                        },
+                        "effect" => CompositeNodeKind::Effect {
+                            effect_type: args
+                                .get("effect_type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("blur")
+                                .to_string(),
+                            params: parse_params_map(args.get("params")),
+                        },
+                        "channel_split" => {
+                            let ch = match args
+                                .get("channel")
+                                .and_then(Value::as_str)
+                                .unwrap_or("luma")
+                            {
+                                "rgba" => ChannelSelector::Rgba,
+                                "red" => ChannelSelector::Red,
+                                "green" => ChannelSelector::Green,
+                                "blue" => ChannelSelector::Blue,
+                                "alpha" => ChannelSelector::Alpha,
+                                "depth" => ChannelSelector::Depth,
+                                _ => ChannelSelector::Luma,
+                            };
+                            CompositeNodeKind::ChannelSplit { channel: ch }
+                        }
+                        "channel_merge" => CompositeNodeKind::ChannelMerge,
+                        "transform" => CompositeNodeKind::Transform {
+                            x: finite_clamped(
+                                args.get("params").and_then(|p| p.get("x")),
+                                0.0,
+                                -4096.0,
+                                4096.0,
+                            ) as f32,
+                            y: finite_clamped(
+                                args.get("params").and_then(|p| p.get("y")),
+                                0.0,
+                                -4096.0,
+                                4096.0,
+                            ) as f32,
+                            scale_x: finite_clamped(
+                                args.get("params").and_then(|p| p.get("scale_x")),
+                                1.0,
+                                0.05,
+                                8.0,
+                            ) as f32,
+                            scale_y: finite_clamped(
+                                args.get("params").and_then(|p| p.get("scale_y")),
+                                1.0,
+                                0.05,
+                                8.0,
+                            ) as f32,
+                            rotation_deg: finite_clamped(
+                                args.get("params").and_then(|p| p.get("rotation_deg")),
+                                0.0,
+                                -3600.0,
+                                3600.0,
+                            ) as f32,
+                            opacity: finite_clamped(
+                                args.get("params").and_then(|p| p.get("opacity")),
+                                1.0,
+                                0.0,
+                                1.0,
+                            ) as f32,
+                        },
+                        "merge" => {
+                            let bm = match args
+                                .get("blend_mode")
+                                .and_then(Value::as_str)
+                                .unwrap_or("normal")
+                            {
+                                "add" => BlendMode::Add,
+                                "multiply" => BlendMode::Multiply,
+                                "screen" => BlendMode::Screen,
+                                _ => BlendMode::Normal,
+                            };
+                            CompositeNodeKind::Merge {
+                                blend_mode: bm,
+                                opacity: finite_clamped(
+                                    args.get("params").and_then(|p| p.get("opacity")),
+                                    1.0,
+                                    0.0,
+                                    1.0,
+                                ) as f32,
+                            }
+                        }
+                        "mask_combine" => {
+                            let mode = match args
+                                .get("matte_mode")
+                                .and_then(Value::as_str)
+                                .unwrap_or("alpha")
+                            {
+                                "alpha_inverted" => TrackMatteMode::AlphaInverted,
+                                "luma" => TrackMatteMode::Luma,
+                                "luma_inverted" => TrackMatteMode::LumaInverted,
+                                _ => TrackMatteMode::Alpha,
+                            };
+                            CompositeNodeKind::MaskCombine { mode }
+                        }
+                        "color_correct" => CompositeNodeKind::ColorCorrect {
+                            exposure: finite_clamped(
+                                args.get("params").and_then(|p| p.get("exposure")),
+                                0.0,
+                                -4.0,
+                                4.0,
+                            ) as f32,
+                            contrast: finite_clamped(
+                                args.get("params").and_then(|p| p.get("contrast")),
+                                1.0,
+                                0.1,
+                                3.0,
+                            ) as f32,
+                            saturation: finite_clamped(
+                                args.get("params").and_then(|p| p.get("saturation")),
+                                1.0,
+                                0.0,
+                                3.0,
+                            ) as f32,
+                        },
+                        "depth_fog" => CompositeNodeKind::DepthFog {
+                            near: finite_clamped(
+                                args.get("params").and_then(|p| p.get("near")),
+                                400.0,
+                                0.0,
+                                10000.0,
+                            ) as f32,
+                            far: finite_clamped(
+                                args.get("params").and_then(|p| p.get("far")),
+                                2000.0,
+                                10.0,
+                                20000.0,
+                            ) as f32,
+                            fog_color: RgbaColor {
+                                r: 0.72,
+                                g: 0.80,
+                                b: 0.92,
+                                a: 1.0,
+                            },
+                            strength: finite_clamped(
+                                args.get("params").and_then(|p| p.get("strength")),
+                                0.5,
+                                0.0,
+                                1.0,
+                            ) as f32,
+                        },
+                        "output" => CompositeNodeKind::Output,
+                        other => return Err(format!("unknown node_type: {other}")),
+                    };
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(node_type);
+                    let pos = [120.0 + (graph.nodes.len() as f32 * 40.0), 120.0];
+                    let node_id = graph.add_node(CompositeNode::new(name, pos, kind));
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetNodeGraph { graph },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "created_node_id": node_id }).to_string() }] }),
+                    )
+                }
+                "connect" => {
+                    let from_node = parse_uuid(args, "from_node")?;
+                    let to_node = parse_uuid(args, "to_node")?;
+                    let from_port = args
+                        .get("from_port")
+                        .and_then(Value::as_str)
+                        .unwrap_or("out");
+                    let to_port = args.get("to_port").and_then(Value::as_str).unwrap_or("in");
+                    let mut graph = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .node_graph
+                        .clone();
+                    graph
+                        .connect(from_node, from_port, to_node, to_port)
+                        .map_err(|e| e.to_string())?;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetNodeGraph { graph },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "connected": true }).to_string() }] }),
+                    )
+                }
+                "remove_node" => {
+                    let node_id = parse_uuid(args, "node_id")?;
+                    let mut graph = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .node_graph
+                        .clone();
+                    let removed = graph.remove_node(node_id);
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetNodeGraph { graph },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "removed": removed }).to_string() }] }),
+                    )
+                }
+                "validate" => {
+                    let scene = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let res = scene.node_graph.topological_order();
+                    let text = match res {
+                        Ok(order) => json!({
+                            "valid": true,
+                            "enabled": scene.node_graph.enabled,
+                            "topological_len": order.len(),
+                            "has_output": scene.node_graph.output_node_id().is_some(),
+                        })
+                        .to_string(),
+                        Err(e) => json!({ "valid": false, "error": e.to_string() }).to_string(),
+                    };
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                other => Err(format!("unknown manage_node_graph action: {other}")),
+            }
+        }
+        "run_local_ai_vision" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing string argument 'action'".to_string())?;
+            let s = &mut *guard;
+            match action {
+                "status" => {
+                    let models_dir = s.folder.as_ref().map(|f| f.models_dir());
+                    let st = detect_local_vision_status(models_dir.as_deref());
+                    let backend_name = match &st.active_backend {
+                        LocalVisionBackend::PureRustBuiltIn => "pure_rust_builtin",
+                        LocalVisionBackend::LocalOnnxCli { .. } => "local_onnx_cli",
+                    };
+                    let text = serde_json::to_string_pretty(&json!({
+                        "backend": backend_name,
+                        "local_only_guaranteed": st.local_only_guaranteed,
+                        "onnx_models_found": st.onnx_models_found,
+                        "summary": st.summary,
+                    }))
+                    .unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "apply_segmentation" => {
+                    let id = parse_uuid(args, "id")?;
+                    let mut params = BTreeMap::new();
+                    params.insert(
+                        "sensitivity".into(),
+                        finite_clamped(args.get("sensitivity"), 0.55, 0.05, 1.0) as f32,
+                    );
+                    params.insert(
+                        "edge_feather_px".into(),
+                        finite_clamped(args.get("edge_feather_px"), 1.5, 0.0, 6.0) as f32,
+                    );
+                    params.insert(
+                        "skin_boost".into(),
+                        finite_clamped(args.get("skin_boost"), 0.65, 0.0, 1.0) as f32,
+                    );
+                    params.insert(
+                        "despill_strength".into(),
+                        finite_clamped(args.get("despill_strength"), 0.35, 0.0, 1.0) as f32,
+                    );
+                    params.insert(
+                        "invert".into(),
+                        if args.get("invert").and_then(Value::as_bool).unwrap_or(false) {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                    );
+                    let eff = EffectNode {
+                        id: Uuid::new_v4(),
+                        effect_type: "ai_segment".to_string(),
+                        enabled: true,
+                        params,
+                    };
+                    let eid = eff.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddEffect {
+                                item_id: id,
+                                effect: eff,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "status": "applied_ai_segment", "effect_id": eid, "cloud_upload": false }).to_string() }] }),
+                    )
+                }
+                "auto_reframe" => {
+                    let tw = args
+                        .get("target_width")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1080)
+                        .clamp(64, 4096) as u32;
+                    let th = args
+                        .get("target_height")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1920)
+                        .clamp(64, 4096) as u32;
+                    let cfg = AutoReframeConfig {
+                        target_width: tw,
+                        target_height: th,
+                        sample_interval_sec: finite_clamped(
+                            args.get("sample_interval_sec"),
+                            0.4,
+                            0.1,
+                            5.0,
+                        ),
+                        smoothing_strength: finite_clamped(
+                            args.get("smoothing_strength"),
+                            0.72,
+                            0.0,
+                            0.95,
+                        ) as f32,
+                        ..Default::default()
+                    };
+                    let active_id = s.project.active_scene_id;
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let samples = analyze_scene_auto_reframe(&mut rg, &s.project, active_id, &cfg);
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let mut applied_cmds = 0usize;
+                    if apply {
+                        let cmds = {
+                            let scene = s
+                                .project
+                                .active_scene()
+                                .ok_or_else(|| "no active scene".to_string())?;
+                            build_auto_reframe_commands(scene, &cfg, &samples)
+                        };
+                        applied_cmds = cmds.len();
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: format!("AI 自動リフレーム ({tw}x{th})"),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    let sample_json: Vec<Value> = samples
+                        .iter()
+                        .map(|sm| {
+                            json!({
+                                "time_sec": sm.time.as_seconds(),
+                                "focus_x": sm.focus_x_norm,
+                                "focus_y": sm.focus_y_norm,
+                                "confidence": sm.confidence,
+                            })
+                        })
+                        .collect();
+                    let text = serde_json::to_string_pretty(&json!({
+                        "target": [tw, th],
+                        "applied": apply,
+                        "commands_applied": applied_cmds,
+                        "sample_count": sample_json.len(),
+                        "samples": sample_json,
+                        "cloud_upload": false,
+                    }))
+                    .unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "apply_super_resolution" => {
+                    let id = parse_uuid(args, "id")?;
+                    let mut params = BTreeMap::new();
+                    params.insert(
+                        "sharpen".into(),
+                        finite_clamped(args.get("sharpen"), 0.55, 0.0, 2.0) as f32,
+                    );
+                    params.insert(
+                        "denoise".into(),
+                        finite_clamped(args.get("denoise"), 0.2, 0.0, 1.0) as f32,
+                    );
+                    let eff = EffectNode {
+                        id: Uuid::new_v4(),
+                        effect_type: "ai_super_res".to_string(),
+                        enabled: true,
+                        params,
+                    };
+                    let eid = eff.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddEffect {
+                                item_id: id,
+                                effect: eff,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "status": "applied_ai_super_res", "effect_id": eid, "cloud_upload": false }).to_string() }] }),
+                    )
+                }
+                "set_optical_flow_slowmo" => {
+                    let id = parse_uuid(args, "id")?;
+                    let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                    let mut cmds = vec![EditCommand::SetOpticalFlowInterp {
+                        item_id: id,
+                        enabled,
+                    }];
+                    if let Some(spd) = args.get("speed").and_then(Value::as_f64) {
+                        cmds.push(EditCommand::SetPlaybackSpeed {
+                            item_id: id,
+                            speed: (spd as f32).clamp(-8.0, 8.0),
+                            loop_playback: false,
+                        });
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::Batch {
+                                label: "オプティカルフロースロー設定".into(),
+                                commands: cmds,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "item_id": id, "optical_flow_interp": enabled }).to_string() }] }),
+                    )
+                }
+                other => Err(format!("unknown run_local_ai_vision action: {other}")),
+            }
+        }
+        "collab_diff_and_review" => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing string argument 'action'".to_string())?;
+            let s = &mut *guard;
+            match action {
+                "save_snapshot" => {
+                    let folder = s
+                        .folder
+                        .as_ref()
+                        .ok_or_else(|| "no project folder opened".to_string())?;
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("branch_snapshot");
+                    let path = folder
+                        .save_snapshot(name, &s.project)
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "saved_snapshot": name, "path": path.display().to_string() }).to_string() }] }),
+                    )
+                }
+                "list_snapshots" => {
+                    let list = s
+                        .folder
+                        .as_ref()
+                        .map(|f| f.list_snapshots())
+                        .unwrap_or_default();
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&list).unwrap_or_default() }] }),
+                    )
+                }
+                "diff_snapshots" => {
+                    let folder = s
+                        .folder
+                        .as_ref()
+                        .ok_or_else(|| "no project folder opened".to_string())?;
+                    let base_name = args
+                        .get("base_snapshot")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'base_snapshot'".to_string())?;
+                    let base_proj = folder.load_snapshot(base_name).map_err(|e| e.to_string())?;
+                    let target_proj =
+                        if let Some(tn) = args.get("target_snapshot").and_then(Value::as_str) {
+                            folder.load_snapshot(tn).map_err(|e| e.to_string())?
+                        } else {
+                            s.project.clone()
+                        };
+                    let diff = diff_projects(&base_proj, &target_proj);
+                    let report = format_diff_report(&diff);
+                    let text = serde_json::to_string_pretty(&json!({
+                        "total_changes": diff.total_changes(),
+                        "report": report,
+                        "diff": diff,
+                    }))
+                    .unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "merge_three_way" => {
+                    let folder = s
+                        .folder
+                        .as_ref()
+                        .ok_or_else(|| "no project folder opened".to_string())?;
+                    let base_name = args
+                        .get("base_snapshot")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'base_snapshot'".to_string())?;
+                    let theirs_name = args
+                        .get("theirs_snapshot")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'theirs_snapshot'".to_string())?;
+                    let base_proj = folder.load_snapshot(base_name).map_err(|e| e.to_string())?;
+                    let theirs_proj = folder
+                        .load_snapshot(theirs_name)
+                        .map_err(|e| e.to_string())?;
+
+                    let mut resolutions = BTreeMap::new();
+                    if let Some(obj) = args.get("resolutions").and_then(Value::as_object) {
+                        for (k, v) in obj {
+                            let res = match v.as_str().unwrap_or("keep_ours") {
+                                "keep_theirs" => ConflictResolution::KeepTheirs,
+                                "keep_both_duplicate" => ConflictResolution::KeepBothDuplicate,
+                                _ => ConflictResolution::KeepOurs,
+                            };
+                            resolutions.insert(k.clone(), res);
+                        }
+                    }
+
+                    let merged = merge_projects_three_way(
+                        &base_proj,
+                        &s.project,
+                        &theirs_proj,
+                        &resolutions,
+                    );
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+                    let applied = if apply && merged.conflicts.is_empty() {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::ReplaceProjectSnapshot {
+                                    project: Box::new(merged.merged_project.clone()),
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        true
+                    } else {
+                        false
+                    };
+                    let text = serde_json::to_string_pretty(&json!({
+                        "auto_merged_from_theirs": merged.auto_merged_from_theirs,
+                        "conflict_count": merged.conflicts.len(),
+                        "conflicts": merged.conflicts,
+                        "applied": applied,
+                    }))
+                    .unwrap_or_default();
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "add_review_comment" => {
+                    let t = parse_time_arg(args, "frame", "time_sec", fps, s.playhead);
+                    let author = args
+                        .get("author")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Reviewer");
+                    let body = args
+                        .get("body")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'body'".to_string())?;
+                    let mut comments = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .review_comments
+                        .clone();
+                    let comment = ReviewComment::new(t, author, body, ReviewSource::Internal);
+                    let cid = comment.id;
+                    comments.push(comment);
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetReviewComments { comments },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "comment_id": cid, "time_sec": t.as_seconds() }).to_string() }] }),
+                    )
+                }
+                "resolve_review_comment" => {
+                    let cid = parse_uuid(args, "comment_id")?;
+                    let new_status = match args
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("resolved")
+                    {
+                        "open" => ReviewStatus::Open,
+                        "in_progress" => ReviewStatus::InProgress,
+                        _ => ReviewStatus::Resolved,
+                    };
+                    let mut comments = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .review_comments
+                        .clone();
+                    let mut found = false;
+                    for c in &mut comments {
+                        if c.id == cid {
+                            c.status = new_status;
+                            found = true;
+                        }
+                    }
+                    if !found {
+                        return Err(format!("review comment not found: {cid}"));
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetReviewComments { comments },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "comment_id": cid, "status": new_status }).to_string() }] }),
+                    )
+                }
+                "import_reviews" => {
+                    let fmt = args
+                        .get("format")
+                        .and_then(Value::as_str)
+                        .unwrap_or("frameio_csv");
+                    let content = args
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'content'".to_string())?;
+                    let imported = match fmt {
+                        "json" => import_review_comments_json(content, fps)?,
+                        "youtube_text" => import_youtube_review_comments(content, fps),
+                        _ => import_review_comments_csv(content, fps),
+                    };
+                    let added = imported.len();
+                    let mut comments = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?
+                        .review_comments
+                        .clone();
+                    comments.extend(imported);
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetReviewComments { comments },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "imported_count": added, "format": fmt }).to_string() }] }),
+                    )
+                }
+                "export_reviews" => {
+                    let fmt = args
+                        .get("format")
+                        .and_then(Value::as_str)
+                        .unwrap_or("frameio_csv");
+                    let scene = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let text = match fmt {
+                        "json" => export_review_comments_json(&scene.review_comments),
+                        _ => export_review_comments_csv(&scene.review_comments, scene.fps),
+                    };
+                    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+                }
+                "convert_reviews_to_markers" => {
+                    let only_unresolved = args
+                        .get("only_unresolved")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let cmds = {
+                        let scene = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        build_review_comments_to_markers_commands(
+                            &scene.review_comments,
+                            only_unresolved,
+                        )
+                    };
+                    let count = cmds.len();
+                    if count > 0 {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: format!("レビューコメント→マーカー変換 ({count}件)"),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(
+                        json!({ "content": [{ "type": "text", "text": json!({ "converted_markers": count }).to_string() }] }),
+                    )
+                }
+                other => Err(format!("unknown collab_diff_and_review action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -5561,9 +6518,9 @@ mod tests {
             assert_eq!(s.camera.light.light_type, Light3DType::Point);
         }
 
-        // Verify exact MCP tool count = 54 (v1.0)
+        // Verify exact MCP tool count = 58 (v2.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 54);
+        assert_eq!(defs.as_array().unwrap().len(), 58);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -5758,7 +6715,284 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 54);
+        assert_eq!(defs.as_array().unwrap().len(), 58);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v20_mcp_tools_node_graph_ai_vision_director_and_collab() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v20_{}", Uuid::new_v4()));
+        let proj = Project::new("McpV20", ProjectSettings::default());
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let mut ed = EditorSession::new(proj);
+        ed.folder = Some(folder);
+        let session = Arc::new(Mutex::new(ed));
+
+        // 0. Add a subject shape clip
+        let obj_res = call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 0, "name": "Subject", "kind": "shape", "start_sec": 0.0, "duration_sec": 4.0, "width": 320.0, "height": 240.0}),
+        )
+        .unwrap();
+        let obj_id = serde_json::from_str::<Value>(obj_res["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // 1. #21 manage_node_graph: from_layers -> add_node -> validate -> sync_to_layers
+        let ng_gen = call_tool(
+            &session,
+            "manage_node_graph",
+            &json!({"action": "from_layers"}),
+        )
+        .unwrap();
+        assert!(
+            ng_gen["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("generated_from_layers")
+        );
+        let ng_add = call_tool(
+            &session,
+            "manage_node_graph",
+            &json!({"action": "add_node", "node_type": "channel_split", "name": "LumaSplit", "channel": "luma"}),
+        )
+        .unwrap();
+        assert!(
+            ng_add["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("created_node_id")
+        );
+        let ng_val = call_tool(
+            &session,
+            "manage_node_graph",
+            &json!({"action": "validate"}),
+        )
+        .unwrap();
+        assert!(
+            ng_val["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"valid\":true")
+        );
+        call_tool(
+            &session,
+            "manage_node_graph",
+            &json!({"action": "sync_to_layers"}),
+        )
+        .unwrap();
+
+        // 2. #22 run_local_ai_vision: status + segmentation + super_res + optical_flow + auto_reframe
+        let ai_st = call_tool(
+            &session,
+            "run_local_ai_vision",
+            &json!({"action": "status"}),
+        )
+        .unwrap();
+        assert!(
+            ai_st["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"local_only_guaranteed\": true")
+        );
+        call_tool(
+            &session,
+            "run_local_ai_vision",
+            &json!({"action": "apply_segmentation", "id": obj_id, "sensitivity": 0.6}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "run_local_ai_vision",
+            &json!({"action": "apply_super_resolution", "id": obj_id, "sharpen": 0.5}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "run_local_ai_vision",
+            &json!({"action": "set_optical_flow_slowmo", "id": obj_id, "enabled": true, "speed": 0.5}),
+        )
+        .unwrap();
+        let rf = call_tool(
+            &session,
+            "run_local_ai_vision",
+            &json!({"action": "auto_reframe", "target_width": 1080, "target_height": 1920, "apply": true}),
+        )
+        .unwrap();
+        assert!(
+            rf["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"applied\": true")
+        );
+        {
+            let g = session.lock().unwrap();
+            let s = g.project.active_scene().unwrap();
+            assert_eq!((s.width, s.height), (1080, 1920));
+            assert!(s.layers[0].items[0].playback.optical_flow_interp);
+            assert!(
+                s.layers[0].items[0]
+                    .effect_chain
+                    .iter()
+                    .any(|e| e.effect_type == "ai_segment")
+            );
+        }
+
+        // 3. #23 orchestrate_edit_recipe: list -> start_run (pauses at human approval gate) -> approve_gate -> completed -> export_yaml -> record_from_history
+        let rec_list = call_tool(
+            &session,
+            "orchestrate_edit_recipe",
+            &json!({"action": "list_recipes"}),
+        )
+        .unwrap();
+        assert!(
+            rec_list["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("YouTube")
+        );
+
+        let run_res = call_tool(
+            &session,
+            "orchestrate_edit_recipe",
+            &json!({
+                "action": "start_run",
+                "recipe_name": "YouTube 解説動画・標準ディレクターパイプライン",
+                "variables": { "title": "v2.0 MCP テストタイトル" },
+                "auto_run": true
+            }),
+        )
+        .unwrap();
+        let run_json: Value =
+            serde_json::from_str(run_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(run_json["status"], "awaiting_approval");
+
+        let approved_res = call_tool(
+            &session,
+            "orchestrate_edit_recipe",
+            &json!({"action": "approve_gate", "continue_after": true}),
+        )
+        .unwrap();
+        let approved_json: Value =
+            serde_json::from_str(approved_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(approved_json["status"], "completed");
+        assert_eq!(approved_json["logs"].as_array().unwrap().len(), 5);
+
+        let yaml_res = call_tool(
+            &session,
+            "orchestrate_edit_recipe",
+            &json!({"action": "export_yaml"}),
+        )
+        .unwrap();
+        assert!(
+            yaml_res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("steps:")
+        );
+
+        let rec_hist = call_tool(
+            &session,
+            "orchestrate_edit_recipe",
+            &json!({"action": "record_from_history", "name": "AutoRecorded"}),
+        )
+        .unwrap();
+        assert!(
+            rec_hist["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"status\": \"recorded\"")
+        );
+
+        // 4. #24 collab_diff_and_review: snapshot -> branch edit -> diff -> 3-way merge -> Frame.io/YouTube review import -> markers
+        call_tool(
+            &session,
+            "collab_diff_and_review",
+            &json!({"action": "save_snapshot", "name": "base_main"}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "add_object",
+            &json!({"layer_index": 2, "name": "BranchB_Title", "kind": "text", "content": "Branch B", "start_sec": 1.0, "duration_sec": 2.0}),
+        )
+        .unwrap();
+        call_tool(
+            &session,
+            "collab_diff_and_review",
+            &json!({"action": "save_snapshot", "name": "branch_b"}),
+        )
+        .unwrap();
+        // Rollback local main 1 step (Undo BranchB_Title) and add BranchA_Marker instead
+        {
+            let mut g = session.lock().unwrap();
+            let s = &mut *g;
+            assert!(s.bus.undo(&mut s.project));
+        }
+        call_tool(
+            &session,
+            "manage_markers",
+            &json!({"action": "add", "time_sec": 2.0, "label": "BranchA Marker"}),
+        )
+        .unwrap();
+        let diff_res = call_tool(
+            &session,
+            "collab_diff_and_review",
+            &json!({"action": "diff_snapshots", "base_snapshot": "base_main", "target_snapshot": "branch_b"}),
+        )
+        .unwrap();
+        assert!(
+            diff_res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("BranchB_Title")
+        );
+
+        let merge_res = call_tool(
+            &session,
+            "collab_diff_and_review",
+            &json!({"action": "merge_three_way", "base_snapshot": "base_main", "theirs_snapshot": "branch_b", "apply": true}),
+        )
+        .unwrap();
+        let merge_json: Value =
+            serde_json::from_str(merge_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(merge_json["conflict_count"], 0);
+        assert_eq!(merge_json["applied"], true);
+
+        let rev_imp = call_tool(
+            &session,
+            "collab_diff_and_review",
+            &json!({
+                "action": "import_reviews",
+                "format": "frameio_csv",
+                "content": "Timecode In,Commenter,Comment,Status\n00:00:01:00,Director,テロップもう少し太く,Open\n"
+            }),
+        )
+        .unwrap();
+        assert!(
+            rev_imp["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"imported_count\":1")
+        );
+        let mk_res = call_tool(
+            &session,
+            "collab_diff_and_review",
+            &json!({"action": "convert_reviews_to_markers", "only_unresolved": true}),
+        )
+        .unwrap();
+        assert!(
+            mk_res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("\"converted_markers\":1")
+        );
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 58);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

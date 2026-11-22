@@ -1077,8 +1077,8 @@ pub fn separate_vocal_bgm_stems(input: &ve_media::AudioBuffer) -> StemSeparation
 
     let mut vocal_samples = Vec::with_capacity(frames * 2);
     let mut bgm_samples = Vec::with_capacity(frames * 2);
-    for i in 0..frames {
-        let v = vocal_mono[i].clamp(-1.0, 1.0);
+    for (i, &vm) in vocal_mono.iter().enumerate().take(frames) {
+        let v = vm.clamp(-1.0, 1.0);
         let (orig_l, orig_r) = if ch >= 2 {
             (input.samples[i * ch], input.samples[i * ch + 1])
         } else {

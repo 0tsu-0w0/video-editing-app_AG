@@ -1,6 +1,7 @@
 pub mod animation;
 pub mod cache;
 pub mod camera;
+pub mod collab;
 pub mod command;
 pub mod delivery;
 pub mod encoding;
@@ -10,8 +11,10 @@ pub mod highlights;
 pub mod interop;
 pub mod lipsync;
 pub mod multicam;
+pub mod node_graph;
 pub mod preset;
 pub mod project;
+pub mod recipe;
 pub mod registry;
 pub mod script_import;
 pub mod settings;
@@ -23,6 +26,14 @@ pub mod timeline_ops;
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
 pub use cache::{CacheError, PersistentFrameCache, PrecompCacheManager, content_hash_hex};
 pub use camera::{Camera3D, Light3D, Light3DType, Projected3D, Transform3D};
+pub use collab::{
+    ConflictKind, ConflictResolution, DiffChangeKind, ItemDiff, LayerDiff, MarkerDiff,
+    MergeConflict, ProjectDiff, ReviewComment, ReviewReply, ReviewSource, ReviewStatus, SceneDiff,
+    ThreeWayMergeResult, build_review_comments_to_markers_commands, diff_projects,
+    export_review_comments_csv, export_review_comments_json, format_diff_report,
+    format_smpte_timecode, import_review_comments_csv, import_review_comments_json,
+    import_youtube_review_comments, merge_projects_three_way, parse_timecode_to_rational,
+};
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
 pub use delivery::{
     ArchivePackageSummary, DeliveryIssue, DeliveryReport, IssueSeverity, archive_project_to_zip,
@@ -52,6 +63,10 @@ pub use multicam::{
     MulticamAngle, MulticamCutPoint, MulticamGridLayout, build_multicam_switch_cut_commands,
     build_multicam_sync_align_commands,
 };
+pub use node_graph::{
+    ChannelSelector, CompositeNode, CompositeNodeKind, NodeCompositeGraph, NodeConnection,
+    NodeGraphError, NodeId, NodeToLayerSyncSummary, sync_node_graph_to_scene_layers,
+};
 pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor, TextStylePreset};
 pub use project::{
     AssetId, AssetRef, AudioDuckingConfig, AudioEffectNode, AudioReactiveBand, AudioReactiveConfig,
@@ -61,6 +76,12 @@ pub use project::{
     SceneId, ScenePreset, ShapeKind, TextAnimator, TextStyle, TimelineItem, TimelineMarker,
     TrackMatte, TrackMatteMode, TrackPointSample, Transform2D, TransitionKind, VectorFillMode,
     VectorShapeConfig,
+};
+pub use recipe::{
+    AgentRole, ApprovalGateStatus, EditRecipe, RecipeError, RecipeRunState, RecipeStep,
+    RecipeStepLog, VisualCheckExpectation, VisualCheckReport, builtin_edit_recipes,
+    parse_recipe_json_or_yaml, record_recipe_from_commands, resolve_template_vars,
+    serialize_recipe_json, serialize_recipe_yaml,
 };
 pub use registry::{
     ExtensionKind, RegistryEntry, SandboxPermission, official_registry_catalog, sha256_hex,

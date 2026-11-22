@@ -355,6 +355,8 @@ pub fn build_shorts_clip_scene_command(
         color_grade: src.color_grade.clone(),
         motion_blur: src.motion_blur,
         markers: Vec::new(),
+        node_graph: crate::node_graph::NodeCompositeGraph::default(),
+        review_comments: Vec::new(),
         layers: new_layers,
     };
 

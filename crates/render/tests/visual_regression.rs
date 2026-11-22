@@ -203,3 +203,39 @@ fn golden_parallel_batch_render_matches_sequential_bit_for_bit() {
         );
     }
 }
+
+#[test]
+fn golden_v20_node_graph_and_ai_vision_determinism() {
+    let mut proj = build_golden_test_project();
+    let t = RationalTime::from_seconds(1.0);
+
+    // 1. レイヤーレンダリングと NodeCompositeGraph::from_scene_layers の視覚一致を検証
+    let mut g_layers = RenderGraph::new();
+    let layer_rgba = g_layers
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap()
+        .to_rgba8_srgb();
+
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        scene.node_graph = ve_core::NodeCompositeGraph::from_scene_layers(scene);
+    }
+    let mut g_nodes = RenderGraph::new();
+    let node_rgba_1 = g_nodes
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let node_rgba_2 = RenderGraph::new()
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap()
+        .to_rgba8_srgb();
+
+    assert_eq!(
+        node_rgba_1, node_rgba_2,
+        "node graph rendering must be bit-for-bit deterministic"
+    );
+    assert_eq!(
+        layer_rgba, node_rgba_1,
+        "NodeCompositeGraph::from_scene_layers must reproduce layer composition bit-for-bit"
+    );
+}

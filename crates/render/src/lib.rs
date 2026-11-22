@@ -1,14 +1,23 @@
+pub mod ai_vision;
 pub mod color;
 pub mod color_grading;
 pub mod graph;
 pub mod hot_shader;
 pub mod mask_tracker;
+pub mod node_eval;
 pub mod pipeline;
 pub mod psd_sprite;
 pub mod sprite;
 pub mod text;
 pub mod v09_fx;
 
+pub use ai_vision::{
+    AutoReframeConfig, LocalVisionBackend, LocalVisionStatus, MotionVector, OpticalFlowConfig,
+    ReframeSample, SegmentationConfig, SuperResolutionConfig, analyze_scene_auto_reframe,
+    apply_ai_segmentation, apply_ai_super_res_detail, build_auto_reframe_commands,
+    detect_local_vision_status, detect_subject_focus_in_frame, estimate_optical_flow,
+    interpolate_frame_optical_flow, smooth_reframe_trajectory, upscale_super_resolution,
+};
 pub use color::{LinearImage, LinearPremul, linear_to_srgb, srgb_to_linear};
 pub use color_grading::{
     BUILTIN_LUT_PRESETS, CubeLut3D, HIST_BINS, PARADE_BINS, PARADE_COLS, VECTORSCOPE_SIZE,
@@ -20,6 +29,7 @@ pub use hot_shader::{
     HotShaderEntry, ShaderHotReloader, ShaderReloadStatus, register_shader_dir, validate_wgsl,
 };
 pub use mask_tracker::{apply_bezier_masks, track_point_across_frames, track_point_in_scene};
+pub use node_eval::{LayerRenderPacket, evaluate_node_composite_graph};
 pub use pipeline::{
     COMPOSITE_COMPUTE_WGSL_SOURCE, GpuEffectUniform, GpuPostProcessPass, HeadlessGpuOffloader,
     WgpuComputeCompositor, WgpuPreviewPipeline,
