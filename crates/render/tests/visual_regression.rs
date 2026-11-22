@@ -363,3 +363,66 @@ fn golden_v30_mesh3d_pbr_and_gpu_compute_determinism() {
     let caps = ve_render::detect_gpu_v30_capabilities();
     assert!(caps.color_shader_valid && caps.scopes_shader_valid && caps.composite_shader_valid);
 }
+
+#[test]
+fn golden_v40_acescg_generative_bg_and_physics_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        let bg = TimelineItem::new(
+            "Aurora BG",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::GenerativeBg {
+                config: ve_core::GenerativeBgConfig {
+                    preset: ve_core::GenerativeBgPreset::AuroraBorealis,
+                    width: scene.width as f32,
+                    height: scene.height as f32,
+                    ..ve_core::GenerativeBgPreset::for_preset(
+                        ve_core::GenerativeBgPreset::AuroraBorealis,
+                    )
+                },
+            },
+        );
+        scene.layers[0].items.insert(0, bg);
+        scene.color_management = ve_core::ColorManagementConfig {
+            enabled: true,
+            tone_mapper: ve_core::ToneMapper::AgX,
+            exposure_stops: 0.35,
+            ..ve_core::ColorManagementConfig::default()
+        };
+    }
+
+    let t0 = RationalTime::from_seconds(0.3);
+    let t1 = RationalTime::from_seconds(1.4);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let r1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let r2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    assert_eq!(
+        r1, r2,
+        "v4.0 ACEScg + GenerativeBg rendering must be bit-for-bit deterministic"
+    );
+
+    let later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let diff = r1.iter().zip(later.iter()).filter(|(a, b)| a != b).count();
+    assert!(
+        diff > 400,
+        "v4.0 GenerativeBg aurora must animate across frames: diff={diff}"
+    );
+
+    let (best_t, score, hero) =
+        ve_render::select_best_thumbnail_frame(&mut g1, &proj, proj.active_scene_id, 5)
+            .expect("hero thumbnail should succeed");
+    assert!(best_t >= 0.0 && score > 1.0);
+    assert_eq!((hero.width, hero.height), (1280, 720));
+}

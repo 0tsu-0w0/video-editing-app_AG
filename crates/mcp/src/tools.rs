@@ -8,43 +8,47 @@ use ve_ai::{
     import_tts_file_pair,
 };
 use ve_audio::{
-    AudioGraph, BeatDetectionConfig, DubbingVoicePreset, GeneratedDubClip,
+    AudioGraph, BeatDetectionConfig, DubbingVoicePreset, FoleyPreset, GeneratedDubClip,
     align_text_to_phoneme_segments, build_dubbing_timeline_commands, detect_audio_beats,
     estimate_audio_offset_xcorr, measure_integrated_lufs, measure_true_peak_dbtp,
-    separate_vocal_bgm_stems, synthesize_offline_dubbing_pcm,
+    separate_vocal_bgm_stems, synthesize_foley_sfx_pcm, synthesize_offline_dubbing_pcm,
+    write_stereo_wav_file,
 };
 use ve_core::{
-    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode, Camera3D,
-    ChannelSelector, CharacterSpriteConfig, ColorCurves, CommandSource, CompositeNode,
+    AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode,
+    BroadcastProfile, BroadcastQcMetrics, Camera3D, ChannelSelector, CharacterSpriteConfig,
+    ColorCurves, ColorManagementConfig, ColorSpace, CommandSource, CompositeNode,
     CompositeNodeKind, ConflictResolution, CornerPinConfig, CrdtOpKind, CrdtSyncLog, CubicBezier,
-    EditCommand, EditorKeymap, EffectNode, EffectPreset, FrameRate, HighlightConfig, Interpolation,
-    ItemKind, JumpCutConfig, Keyframe, KeymapPreset, KineticHighlightMode, KineticSubtitleConfig,
-    Light3DType, LipSyncMode, LocalizationEntry, LocalizationTable, MaskMode, MaskVertex,
-    MediaKind, Mesh3DConfig, Mesh3DPreset, MotionPreset, MulticamCutPoint, NodeCompositeGraph,
-    ParticleConfig, ParticlePreset, ProjectTemplate, PsdCharacterConfig, RationalTime,
-    ReviewComment, ReviewSource, ReviewStatus, RgbaColor, SceneColorGrade, ScriptBuildConfig,
-    ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem, TimelineMarker,
-    TrackMatte, TrackMatteMode, UiLanguage, UiThemePreset, VectorShapeConfig,
-    archive_project_to_zip, base64_encode, build_align_commands, build_apply_locale_commands,
-    build_bake_expression_command, build_beat_cut_commands, build_beat_markers_command,
-    build_close_gaps_commands, build_cube_mesh, build_fit_duration_to_layer_commands,
-    build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
-    build_multicam_switch_cut_commands, build_multicam_sync_align_commands,
-    build_replace_text_commands, build_review_comments_to_markers_commands,
-    build_script_timeline_commands, build_shorts_clip_scene_command,
-    build_strip_filler_words_commands, build_text_based_delete_commands,
-    build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
-    compile_expression, detect_speech_intervals_from_rms, diff_projects, encode_mesh_to_glb,
-    evaluate_item_property, export_ass_subtitles, export_localization_csv, export_otio_json,
+    EditCommand, EditorKeymap, EffectNode, EffectPreset, FrameRate, GenerativeBgConfig,
+    GenerativeBgPreset, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe,
+    KeymapPreset, KineticHighlightMode, KineticSubtitleConfig, Light3DType, LipSyncMode,
+    LocalizationEntry, LocalizationTable, MaskMode, MaskVertex, MediaKind, Mesh3DConfig,
+    Mesh3DPreset, MotionPreset, MulticamCutPoint, NodeCompositeGraph, ParticleConfig,
+    ParticlePreset, PhysicsConfig, PhysicsPreset, ProjectTemplate, PsdCharacterConfig,
+    RationalTime, ReviewComment, ReviewSource, ReviewStatus, RgbaColor, SceneColorGrade,
+    ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem,
+    TimelineMarker, ToneMapper, TrackMatte, TrackMatteMode, UiLanguage, UiThemePreset,
+    VectorShapeConfig, archive_project_to_zip, base64_encode, build_align_commands,
+    build_apply_locale_commands, build_bake_expression_command, build_beat_cut_commands,
+    build_beat_markers_command, build_close_gaps_commands, build_cube_mesh,
+    build_fit_duration_to_layer_commands, build_instantiate_template_command,
+    build_jump_cut_commands, build_motion_preset_commands, build_multicam_switch_cut_commands,
+    build_multicam_sync_align_commands, build_physics_bake_commands, build_replace_text_commands,
+    build_review_comments_to_markers_commands, build_script_timeline_commands,
+    build_shorts_clip_scene_command, build_strip_filler_words_commands,
+    build_text_based_delete_commands, build_text_based_reorder_commands, builtin_motion_templates,
+    builtin_project_templates, compile_expression, detect_speech_intervals_from_rms, diff_projects,
+    encode_mesh_to_glb, evaluate_item_property, export_ass_subtitles, export_localization_csv,
+    export_ocio_config_yaml, export_otio_json, export_portable_web_review_html,
     export_review_comments_csv, export_review_comments_json, export_srt_subtitles,
     extract_highlight_candidates, extract_localization_table, extract_motion_template_from_scene,
     extract_transcript_entries, format_diff_report, format_youtube_chapters,
     import_localization_csv, import_review_comments_csv, import_review_comments_json,
     import_youtube_review_comments, merge_projects_three_way, official_registry_catalog,
     parse_ass_subtitles, parse_aviutl_exo, parse_gltf_or_glb, parse_script_auto,
-    parse_srt_subtitles, search_text_items, subtitle_entries_to_commands,
-    sync_node_graph_to_scene_layers, validate_project_delivery, verify_and_install_extension,
-    wrap_subtitle_japanese,
+    parse_srt_subtitles, run_broadcast_qc_audit, search_text_items, simulate_scene_physics,
+    subtitle_entries_to_commands, sync_node_graph_to_scene_layers, validate_project_delivery,
+    verify_and_install_extension, wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, HwDecodeBackend, VideoEncoder, decode_audio_file,
@@ -56,7 +60,8 @@ use ve_render::{
     analyze_camera_shake, analyze_scene_auto_reframe, benchmark_v30_gpu_pipeline,
     build_3d_camera_track_command, build_auto_reframe_commands, build_stabilize_commands,
     compute_auto_color_match, detect_gpu_v30_capabilities, detect_local_vision_status,
-    emit_sample_cube_luts, run_gpu_or_cpu_grade_and_scopes, validate_wgsl,
+    emit_sample_cube_luts, encode_linear_image_png_bytes, measure_scene_video_qc_metrics,
+    run_gpu_or_cpu_grade_and_scopes, select_best_thumbnail_frame, validate_wgsl,
 };
 
 const MAX_BATCH_COMMANDS: usize = 500;
@@ -1250,6 +1255,121 @@ pub fn tool_definitions() -> Value {
                     "label": { "type": "string" },
                     "delta_json": { "type": "string" },
                     "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "aces_color_management",
+            "description": "v4.0 #33: ACEScg (AP1) / OpenColorIO v2 プロカラー管理（Sony S-Log3・Panasonic V-Log・ARRI LogC3 IDT、ACES 1.3 ガマット圧縮、ACES Fitted / AgX / Reinhard トーンマップ、Display P3 / Rec.2020 ODT、`.ocio` YAML 書き出し）を制御する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get_config", "set_config", "export_ocio"]
+                    },
+                    "enabled": { "type": "boolean" },
+                    "input_idt": {
+                        "type": "string",
+                        "enum": ["linear_srgb", "aces_cg", "display_p3", "rec2020", "s_log3", "v_log", "log_c3"]
+                    },
+                    "working_space": {
+                        "type": "string",
+                        "enum": ["linear_srgb", "aces_cg", "display_p3", "rec2020"]
+                    },
+                    "output_odt": {
+                        "type": "string",
+                        "enum": ["linear_srgb", "display_p3", "rec2020"]
+                    },
+                    "tone_mapper": {
+                        "type": "string",
+                        "enum": ["none", "aces_fitted", "ag_x", "reinhard_extended"]
+                    },
+                    "exposure_stops": { "type": "number" },
+                    "gamut_compress": { "type": "boolean" },
+                    "output_path": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "physics_simulate_and_bake",
+            "description": "v4.0 #34: 決定論的 60Hz リジッドボディ物理演算シミュレーション（重力バウンス・ドミノ連鎖衝突・無重力浮遊・軌道ボテックス）を実行し、軌跡プレビュー取得または 1-Undo キーフレーム自動ベイクを行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["preview_trajectory", "bake_keyframes"]
+                    },
+                    "item_ids": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["bouncing_title", "domino_cascade", "zero_gravity_float", "orbital_vortex"]
+                    },
+                    "gravity_y": { "type": "number" },
+                    "restitution": { "type": "number" },
+                    "friction": { "type": "number" },
+                    "air_drag": { "type": "number" },
+                    "initial_vx": { "type": "number" },
+                    "initial_vy": { "type": "number" },
+                    "initial_spin_deg": { "type": "number" },
+                    "central_attract": { "type": "number" },
+                    "duration_sec": { "type": "number" },
+                    "bake_step_frames": { "type": "integer" },
+                    "floor_ratio": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "generative_bg_and_foley",
+            "description": "v4.0 #35: オフライン・プロシージャル背景ジェネレーター（オーロラ・シネマ玉ボケ・サイバー3Dグリッド・リキッドマーブル・ワープ星雲・アブストラクト波）の配置・編集と、プロシージャル Foley/SFX 効果音（ウーッシュ・重低音インパクト・UIポップ・グリッチ・雨音・ライザー）48kHz ステレオ WAV 合成＆タイムライン配置を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add_generative_bg", "update_generative_bg", "synthesize_foley_sfx"]
+                    },
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "preset": { "type": "string" },
+                    "layer_index": { "type": "integer" },
+                    "audio_layer_index": { "type": "integer" },
+                    "start_sec": { "type": "number" },
+                    "duration_sec": { "type": "number" },
+                    "seed": { "type": "integer" },
+                    "speed": { "type": "number" },
+                    "scale": { "type": "number" },
+                    "complexity": { "type": "integer" },
+                    "width": { "type": "number" },
+                    "height": { "type": "number" },
+                    "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "broadcast_qc_and_web_export",
+            "description": "v4.0 #36: 放送・配信コンプライアンス QC 監査（ITU-R BS.1770 True-Peak/LUFS・ITU-R BT.1702 光過敏フラッシュ検査・輝度ガマット検査）、高クリック率ヒーローサムネイル（1280x720 PNG）自動抽出、およびサーバー不要・自己完結型 HTML5 インタラクティブレビュープレイヤー書き出しを実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["run_qc_audit", "generate_hero_thumbnail", "export_web_review_html"]
+                    },
+                    "profile": {
+                        "type": "string",
+                        "enum": ["youtube1080p", "broadcast_itu_ebu_r128", "shorts_tiktok9x16", "cinema_dci4k"]
+                    },
+                    "sample_count": { "type": "integer" },
+                    "output_path": { "type": "string" }
                 }
             }
         }
@@ -7486,6 +7606,712 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 other => Err(format!("unknown crdt_realtime_collab action: {other}")),
             }
         }
+        "aces_color_management" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let parse_cs = |k: &str, fallback: ColorSpace| -> ColorSpace {
+                match args.get(k).and_then(Value::as_str) {
+                    Some("linear_srgb") => ColorSpace::LinearSrgb,
+                    Some("aces_cg") => ColorSpace::AcesCg,
+                    Some("display_p3") => ColorSpace::DisplayP3,
+                    Some("rec2020") => ColorSpace::Rec2020,
+                    Some("s_log3") => ColorSpace::SLog3,
+                    Some("v_log") => ColorSpace::VLog,
+                    Some("log_c3") => ColorSpace::LogC3,
+                    _ => fallback,
+                }
+            };
+            let parse_tm = |k: &str, fallback: ToneMapper| -> ToneMapper {
+                match args.get(k).and_then(Value::as_str) {
+                    Some("none") => ToneMapper::None,
+                    Some("aces_fitted") => ToneMapper::AcesFitted,
+                    Some("ag_x") => ToneMapper::AgX,
+                    Some("reinhard_extended") => ToneMapper::ReinhardExtended,
+                    _ => fallback,
+                }
+            };
+            match action {
+                "get_config" => {
+                    let cfg = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.color_management)
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&cfg).unwrap_or_default() }]
+                    }))
+                }
+                "set_config" => {
+                    let cur = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.color_management)
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let next = ColorManagementConfig {
+                        enabled: args
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(cur.enabled),
+                        input_idt: parse_cs("input_idt", cur.input_idt),
+                        working_space: parse_cs("working_space", cur.working_space),
+                        output_odt: parse_cs("output_odt", cur.output_odt),
+                        tone_mapper: parse_tm("tone_mapper", cur.tone_mapper),
+                        exposure_stops: finite_clamped(
+                            args.get("exposure_stops"),
+                            f64::from(cur.exposure_stops),
+                            -4.0,
+                            4.0,
+                        ) as f32,
+                        gamut_compress: args
+                            .get("gamut_compress")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(cur.gamut_compress),
+                    };
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetColorManagement { config: next },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "applied": true, "config": next }).to_string()
+                        }]
+                    }))
+                }
+                "export_ocio" => {
+                    let cfg = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.color_management)
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let yaml = export_ocio_config_yaml(&cfg);
+                    let saved_path =
+                        if let Some(p) = args.get("output_path").and_then(Value::as_str) {
+                            let out_p = PathBuf::from(p);
+                            if let Some(parent) = out_p.parent()
+                                && !parent.as_os_str().is_empty()
+                            {
+                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            std::fs::write(&out_p, &yaml).map_err(|e| e.to_string())?;
+                            Some(out_p.display().to_string())
+                        } else {
+                            None
+                        };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "ocio_yaml": yaml, "saved_path": saved_path }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown aces_color_management action: {other}")),
+            }
+        }
+        "physics_simulate_and_bake" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let preset = match args.get("preset").and_then(Value::as_str) {
+                Some("domino_cascade") => PhysicsPreset::DominoCascade,
+                Some("zero_gravity_float") => PhysicsPreset::ZeroGravityFloat,
+                Some("orbital_vortex") => PhysicsPreset::OrbitalVortex,
+                _ => PhysicsPreset::BouncingTitle,
+            };
+            let base = preset.default_config();
+            let cfg = PhysicsConfig {
+                preset,
+                gravity_y: finite_clamped(
+                    args.get("gravity_y"),
+                    f64::from(base.gravity_y),
+                    -4000.0,
+                    4000.0,
+                ) as f32,
+                restitution: finite_clamped(
+                    args.get("restitution"),
+                    f64::from(base.restitution),
+                    0.0,
+                    1.0,
+                ) as f32,
+                friction: finite_clamped(args.get("friction"), f64::from(base.friction), 0.5, 1.0)
+                    as f32,
+                air_drag: finite_clamped(args.get("air_drag"), f64::from(base.air_drag), 0.0, 0.5)
+                    as f32,
+                initial_vx: finite_clamped(
+                    args.get("initial_vx"),
+                    f64::from(base.initial_vx),
+                    -3000.0,
+                    3000.0,
+                ) as f32,
+                initial_vy: finite_clamped(
+                    args.get("initial_vy"),
+                    f64::from(base.initial_vy),
+                    -3000.0,
+                    3000.0,
+                ) as f32,
+                initial_spin_deg: finite_clamped(
+                    args.get("initial_spin_deg"),
+                    f64::from(base.initial_spin_deg),
+                    -720.0,
+                    720.0,
+                ) as f32,
+                central_attract: finite_clamped(
+                    args.get("central_attract"),
+                    f64::from(base.central_attract),
+                    0.0,
+                    3000.0,
+                ) as f32,
+                duration_sec: finite_clamped(
+                    args.get("duration_sec"),
+                    base.duration_sec,
+                    0.2,
+                    30.0,
+                ),
+                bake_step_frames: args
+                    .get("bake_step_frames")
+                    .and_then(Value::as_u64)
+                    .map(|v| v.clamp(1, 30) as u32)
+                    .unwrap_or(base.bake_step_frames),
+                floor_ratio: finite_clamped(
+                    args.get("floor_ratio"),
+                    f64::from(base.floor_ratio),
+                    0.2,
+                    0.98,
+                ) as f32,
+            };
+
+            let target_ids: Vec<Uuid> = {
+                let sc = s
+                    .project
+                    .active_scene()
+                    .ok_or_else(|| "no active scene".to_string())?;
+                if let Some(arr) = args.get("item_ids").and_then(Value::as_array)
+                    && !arr.is_empty()
+                {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().and_then(|st| Uuid::parse_str(st).ok()))
+                        .collect()
+                } else {
+                    sc.layers
+                        .iter()
+                        .flat_map(|l| l.items.iter())
+                        .filter(|i| {
+                            !matches!(
+                                i.kind,
+                                ItemKind::Audio { .. }
+                                    | ItemKind::FilterObject { .. }
+                                    | ItemKind::Transition { .. }
+                                    | ItemKind::GroupControl { .. }
+                                    | ItemKind::GenerativeBg { .. }
+                            )
+                        })
+                        .take(12)
+                        .map(|i| i.id)
+                        .collect()
+                }
+            };
+
+            if target_ids.is_empty() {
+                return Err("物理演算の対象オブジェクトが見つかりません".into());
+            }
+
+            match action {
+                "preview_trajectory" => {
+                    let sc = s
+                        .project
+                        .active_scene()
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let trajectories = simulate_scene_physics(sc, &target_ids, &cfg);
+                    let total_bounces: u32 = trajectories.iter().map(|t| t.bounce_count).sum();
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "body_count": trajectories.len(),
+                                "total_bounces": total_bounces,
+                                "trajectories": trajectories
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "bake_keyframes" => {
+                    let (trajectories, cmds) = {
+                        let sc = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        build_physics_bake_commands(sc, &target_ids, &cfg)
+                    };
+                    let cmd_count = cmds.len();
+                    let total_bounces: u32 = trajectories.iter().map(|t| t.bounce_count).sum();
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::Batch {
+                                label: format!("2D 剛体物理ベイク ({}体)", trajectories.len()),
+                                commands: cmds,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "baked": true,
+                                "body_count": trajectories.len(),
+                                "keyframe_commands": cmd_count,
+                                "total_bounces": total_bounces
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown physics_simulate_and_bake action: {other}")),
+            }
+        }
+        "generative_bg_and_foley" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let parse_bg_preset = |raw: Option<&str>| -> GenerativeBgPreset {
+                match raw {
+                    Some("cinema_bokeh") => GenerativeBgPreset::CinemaBokeh,
+                    Some("cyber_grid3d") | Some("cyber_grid_3d") => GenerativeBgPreset::CyberGrid3D,
+                    Some("liquid_marble") => GenerativeBgPreset::LiquidMarble,
+                    Some("starfield_warp") => GenerativeBgPreset::StarfieldWarp,
+                    Some("abstract_waves") => GenerativeBgPreset::AbstractWaves,
+                    _ => GenerativeBgPreset::AuroraBorealis,
+                }
+            };
+
+            match action {
+                "add_generative_bg" => {
+                    let (sc_w, sc_h, layer_count) = {
+                        let sc = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        (sc.width as f32, sc.height as f32, sc.layers.len())
+                    };
+                    let preset = parse_bg_preset(args.get("preset").and_then(Value::as_str));
+                    let base = GenerativeBgPreset::for_preset(preset);
+                    let cfg = GenerativeBgConfig {
+                        preset,
+                        seed: args
+                            .get("seed")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(base.seed),
+                        speed: finite_clamped(args.get("speed"), f64::from(base.speed), 0.0, 10.0)
+                            as f32,
+                        scale: finite_clamped(args.get("scale"), f64::from(base.scale), 0.1, 10.0)
+                            as f32,
+                        complexity: args
+                            .get("complexity")
+                            .and_then(Value::as_u64)
+                            .map(|v| v.clamp(1, 8) as u32)
+                            .unwrap_or(base.complexity),
+                        width: finite_clamped(args.get("width"), f64::from(sc_w), 32.0, 8192.0)
+                            as f32,
+                        height: finite_clamped(args.get("height"), f64::from(sc_h), 32.0, 8192.0)
+                            as f32,
+                        ..base
+                    };
+                    let layer_index = args
+                        .get("layer_index")
+                        .and_then(Value::as_u64)
+                        .map(|v| (v as usize).min(layer_count.saturating_sub(1)))
+                        .unwrap_or(0);
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        0.0,
+                        0.0,
+                        36000.0,
+                    ));
+                    let dur = RationalTime::from_seconds(finite_clamped(
+                        args.get("duration_sec"),
+                        5.0,
+                        0.1,
+                        3600.0,
+                    ));
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(preset.display_name())
+                        .to_string();
+                    let item =
+                        TimelineItem::new(name, start, dur, ItemKind::GenerativeBg { config: cfg });
+                    let item_id = item.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddObject { layer_index, item },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "item_id": item_id.to_string(), "preset": preset, "config": cfg }).to_string()
+                        }]
+                    }))
+                }
+                "update_generative_bg" => {
+                    let id_str = args
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'id'".to_string())?;
+                    let item_id = Uuid::parse_str(id_str).map_err(|e| e.to_string())?;
+                    let cur = {
+                        let sc = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        sc.layers
+                            .iter()
+                            .flat_map(|l| l.items.iter())
+                            .find_map(|i| {
+                                if i.id == item_id
+                                    && let ItemKind::GenerativeBg { config } = i.kind
+                                {
+                                    Some(config)
+                                } else {
+                                    None
+                                }
+                            })
+                            .ok_or_else(|| format!("GenerativeBg item not found: {item_id}"))?
+                    };
+                    let next_preset = if args.get("preset").is_some() {
+                        parse_bg_preset(args.get("preset").and_then(Value::as_str))
+                    } else {
+                        cur.preset
+                    };
+                    let base = if next_preset != cur.preset {
+                        let mut p = GenerativeBgPreset::for_preset(next_preset);
+                        p.width = cur.width;
+                        p.height = cur.height;
+                        p
+                    } else {
+                        cur
+                    };
+                    let next = GenerativeBgConfig {
+                        preset: next_preset,
+                        seed: args
+                            .get("seed")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(base.seed),
+                        speed: finite_clamped(args.get("speed"), f64::from(base.speed), 0.0, 10.0)
+                            as f32,
+                        scale: finite_clamped(args.get("scale"), f64::from(base.scale), 0.1, 10.0)
+                            as f32,
+                        complexity: args
+                            .get("complexity")
+                            .and_then(Value::as_u64)
+                            .map(|v| v.clamp(1, 8) as u32)
+                            .unwrap_or(base.complexity),
+                        width: finite_clamped(
+                            args.get("width"),
+                            f64::from(base.width),
+                            32.0,
+                            8192.0,
+                        ) as f32,
+                        height: finite_clamped(
+                            args.get("height"),
+                            f64::from(base.height),
+                            32.0,
+                            8192.0,
+                        ) as f32,
+                        ..base
+                    };
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetGenerativeBg {
+                                item_id,
+                                config: next,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "item_id": item_id.to_string(), "config": next }).to_string()
+                        }]
+                    }))
+                }
+                "synthesize_foley_sfx" => {
+                    let preset = FoleyPreset::from_id(
+                        args.get("preset")
+                            .and_then(Value::as_str)
+                            .unwrap_or("whoosh_transition"),
+                    );
+                    let dur_sec = finite_clamped(
+                        args.get("duration_sec"),
+                        f64::from(preset.default_duration_sec()),
+                        0.08,
+                        30.0,
+                    ) as f32;
+                    let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(40_2026);
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        0.0,
+                        0.0,
+                        36000.0,
+                    ));
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let sr = s.project.settings.audio_sample_rate.max(8_000);
+                    let pcm = synthesize_foley_sfx_pcm(preset, dur_sec, sr, seed);
+
+                    let out_dir = s
+                        .folder
+                        .as_ref()
+                        .map(|f| f.assets_dir().join("foley"))
+                        .unwrap_or_else(|| std::env::temp_dir().join("ve_foley"));
+                    let wav_name = format!("foley_{}_{seed}.wav", preset.id());
+                    let wav_path = out_dir.join(&wav_name);
+                    write_stereo_wav_file(&wav_path, &pcm, sr)?;
+
+                    let asset_id = Uuid::new_v4();
+                    s.project.assets.push(AssetRef {
+                        id: asset_id,
+                        name: wav_name.clone(),
+                        relative_path: Some(PathBuf::from("assets/foley").join(&wav_name)),
+                        fallback_absolute_path: Some(wav_path.clone()),
+                        collected: true,
+                        kind: MediaKind::Audio,
+                    });
+
+                    let mut placed_item_id: Option<String> = None;
+                    if apply {
+                        let layer_count = s
+                            .project
+                            .active_scene()
+                            .map(|sc| sc.layers.len())
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        let audio_layer = args
+                            .get("audio_layer_index")
+                            .and_then(Value::as_u64)
+                            .map(|v| (v as usize).min(layer_count.saturating_sub(1)))
+                            .unwrap_or_else(|| layer_count.saturating_sub(1));
+                        let clip = TimelineItem::new(
+                            format!("SFX: {}", preset.display_name()),
+                            start,
+                            RationalTime::from_seconds(f64::from(dur_sec)),
+                            ItemKind::Audio {
+                                asset_id,
+                                source_offset: RationalTime::ZERO,
+                                volume: 0.9,
+                            },
+                        );
+                        placed_item_id = Some(clip.id.to_string());
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::AddObject {
+                                    layer_index: audio_layer,
+                                    item: clip,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "preset": preset.id(),
+                                "wav_path": wav_path.display().to_string(),
+                                "asset_id": asset_id.to_string(),
+                                "item_id": placed_item_id,
+                                "duration_sec": dur_sec,
+                                "sample_rate": sr,
+                                "applied": apply
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown generative_bg_and_foley action: {other}")),
+            }
+        }
+        "broadcast_qc_and_web_export" => {
+            let s = &*guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let profile = match args.get("profile").and_then(Value::as_str) {
+                Some("broadcast_itu_ebu_r128") => BroadcastProfile::BroadcastItuEbuR128,
+                Some("shorts_tiktok9x16") => BroadcastProfile::ShortsTikTok9x16,
+                Some("cinema_dci4k") => BroadcastProfile::CinemaDci4k,
+                _ => BroadcastProfile::YouTube1080p,
+            };
+            let sample_count = args
+                .get("sample_count")
+                .and_then(Value::as_u64)
+                .map(|v| v.clamp(4, 24) as usize)
+                .unwrap_or(8);
+
+            let scene_id = s.project.active_scene_id;
+            let mut rg = RenderGraph::new();
+            rg.set_project_folder(s.folder.clone());
+
+            let compute_qc = |rg: &mut RenderGraph| -> Result<ve_core::BroadcastQcReport, String> {
+                let (
+                    peak_luma_ire,
+                    clipped_highlight_pct,
+                    crushed_shadow_pct,
+                    max_frame_luma_jump_ire,
+                ) = measure_scene_video_qc_metrics(rg, &s.project, scene_id, sample_count);
+                let dur = s
+                    .project
+                    .active_scene()
+                    .map(|sc| sc.total_duration().as_seconds().clamp(0.5, 30.0))
+                    .ok_or_else(|| "no active scene".to_string())?;
+                let sr = s.project.settings.audio_sample_rate.max(8_000);
+                let ag =
+                    AudioGraph::from_project_scene(&s.project, scene_id, s.folder.as_ref(), sr);
+                let pcm = if ag.clips.is_empty() {
+                    Vec::new()
+                } else {
+                    ag.render_range(RationalTime::ZERO, RationalTime::from_seconds(dur))
+                };
+                let true_peak_dbtp = if pcm.is_empty() {
+                    -96.0
+                } else {
+                    measure_true_peak_dbtp(&pcm, ag.channels)
+                };
+                let integrated_lufs = if pcm.is_empty() {
+                    -70.0
+                } else {
+                    measure_integrated_lufs(&pcm, sr)
+                };
+                let metrics = BroadcastQcMetrics {
+                    peak_luma_ire,
+                    clipped_highlight_pct,
+                    crushed_shadow_pct,
+                    max_frame_luma_jump_ire,
+                    true_peak_dbtp,
+                    integrated_lufs,
+                };
+                Ok(run_broadcast_qc_audit(&s.project, profile, metrics))
+            };
+
+            match action {
+                "run_qc_audit" => {
+                    let report = compute_qc(&mut rg)?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&report).unwrap_or_default() }]
+                    }))
+                }
+                "generate_hero_thumbnail" => {
+                    let (best_t, score, hero) =
+                        select_best_thumbnail_frame(&mut rg, &s.project, scene_id, sample_count)
+                            .ok_or_else(|| "ヒーローサムネイルの抽出に失敗しました".to_string())?;
+                    let png_bytes = encode_linear_image_png_bytes(&hero)?;
+                    let out_path = if let Some(p) = args.get("output_path").and_then(Value::as_str)
+                    {
+                        PathBuf::from(p)
+                    } else {
+                        s.folder
+                            .as_ref()
+                            .map(|f| f.root().join("exports").join("hero_thumbnail_1280x720.png"))
+                            .unwrap_or_else(|| {
+                                std::env::temp_dir().join("ve_hero_thumbnail_1280x720.png")
+                            })
+                    };
+                    if let Some(parent) = out_path.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    std::fs::write(&out_path, &png_bytes).map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "timestamp_sec": best_t,
+                                "attractiveness_score": score,
+                                "width": hero.width,
+                                "height": hero.height,
+                                "bytes": png_bytes.len(),
+                                "output_path": out_path.display().to_string()
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "export_web_review_html" => {
+                    let report = compute_qc(&mut rg)?;
+                    let dur = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.total_duration().as_seconds().max(0.5))
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let mut previews: Vec<(f64, String)> = Vec::new();
+                    for i in 0..sample_count {
+                        let t_sec = dur * (i as f64) / ((sample_count - 1).max(1) as f64);
+                        if let Some(img) = rg.render_project_scene_scaled(
+                            &s.project,
+                            scene_id,
+                            RationalTime::from_seconds(t_sec),
+                            480,
+                            270,
+                            false,
+                        ) && let Ok(png) = encode_linear_image_png_bytes(&img)
+                        {
+                            previews.push((t_sec, base64_encode(&png)));
+                        }
+                    }
+                    let html = export_portable_web_review_html(&s.project, &report, &previews);
+                    let out_path = if let Some(p) = args.get("output_path").and_then(Value::as_str)
+                    {
+                        PathBuf::from(p)
+                    } else {
+                        s.folder
+                            .as_ref()
+                            .map(|f| f.root().join("exports").join("portable_review_player.html"))
+                            .unwrap_or_else(|| {
+                                std::env::temp_dir().join("ve_portable_review_player.html")
+                            })
+                    };
+                    if let Some(parent) = out_path.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    std::fs::write(&out_path, &html).map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "output_path": out_path.display().to_string(),
+                                "embedded_frames": previews.len(),
+                                "html_bytes": html.len(),
+                                "overall_pass": report.overall_pass
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown broadcast_qc_and_web_export action: {other}"
+                )),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -8139,7 +8965,7 @@ mod tests {
 
         // Verify exact MCP tool count = 58 (v2.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 66);
+        assert_eq!(defs.as_array().unwrap().len(), 70);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -8334,7 +9160,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 66);
+        assert_eq!(defs.as_array().unwrap().len(), 70);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -8611,7 +9437,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 66);
+        assert_eq!(defs.as_array().unwrap().len(), 70);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -8829,7 +9655,7 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 66);
+        assert_eq!(defs.as_array().unwrap().len(), 70);
     }
 
     #[test]
@@ -9022,7 +9848,215 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 66);
+        assert_eq!(defs.as_array().unwrap().len(), 70);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v40_mcp_tools_aces_physics_generative_and_qc() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v40_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let mut proj = Project::new("v4.0 Master Studio Test", ProjectSettings::default());
+        proj.active_scene_mut().unwrap().width = 320;
+        proj.active_scene_mut().unwrap().height = 180;
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let session = std::sync::Arc::new(std::sync::Mutex::new(EditorSession::with_folder(
+            proj, folder,
+        )));
+
+        // 1. #33 aces_color_management: set_config + export_ocio
+        let ocio_path = tmp_dir.join("studio_v4.ocio");
+        let cm_res = call_tool(
+            &session,
+            "aces_color_management",
+            &json!({
+                "action": "set_config",
+                "enabled": true,
+                "input_idt": "s_log3",
+                "working_space": "aces_cg",
+                "output_odt": "display_p3",
+                "tone_mapper": "ag_x",
+                "exposure_stops": 0.4,
+                "gamut_compress": true
+            }),
+        )
+        .unwrap();
+        let cm_json: Value =
+            serde_json::from_str(cm_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(cm_json["applied"], true);
+        assert_eq!(cm_json["config"]["tone_mapper"], "ag_x");
+
+        let ocio_res = call_tool(
+            &session,
+            "aces_color_management",
+            &json!({
+                "action": "export_ocio",
+                "output_path": ocio_path.display().to_string()
+            }),
+        )
+        .unwrap();
+        let ocio_json: Value =
+            serde_json::from_str(ocio_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            ocio_json["ocio_yaml"]
+                .as_str()
+                .unwrap()
+                .contains("ocio_profile_version: 2")
+        );
+        assert!(ocio_path.exists());
+
+        // 2. #35 generative_bg_and_foley: add_generative_bg + update + synthesize_foley_sfx
+        let bg_res = call_tool(
+            &session,
+            "generative_bg_and_foley",
+            &json!({
+                "action": "add_generative_bg",
+                "preset": "cyber_grid3d",
+                "layer_index": 0,
+                "start_sec": 0.0,
+                "duration_sec": 3.0,
+                "speed": 1.4
+            }),
+        )
+        .unwrap();
+        let bg_json: Value =
+            serde_json::from_str(bg_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        let bg_id = bg_json["item_id"].as_str().unwrap().to_string();
+
+        call_tool(
+            &session,
+            "generative_bg_and_foley",
+            &json!({
+                "action": "update_generative_bg",
+                "id": bg_id,
+                "preset": "aurora_borealis",
+                "complexity": 5
+            }),
+        )
+        .unwrap();
+
+        let sfx_res = call_tool(
+            &session,
+            "generative_bg_and_foley",
+            &json!({
+                "action": "synthesize_foley_sfx",
+                "preset": "sub_bass_impact",
+                "duration_sec": 0.8,
+                "audio_layer_index": 3,
+                "apply": true
+            }),
+        )
+        .unwrap();
+        let sfx_json: Value =
+            serde_json::from_str(sfx_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(sfx_json["applied"], true);
+        assert!(std::path::Path::new(sfx_json["wav_path"].as_str().unwrap()).exists());
+
+        // 3. #34 physics_simulate_and_bake: add a title text item, preview trajectory & bake keyframes
+        let txt = call_tool(
+            &session,
+            "add_object",
+            &json!({
+                "layer_index": 1,
+                "name": "PhysicsTitle",
+                "kind": "text",
+                "content": "PHYSICS V4",
+                "start_sec": 0.0,
+                "duration_sec": 3.0
+            }),
+        )
+        .unwrap();
+        let txt_id = serde_json::from_str::<Value>(txt["content"][0]["text"].as_str().unwrap())
+            .unwrap()["created_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let phys_prev = call_tool(
+            &session,
+            "physics_simulate_and_bake",
+            &json!({
+                "action": "preview_trajectory",
+                "item_ids": [txt_id.clone()],
+                "preset": "bouncing_title",
+                "duration_sec": 2.0
+            }),
+        )
+        .unwrap();
+        let phys_prev_json: Value =
+            serde_json::from_str(phys_prev["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(phys_prev_json["body_count"], 1);
+        assert!(phys_prev_json["total_bounces"].as_u64().unwrap() >= 1);
+
+        let phys_bake = call_tool(
+            &session,
+            "physics_simulate_and_bake",
+            &json!({
+                "action": "bake_keyframes",
+                "item_ids": [txt_id],
+                "preset": "bouncing_title",
+                "duration_sec": 2.0
+            }),
+        )
+        .unwrap();
+        let phys_bake_json: Value =
+            serde_json::from_str(phys_bake["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(phys_bake_json["baked"], true);
+        assert!(phys_bake_json["keyframe_commands"].as_u64().unwrap() >= 30);
+
+        // 4. #36 broadcast_qc_and_web_export: run_qc_audit + generate_hero_thumbnail + export_web_review_html
+        let qc_res = call_tool(
+            &session,
+            "broadcast_qc_and_web_export",
+            &json!({
+                "action": "run_qc_audit",
+                "profile": "youtube1080p",
+                "sample_count": 4
+            }),
+        )
+        .unwrap();
+        let qc_json: Value =
+            serde_json::from_str(qc_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(qc_json["checks"].as_array().unwrap().len() >= 6);
+
+        let thumb_path = tmp_dir.join("hero_thumb.png");
+        let thumb_res = call_tool(
+            &session,
+            "broadcast_qc_and_web_export",
+            &json!({
+                "action": "generate_hero_thumbnail",
+                "sample_count": 4,
+                "output_path": thumb_path.display().to_string()
+            }),
+        )
+        .unwrap();
+        let thumb_json: Value =
+            serde_json::from_str(thumb_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(thumb_json["width"], 1280);
+        assert_eq!(thumb_json["height"], 720);
+        assert!(thumb_path.exists());
+
+        let html_path = tmp_dir.join("review_player.html");
+        let html_res = call_tool(
+            &session,
+            "broadcast_qc_and_web_export",
+            &json!({
+                "action": "export_web_review_html",
+                "profile": "youtube1080p",
+                "sample_count": 4,
+                "output_path": html_path.display().to_string()
+            }),
+        )
+        .unwrap();
+        let html_json: Value =
+            serde_json::from_str(html_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(html_json["embedded_frames"], 4);
+        assert!(html_path.exists());
+        let html_body = std::fs::read_to_string(&html_path).unwrap();
+        assert!(html_body.contains("data:image/png;base64,"));
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 70);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

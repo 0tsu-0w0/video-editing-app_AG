@@ -1,19 +1,23 @@
 pub mod animation;
+pub mod broadcast_qc;
 pub mod cache;
 pub mod camera;
 pub mod collab;
+pub mod color_mgmt;
 pub mod command;
 pub mod crdt_sync;
 pub mod delivery;
 pub mod encoding;
 pub mod expression;
 pub mod folder;
+pub mod generative;
 pub mod highlights;
 pub mod interop;
 pub mod kinetic_sub;
 pub mod lipsync;
 pub mod multicam;
 pub mod node_graph;
+pub mod physics;
 pub mod preset;
 pub mod project;
 pub mod recipe;
@@ -27,6 +31,10 @@ pub mod time;
 pub mod timeline_ops;
 
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
+pub use broadcast_qc::{
+    BroadcastProfile, BroadcastQcMetrics, BroadcastQcReport, QcCheckItem, QcStatus,
+    export_portable_web_review_html, run_broadcast_qc_audit,
+};
 pub use cache::{CacheError, PersistentFrameCache, PrecompCacheManager, content_hash_hex};
 pub use camera::{Camera3D, Light3D, Light3DType, Projected3D, Transform3D};
 pub use collab::{
@@ -36,6 +44,11 @@ pub use collab::{
     export_review_comments_csv, export_review_comments_json, format_diff_report,
     format_smpte_timecode, import_review_comments_csv, import_review_comments_json,
     import_youtube_review_comments, merge_projects_three_way, parse_timecode_to_rational,
+};
+pub use color_mgmt::{
+    ColorManagementConfig, ColorSpace, ToneMapper, aces_gamut_compress, apply_tone_mapper_rgb,
+    export_ocio_config_yaml, log_c3_to_linear, s_log3_to_linear, transform_color_pipeline_rgb,
+    v_log_to_linear,
 };
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
 pub use crdt_sync::{
@@ -53,6 +66,7 @@ pub use expression::{
     evaluate_item_transform, expression_presets, item_base_property, item_expressions_use_audio,
 };
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
+pub use generative::{GenerativeBgConfig, GenerativeBgPreset};
 pub use highlights::{
     HighlightCandidate, HighlightConfig, build_motion_track_keyframes_command,
     build_shorts_clip_scene_command, extract_highlight_candidates,
@@ -79,6 +93,10 @@ pub use multicam::{
 pub use node_graph::{
     ChannelSelector, CompositeNode, CompositeNodeKind, NodeCompositeGraph, NodeConnection,
     NodeGraphError, NodeId, NodeToLayerSyncSummary, sync_node_graph_to_scene_layers,
+};
+pub use physics::{
+    PhysicsBodyTrajectory, PhysicsConfig, PhysicsPreset, PhysicsTrajectorySample,
+    build_physics_bake_commands, simulate_scene_physics,
 };
 pub use preset::{ColorPalette, EffectPreset, ItemAlias, NamedColor, TextStylePreset};
 pub use project::{

@@ -2880,6 +2880,7 @@ fn clip_color_for_kind(kind: &ItemKind) -> Color32 {
         ItemKind::ParticleEmitter { .. } => Color32::from_rgb(218, 152, 42),
         ItemKind::VectorShape { .. } => Color32::from_rgb(172, 86, 214),
         ItemKind::Mesh3D { .. } => Color32::from_rgb(68, 146, 238),
+        ItemKind::GenerativeBg { .. } => Color32::from_rgb(48, 186, 152),
         ItemKind::Precomp { .. } => Color32::from_rgb(42, 152, 148),
         ItemKind::Audio { .. } => Color32::from_rgb(64, 152, 108),
         _ => Color32::from_rgb(88, 104, 138),

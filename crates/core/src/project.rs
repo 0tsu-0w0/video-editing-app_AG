@@ -1023,6 +1023,10 @@ pub enum ItemKind {
     Mesh3D {
         config: crate::scene3d::Mesh3DConfig,
     },
+    /// v4.0 #35: オフライン・プロシージャル背景ジェネレーター（オーロラ・ボケ・サイバーグリッド等）
+    GenerativeBg {
+        config: crate::generative::GenerativeBgConfig,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -1816,6 +1820,9 @@ pub struct Scene {
     /// v0.8 #13: シーン全体のカラーグレーディング＆`.cube` 3D LUT 設定
     #[serde(default)]
     pub color_grade: SceneColorGrade,
+    /// v4.0 #33: ACEScg / OpenColorIO プロカラー管理（カメラ Log IDT・ガマット圧縮・AgX/ACES トーンマップ）
+    #[serde(default)]
+    pub color_management: crate::color_mgmt::ColorManagementConfig,
     /// v0.9 #16: シャッター角度ベース サブフレーム合成モーションブラー設定
     #[serde(default)]
     pub motion_blur: MotionBlurConfig,
@@ -1844,6 +1851,7 @@ impl Scene {
             target_lufs: None,
             audio_ducking: AudioDuckingConfig::default(),
             color_grade: SceneColorGrade::default(),
+            color_management: crate::color_mgmt::ColorManagementConfig::default(),
             motion_blur: MotionBlurConfig::default(),
             markers: Vec::new(),
             node_graph: crate::node_graph::NodeCompositeGraph::default(),

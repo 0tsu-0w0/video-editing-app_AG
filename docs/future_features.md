@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-21  
-> **v0.1〜v3.0 全 32 項目完全達成済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・**フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・全 66 MCP ツール**。  
-> 以下に **v0.8〜v3.0（✅ 全 32 項目実装済み）** をマイルストーン順に整理しています。
+> **v0.1〜v4.0 全 36 項目完全達成済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・**ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景ジェネレーター＆48kHz Foley/SFX 効果音シンセ・放送コンプライアンス QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆ゼロサーバー単一ファイル HTML5 インタラクティブレビュープレイヤー・全 70 MCP ツール**。  
+> 以下に **v0.8〜v4.0（✅ 全 36 項目実装済み）** をマイルストーン順に整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -15,8 +15,9 @@ flowchart LR
   V20["✅ v2.0 フロンティア版\nノード合成空間・ローカルAI切り抜き\n自律AIディレクター・共同レビュー"]
   V21["✅ v2.1 シネマ＆クリエイター\nトーンカーブ/HSL/カラーマッチ\n手ぶれ補正/4点ピン・3D音響・キネティック字幕"]
   V30["✅ v3.0 ワールド＆GPU\nフルGPUコンピュート・glTF 3D PBR\nオフラインAI吹替・P2P CRDT同時編集"]
+  V40["✅ v4.0 マスタースタジオ\nACEScg/OCIO・2D物理演算\n生成背景＆Foley SFX・放送QC＆HTML5レビュー"]
 
-  V07 --> V08 --> V09 --> V10 --> V20 --> V21 --> V30
+  V07 --> V08 --> V09 --> V10 --> V20 --> V21 --> V30 --> V40
 ```
 
 | バージョン | テーマ | 含まれる項目 | ステータス |
@@ -31,6 +32,7 @@ flowchart LR
 | **v2.0** | 次世代 AI ＆ ノード合成・共同編集フロンティア | **#21〜#24** | ✅ 完了 |
 | **v2.1** | シネマ＆クリエイタースタジオ（プロ色調・VFX・3D 空間音響・キネティック字幕） | **#25〜#28** | ✅ 完了 |
 | **v3.0** | フル GPU ＆ 3D ワールド ＆ オフライン AI 吹替 ＆ リアルタイム CRDT 共同編集 | **#29〜#32** | ✅ 完了 |
+| **v4.0** | マスタースタジオ（ACEScg/OCIO・2D 物理演算・生成背景/Foley SFX・放送 QC/HTML5） | **#33〜#36** | ✅ 完了 |
 
 ---
 
@@ -200,7 +202,36 @@ flowchart LR
 - **目的**: Git-Friendly 3-Way マージから一歩進め、Lamport/Vector Clock による Op-Based CRDT とローカル LAN ピア同期で複数人のライブカーソル付き同時共同編集を実現する。
 - **実装内容**:
   - `ve-core`: `crdt_sync` モジュール — 決定論的全順序 `(lamport, peer_id, op_id)` による可換・結合・冪等マージ `CrdtSyncLog`、ライブカーソルプレゼンス `PeerCursorState`、トークン認証付き Pure-Rust LAN TCP JSON-Lines 同期 `LanCollabHost`＆`sync_crdt_with_lan_peer`、Delta JSON 入出力
-  - `ve-mcp` / `ve-app`: `EditorSession::crdt_log` 共有統合、「🌐 P2P/CRDT 同時共同編集」タブ、および MCP `crdt_realtime_collab`（全 **66 MCP ツール**）
+  - `ve-mcp` / `ve-app`: `EditorSession::crdt_log` 共有統合、「🌐 P2P/CRDT 同時共同編集」タブ、および MCP `crdt_realtime_collab`
+
+---
+
+## ✅ v4.0（実装済み・マスタースタジオ版）：プロカラー管理・物理演算・オフライン生成＆放送 QC
+
+### 33. ~~プロ・シネマカラー管理（ACEScg / OpenColorIO v2 パイプライン＆カメラ Log IDT）~~ ✅ 実装済み（v4.0）
+- **目的**: シネマカメラの Log 素材（Sony S-Log3 / Panasonic V-Log / ARRI LogC3）から広色域 ACEScg (AP1) ワーキング空間・ガマット圧縮・フィルムトーンマッピング・Display P3 / Rec.2020 ODT までを厳密に一貫管理できるようにする。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `color_mgmt` モジュール — Rec.709 / ACEScg / Display P3 / Rec.2020 3×3 厳密変換行列、S-Log3 / V-Log / LogC3 EOTF、ACES 1.3 Reference Gamut Compression、ACES Fitted / AgX / Reinhard Extended トーンマッパー、`.ocio` v2 YAML 書き出し `export_ocio_config_yaml`、`Scene::color_management`＆`EditCommand::SetColorManagement` を `RenderGraph` 最終段へ統合
+  - `ve-app` / `ve-mcp`: v4.0 マスタースタジオ「🎨 ACEScg / OCIO」タブおよび MCP `aces_color_management`
+
+### 34. ~~決定論的 2D リジッドボディ物理演算エンジン（自動キーフレームベイク）~~ ✅ 実装済み（v4.0）
+- **目的**: タイトル落下バウンス・ドミノ連鎖衝突・無重力フローティング・軌道ボテックスなど、手打ちでは膨大な手間がかかる自然な物理アニメーションをワンクリックでキーフレーム化できるようにする。
+- **実装内容**:
+  - `ve-core`: `physics` モジュール — 60Hz 決定論タイムステップの 2D 剛体シミュレータ `simulate_scene_physics`（重力・床/壁バウンス・摩擦回転・剛体間弾性衝突インパルス・中心引力）、4 種プリセット、および `x`/`y`/`rotation_deg` への 1-Undo ベジェキーフレーム自動ベイク `build_physics_bake_commands`
+  - `ve-app` / `ve-mcp`: 2D 軌跡リアルタイム可視化キャンバス付き「🏀 物理演算エンジン」タブおよび MCP `physics_simulate_and_bake`
+
+### 35. ~~オフライン・プロシージャル生成スタジオ（動画背景ジェネレーター ＆ Foley/SFX シンセサイザー）~~ ✅ 実装済み（v4.0）
+- **目的**: 外部素材サイトに頼らず、完全オフラインかつロイヤリティフリーで高品質なアニメーション動画背景とトランジション・衝撃・UI・環境効果音をその場で生成＆タイムライン配置できるようにする。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `generative` / `generative_render` モジュール — `ItemKind::GenerativeBg`＆`EditCommand::SetGenerativeBg` による 6 種の決定論プロシージャル動画背景（オーロラ・シネマ玉ボケ・サイバー 3D グリッド・リキッドマーブル・スターフィールドワープ・アブストラクト波）を `RenderGraph` へ統合
+  - `ve-audio`: `foley` モジュール — 6 種プロシージャル Foley/SFX（ウーッシュ・重低音インパクト・UI ポップ・グリッチ電子音・環境雨音・テンションライザー）の 48kHz ステレオ PCM/WAV 合成 `synthesize_foley_sfx_pcm`＆`write_stereo_wav_file`
+  - `ve-app` / `ve-mcp`: 「🌌 背景＆Foley SFX」タブおよび MCP `generative_bg_and_foley`
+
+### 36. ~~放送コンプライアンス QC 監査 ＆ 高 CTR サムネイル抽出 ＆ 自己完結型 HTML5 レビュープレイヤー~~ ✅ 実装済み（v4.0）
+- **目的**: 納品前の放送・配信基準チェック（True-Peak / LUFS / 光過敏フラッシュ検査）から、YouTube 向け高クリック率ヒーローサムネイル自動選定、クライアント確認用サーバー不要 HTML5 レビュー配布までをワンクリック完結させる。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `broadcast_qc` モジュール — 4 規格プロファイル（YouTube 1080p / EBU R128 / Shorts 9:16 / シネマ 4K）での ITU-R BS.1770 / BT.1702 QC 監査 `run_broadcast_qc_audit`、鮮鋭度・彩度・コントラスト総合スコアによる `1280×720` ヒーローサムネイル自動抽出 `select_best_thumbnail_frame`、および Base64 フレーム埋込・SMPTE スクラバー・マーカー・コメント・QC バッジ付き単一ファイル HTML5 レビュープレイヤー書き出し `export_portable_web_review_html`
+  - `ve-app` / `ve-mcp`: 「📡 放送QC＆HTML5レビュー」タブおよび MCP `broadcast_qc_and_web_export`（全 **70 MCP ツール**）
 
 ---
 

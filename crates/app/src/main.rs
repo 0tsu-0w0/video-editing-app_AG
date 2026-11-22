@@ -17,6 +17,7 @@ mod v10_panels;
 mod v20_panels;
 mod v21_panels;
 mod v30_panels;
+mod v40_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -42,6 +43,7 @@ use v10_panels::{V10PanelsState, apply_user_visuals};
 use v20_panels::V20PanelsState;
 use v21_panels::V21PanelsState;
 use v30_panels::V30PanelsState;
+use v40_panels::V40PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
@@ -143,6 +145,7 @@ struct EditorApp {
     v20_panels: V20PanelsState,
     v21_panels: V21PanelsState,
     v30_panels: V30PanelsState,
+    v40_panels: V40PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -342,6 +345,7 @@ impl EditorApp {
             v20_panels: V20PanelsState::default(),
             v21_panels: V21PanelsState::default(),
             v30_panels: V30PanelsState::default(),
+            v40_panels: V40PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -2076,6 +2080,16 @@ impl eframe::App for EditorApp {
                 }
                 if ui
                     .toggle_value(
+                        &mut self.v40_panels.show_window,
+                        "🏆 v4.0 マスター",
+                    )
+                    .on_hover_text("v4.0 マスタースタジオ（ACEScg/OpenColorIOカラー管理・2D剛体物理演算＆キーフレーム自動ベイク・プロシージャル背景＆Foley SFX合成・放送QC監査＆ヒーローサムネイル＆HTML5レビュー書き出し）")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_window
+                }
+                if ui
+                    .toggle_value(
                         &mut self.v10_panels.show_settings_window,
                         tr(self.user_settings.language, "settings_title"),
                     )
@@ -2574,6 +2588,22 @@ impl eframe::App for EditorApp {
             }
         }
 
+        // v4.0 #33〜#36: マスタースタジオ（ACEScg/OCIO・2D剛体物理演算＆ベイク・プロシージャル背景＆Foley SFX・放送QC＆HTML5レビュー）
+        if self.v40_panels.show_window {
+            let selected_item = self
+                .session
+                .lock()
+                .ok()
+                .and_then(|s| s.selected_items.first().copied());
+            if self
+                .v40_panels
+                .show_v40_window(&ctx, &self.session, selected_item)
+            {
+                self.ram_preview.clear();
+                self.preview_dirty = true;
+            }
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2600,7 +2630,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v3.0.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v4.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

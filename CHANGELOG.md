@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.0.0] - 2026-11-21
+
+マスタースタジオ＆クリエイティブ物理マイルストーン v4.0（#33〜#36）をすべて実装し、全 36 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **70 MCP ツール**）。
+
+### #33 プロ・シネマカラー管理（ACEScg / OpenColorIO v2 パイプライン＆カメラ Log IDT）
+* `ve-core` / `ve-render`: `color_mgmt` モジュール — Rec.709 / ACEScg (AP1) / Display P3 / Rec.2020 の厳密 3×3 色空間変換行列、カメラ Log EOTF（Sony S-Log3・Panasonic V-Log・ARRI LogC3）、ACES 1.3 Reference Gamut Compression（ネオン色相破綻防止）、ACES Fitted / AgX Punchy / Reinhard Extended トーンマッパー、`.ocio` v2 設定 YAML 書き出し（`export_ocio_config_yaml`）、および `Scene::color_management` / `EditCommand::SetColorManagement` を `RenderGraph` 最終段へ統合
+* `ve-app` / `ve-mcp`: v4.0 マスタースタジオ「🎨 ACEScg / OCIO」タブおよび MCP `aces_color_management` を追加
+
+### #34 決定論的 2D リジッドボディ物理演算エンジン（自動キーフレームベイク）
+* `ve-core`: `physics` モジュール — 60Hz 固定タイムステップの 2D 剛体物理エンジン（重力・床/壁バウンス・摩擦回転・剛体同士の弾性衝突インパルス・中心ボテックス引力）と 4 種プリセット（`BouncingTitle` / `DominoCascade` / `ZeroGravityFloat` / `OrbitalVortex`）、および `x`/`y`/`rotation_deg` への 1-Undo キーフレーム自動ベイク `build_physics_bake_commands` を実装
+* `ve-app` / `ve-mcp`: 2D 軌跡リアルタイム可視化キャンバス付き「🏀 物理演算エンジン」タブおよび MCP `physics_simulate_and_bake` を追加
+
+### #35 オフライン・プロシージャル生成スタジオ（動画背景ジェネレーター ＆ Foley/SFX シンセサイザー）
+* `ve-core` / `ve-render`: `generative` / `generative_render` モジュール — `ItemKind::GenerativeBg`＆`EditCommand::SetGenerativeBg` による 6 種の決定論アニメーション背景（オーロラ・シネマ玉ボケ・サイバー 3D グリッド・リキッドマーブル・スターフィールドワープ・アブストラクト波）を `RenderGraph` へ統合
+* `ve-audio`: `foley` モジュール — 6 種プロシージャル効果音（ウーッシュ遷移・重低音インパクト・UI ポップ・グリッチ電子音・環境雨音・テンションライザー）の 48kHz ステレオ PCM/WAV 合成（`synthesize_foley_sfx_pcm` / `write_stereo_wav_file`）を実装
+* `ve-app` / `ve-mcp`: 「🌌 背景＆Foley SFX」タブおよび MCP `generative_bg_and_foley` を追加
+
+### #36 放送コンプライアンス QC 監査 ＆ 高 CTR サムネイル抽出 ＆ 自己完結型 HTML5 レビュープレイヤー
+* `ve-core` / `ve-render`: `broadcast_qc` モジュール — 4 規格プロファイル（YouTube 1080p / 放送 EBU R128 / Shorts 9:16 / シネマ 4K）での ITU-R BS.1770 True-Peak/LUFS・ITU-R BT.1702 光過敏フラッシュ検査・輝度ガマット QC 監査 `run_broadcast_qc_audit`、エッジ鮮鋭度＋彩度＋コントラスト評価による `1280×720` 高 CTR ヒーローサムネイル自動抽出 `select_best_thumbnail_frame`、およびサーバー不要・フレーム PNG Base64 埋込の単一ファイル HTML5 インタラクティブレビュープレイヤー書き出し `export_portable_web_review_html` を実装
+* `ve-app` / `ve-mcp`: 「📡 放送QC＆HTML5レビュー」タブおよび MCP `broadcast_qc_and_web_export`（全 **70 MCP ツール**）を追加
+
 ## [3.0.0] - 2026-11-21
 
 次世代ワールド＆GPU マイルストーン v3.0（#29〜#32）をすべて実装し、全 32 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **66 MCP ツール**）。

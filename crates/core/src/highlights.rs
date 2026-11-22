@@ -353,6 +353,7 @@ pub fn build_shorts_clip_scene_command(
             ..src.audio_ducking
         },
         color_grade: src.color_grade.clone(),
+        color_management: src.color_management,
         motion_blur: src.motion_blur,
         markers: Vec::new(),
         node_graph: crate::node_graph::NodeCompositeGraph::default(),

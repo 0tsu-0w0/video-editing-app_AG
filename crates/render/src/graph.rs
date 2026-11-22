@@ -1,5 +1,5 @@
 use crate::color::{LinearImage, LinearPremul};
-use crate::color_grading::{CubeLut3D, apply_scene_color_grade};
+use crate::color_grading::{CubeLut3D, apply_scene_color_grade, apply_scene_color_management};
 use crate::hot_shader::ShaderHotReloader;
 use crate::psd_sprite::PsdCharacterAsset;
 use crate::sprite::{load_png_linear, render_placeholder_character, scale_linear_image};
@@ -437,6 +437,14 @@ impl RenderGraph {
                         config.dash_length *= uniform;
                         config.dash_gap *= uniform;
                     }
+                    ItemKind::Mesh3D { config } => {
+                        config.width = (config.width * sx).max(16.0);
+                        config.height = (config.height * sy).max(16.0);
+                    }
+                    ItemKind::GenerativeBg { config } => {
+                        config.width = (config.width * sx).max(16.0);
+                        config.height = (config.height * sy).max(16.0);
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -530,6 +538,11 @@ impl RenderGraph {
                 .as_deref()
                 .and_then(|p| self.resolve_lut(p));
             apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_ref());
+        }
+
+        // v4.0 #33: ACEScg / OpenColorIO プロカラー管理（IDT → Working → Gamut Compress → Tone Map → ODT）
+        if scene.color_management.enabled {
+            apply_scene_color_management(&mut canvas, &scene.color_management);
         }
 
         canvas
@@ -1275,6 +1288,16 @@ impl RenderGraph {
                     config,
                     base_dir,
                     &scene.camera.light,
+                    local_time.as_seconds() as f32,
+                    sw,
+                    sh,
+                ))
+            }
+            ItemKind::GenerativeBg { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(16.0, 4096.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(16.0, 4096.0) as u32;
+                Some(crate::generative_render::render_generative_bg(
+                    config,
                     local_time.as_seconds() as f32,
                     sw,
                     sh,
