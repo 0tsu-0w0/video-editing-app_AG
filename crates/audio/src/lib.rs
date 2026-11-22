@@ -2,6 +2,7 @@ pub mod beats;
 pub mod clock;
 pub mod dsp;
 pub mod dubbing;
+pub mod foley;
 pub mod mixer;
 pub mod multicam;
 pub mod output;
@@ -24,6 +25,9 @@ pub use dubbing::{
     DubbingVoicePreset, GeneratedDubClip, align_text_to_phoneme_segments,
     build_dubbing_timeline_commands, collect_dubbing_targets_from_table,
     synthesize_offline_dubbing_pcm,
+};
+pub use foley::{
+    FoleyPreset, encode_stereo_wav_pcm16, synthesize_foley_sfx_pcm, write_stereo_wav_file,
 };
 pub use mixer::{AudioClip, AudioGraph};
 pub use multicam::{AudioSyncEstimate, estimate_audio_offset_xcorr};

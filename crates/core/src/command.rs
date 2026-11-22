@@ -391,6 +391,15 @@ pub enum EditCommand {
         item_id: ItemId,
         phonemes: Vec<crate::lipsync::PhonemeSegment>,
     },
+    /// v4.0 #33: シーンの ACEScg / OpenColorIO プロカラー管理設定を更新する
+    SetColorManagement {
+        config: crate::color_mgmt::ColorManagementConfig,
+    },
+    /// v4.0 #35: プロシージャル背景ジェネレーター設定を更新する
+    SetGenerativeBg {
+        item_id: ItemId,
+        config: crate::generative::GenerativeBgConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -467,6 +476,8 @@ impl EditCommand {
             Self::SetKineticSubtitle { .. } => "set_kinetic_subtitle",
             Self::SetMesh3D { .. } => "set_mesh_3d",
             Self::SetItemPhonemes { .. } => "set_item_phonemes",
+            Self::SetColorManagement { .. } => "set_color_management",
+            Self::SetGenerativeBg { .. } => "set_generative_bg",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -946,6 +957,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 target_lufs: None,
                 audio_ducking: AudioDuckingConfig::default(),
                 color_grade: SceneColorGrade::default(),
+                color_management: crate::color_mgmt::ColorManagementConfig::default(),
                 motion_blur: MotionBlurConfig::default(),
                 markers: Vec::new(),
                 node_graph: NodeCompositeGraph::default(),
@@ -1720,6 +1732,30 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             let item = find_item_mut(project, *item_id)?;
             item.phoneme_segments = phonemes.clone();
             Ok(())
+        }
+        EditCommand::SetColorManagement { config } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut c = *config;
+            c.exposure_stops = c.exposure_stops.clamp(-4.0, 4.0);
+            scene.color_management = c;
+            Ok(())
+        }
+        EditCommand::SetGenerativeBg { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::GenerativeBg { config: ref mut c } = item.kind {
+                let mut next = *config;
+                next.speed = next.speed.clamp(0.0, 10.0);
+                next.scale = next.scale.clamp(0.1, 10.0);
+                next.complexity = next.complexity.clamp(1, 8);
+                next.width = next.width.clamp(32.0, 8192.0);
+                next.height = next.height.clamp(32.0, 8192.0);
+                *c = next;
+                Ok(())
+            } else {
+                Err(CommandError::ItemNotFound(*item_id))
+            }
         }
         EditCommand::Batch { commands, .. } => {
             for cmd in commands {

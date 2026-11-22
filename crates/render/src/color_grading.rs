@@ -720,6 +720,28 @@ pub fn apply_scene_color_grade(
     }
 }
 
+/// v4.0 #33: シーン単位 ACEScg / OpenColorIO プロカラー管理（カメラ Log IDT・ガマット圧縮・AgX/ACES トーンマップ・ODT）を適用する
+pub fn apply_scene_color_management(img: &mut LinearImage, cfg: &ve_core::ColorManagementConfig) {
+    if !cfg.enabled {
+        return;
+    }
+    for px in &mut img.pixels {
+        let a = px.a;
+        if a <= 1e-6 {
+            continue;
+        }
+        let inv_a = 1.0 / a;
+        let straight = [px.r * inv_a, px.g * inv_a, px.b * inv_a];
+        let mapped = ve_core::transform_color_pipeline_rgb(straight, cfg);
+        *px = LinearPremul {
+            r: mapped[0] * a,
+            g: mapped[1] * a,
+            b: mapped[2] * a,
+            a,
+        };
+    }
+}
+
 /// リアルタイム色調スコープ解析結果（Waveform / RGB Parade / Vectorscope / Histogram）
 #[derive(Debug, Clone)]
 pub struct VideoScopeData {

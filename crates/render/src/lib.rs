@@ -1,6 +1,7 @@
 pub mod ai_vision;
 pub mod color;
 pub mod color_grading;
+pub mod generative_render;
 pub mod gpu_v30;
 pub mod graph;
 pub mod hot_shader;
@@ -25,7 +26,12 @@ pub use color::{LinearImage, LinearPremul, linear_to_srgb, srgb_to_linear};
 pub use color_grading::{
     BUILTIN_LUT_PRESETS, CubeLut3D, HIST_BINS, PARADE_BINS, PARADE_COLS, VECTORSCOPE_SIZE,
     VideoScopeData, WAVEFORM_BINS, WAVEFORM_COLS, apply_hsl_qualifier_rgb, apply_scene_color_grade,
-    compute_auto_color_match, compute_video_scopes, emit_sample_cube_luts, evaluate_tone_curve_lut,
+    apply_scene_color_management, compute_auto_color_match, compute_video_scopes,
+    emit_sample_cube_luts, evaluate_tone_curve_lut,
+};
+pub use generative_render::{
+    encode_linear_image_png_bytes, measure_scene_video_qc_metrics, render_generative_bg,
+    score_frame_thumbnail_attractiveness, select_best_thumbnail_frame,
 };
 pub use gpu_v30::{
     COLOR_GRADE_COMPUTE_WGSL, GpuBenchmarkReport, GpuV30Capabilities, GpuV30Pipeline,
