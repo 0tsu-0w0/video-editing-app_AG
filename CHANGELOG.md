@@ -1,5 +1,24 @@
 # Changelog
 
+## [6.0.0] - 2026-11-22
+
+クリエイター Pro スタジオマイルストーン v6.0（#41〜#44）をすべて実装し、全 44 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **78 MCP ツール**）。
+
+### #41 データ駆動モーショングラフィックス＆インフォグラフィック・チャートエンジン
+* `ve-core` / `ve-render`: `data_viz` / `v60_render` モジュール — CSV/JSON データ（`parse_chart_csv`・オプション HEX 色指定）から 4 種の決定論アニメーションチャート（棒グラフ `BarChart`・トレンド折れ線＆エリア `LineChart`・ドーナツ割合 `DonutChart`・KPI ロールアップカウンター `KpiCounter`）を Cubic Ease-Out 演出＋5×7 ビットマップ数値・ラベル付きで描画する `render_data_chart`・`ItemKind::DataChart`・`EditCommand::SetDataChart` を `RenderGraph`（スピードランプ＆プレビューギズモ対応）へ統合
+* `ve-app` / `ve-mcp`: v6.0 クリエイター Pro「📊 #41 チャート」タブ（CSV エディタ＆ミニプレビュー付）および MCP `data_chart_motion_graphics` を追加
+
+### #42 非破壊 VFX ペイント ＆ クローンスタンプ / ワイヤー・不要物消し（Inpainting）＆ プライバシー秘匿ぼかし
+* `ve-core` / `ve-render`: `vfx_paint` / `v60_render` モジュール — クリップ単位の非破壊ベクターペイント設定 `TimelineItem::vfx_paint`（`EditCommand::SetVfxPaint`）と 4 種ツール（Write-On アニメーション対応 `BrushGlow`・バイリニアフェザー複製 `CloneStamp`・ストローク法線＆周囲 8 方向クリーン境界補間による `WireEraseInpaint`・局所モザイク平均化 `BlurRedact`）を `RenderGraph` のアイテム後段パス `apply_vfx_paint` へ統合
+* `ve-app` / `ve-mcp`: 直接ドラッグ描画可能な正規化スケッチパッド付き「🖌 #42 VFXペイント」タブおよび MCP `vfx_paint_and_inpaint` を追加
+
+### #43 マルチトラック・ポッドキャスト＆コラボ実況オート編集エンジン
+* `ve-audio`: `podcast_studio` モジュール — 複数話者ステレオ PCM を 50ms ブロック RMS＋無音ゲート＋ギャップ結合で解析し、アクティブ話者ターン区間および `-16 LUFS` 推奨ゲインを算出する `analyze_podcast_speakers`、滑らかな短期 AGC＋True-Peak `-1.0 dBTP` リミッターで話者ごとの声量ムラを揃える `apply_podcast_voice_leveler`、さらに話者マーカー・カメラ自動切替 Hold キーフレーム・音声フェーダー均一化を 1-Undo `EditCommand::Batch` へ組み立てる `build_podcast_auto_switch_commands` を実装
+* `ve-app` / `ve-mcp`: 「🎙 #43 ポッドキャスト」タブおよび MCP `podcast_auto_director` を追加
+
+### #44 プロ・マルチプラットフォーム自動リフォーマット＆1 クリック納品バンドルパッケージャー
+* `ve-core` / `ve-mcp` / `ve-app`: `multi_deliver` モジュール — 1 本のマスターシーンから 4 プラットフォーム（YouTube 16:9・Shorts/Reels 9:16・Square 1:1・Cinema 4K）向けに中央リフレーム・縦動画セーフゾーン字幕折り返し・LUFS 目標を自動最適化した派生シーンを生成する `build_reformatted_scene_command` と、全派生シーン JSON・媒体別 SRT・YouTube チャプター・`1280×720` 高 CTR サムネイル PNG・CMX 3600 EDL・FCPXML v1.10・放送 QC レポート JSON・`manifest.json` を 1 クリックで束ねて出力する納品パッケージャー（GUI「📦 #44 マルチ納品」タブ＆MCP `multi_platform_packager`・全 **78 MCP ツール**）を実装
+
 ## [5.0.0] - 2026-11-21
 
 プロフィニッシング＆モーションリギング＆スマート音響マイルストーン v5.0（#37〜#40）をすべて実装し、全 40 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **74 MCP ツール**）。
