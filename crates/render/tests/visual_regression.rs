@@ -426,3 +426,55 @@ fn golden_v40_acescg_generative_bg_and_physics_determinism() {
     assert!(best_t >= 0.0 && score > 1.0);
     assert_eq!((hero.width, hero.height), (1280, 720));
 }
+
+#[test]
+fn golden_v50_rigged_puppet_speed_ramp_and_cinema_finishing_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        let mut puppet = TimelineItem::new(
+            "HeroPuppet",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::RiggedPuppet {
+                config: Box::new(ve_core::Rig2DConfig::default_humanoid()),
+            },
+        );
+        puppet.transform.x = 60.0;
+        puppet.transform.y = 10.0;
+        puppet.speed_ramp = ve_core::SpeedRampPreset::BulletTimeDip.default_config();
+        scene.layers[2].items.push(puppet);
+        scene.cinema_finishing = ve_core::CinemaFinishingConfig {
+            burn_in_timecode: true,
+            watermark_text: "V5 GOLDEN".into(),
+            ..ve_core::CinemaFinishingConfig::preset_kodak_35mm()
+        };
+    }
+
+    let t0 = RationalTime::from_seconds(0.2);
+    let t1 = RationalTime::from_seconds(1.2);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let r1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let r2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    assert_eq!(
+        r1, r2,
+        "v5.0 RiggedPuppet + CinemaFinishing rendering must be bit-for-bit deterministic"
+    );
+
+    let later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let diff = r1.iter().zip(later.iter()).filter(|(a, b)| a != b).count();
+    assert!(
+        diff > 400,
+        "v5.0 rigged puppet + grain + timecode burn-in must progress over time: diff={diff}"
+    );
+}

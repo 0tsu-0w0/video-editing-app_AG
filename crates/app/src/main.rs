@@ -18,6 +18,7 @@ mod v20_panels;
 mod v21_panels;
 mod v30_panels;
 mod v40_panels;
+mod v50_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -44,6 +45,7 @@ use v20_panels::V20PanelsState;
 use v21_panels::V21PanelsState;
 use v30_panels::V30PanelsState;
 use v40_panels::V40PanelsState;
+use v50_panels::V50PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
@@ -146,6 +148,7 @@ struct EditorApp {
     v21_panels: V21PanelsState,
     v30_panels: V30PanelsState,
     v40_panels: V40PanelsState,
+    v50_panels: V50PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -346,6 +349,7 @@ impl EditorApp {
             v21_panels: V21PanelsState::default(),
             v30_panels: V30PanelsState::default(),
             v40_panels: V40PanelsState::default(),
+            v50_panels: V50PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -2090,6 +2094,16 @@ impl eframe::App for EditorApp {
                 }
                 if ui
                     .toggle_value(
+                        &mut self.v50_panels.show_window,
+                        "🚀 v5.0 仕上げ＆IK",
+                    )
+                    .on_hover_text("v5.0 プロフィニッシング＆リギング（2Dスケルトンボーン＆2-Bone IK・オフライン自動BGM作曲・スピードランプ＆自動シーンカット検出・35mmハレーション/アナモルフィックフレア/EDL＆FCPXML書き出し）")
+                    .clicked()
+                {
+                    // toggle_value already flipped show_window
+                }
+                if ui
+                    .toggle_value(
                         &mut self.v10_panels.show_settings_window,
                         tr(self.user_settings.language, "settings_title"),
                     )
@@ -2604,6 +2618,22 @@ impl eframe::App for EditorApp {
             }
         }
 
+        // v5.0 #37〜#40: プロフィニッシング＆リギング（2Dボーン＆IK・オフライン自動BGM作曲・スピードランプ＆自動シーンカット検出・35mmハレーション/EDL/FCPXML）
+        if self.v50_panels.show_window {
+            let selected_item = self
+                .session
+                .lock()
+                .ok()
+                .and_then(|s| s.selected_items.first().copied());
+            if self
+                .v50_panels
+                .show_v50_window(&ctx, &self.session, selected_item)
+            {
+                self.ram_preview.clear();
+                self.preview_dirty = true;
+            }
+        }
+
         // ドラッグホバー中の視覚ガイドオーバーレイ
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if hovering_files {
@@ -2630,7 +2660,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v4.0.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v5.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

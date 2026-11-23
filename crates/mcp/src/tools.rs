@@ -8,47 +8,49 @@ use ve_ai::{
     import_tts_file_pair,
 };
 use ve_audio::{
-    AudioGraph, BeatDetectionConfig, DubbingVoicePreset, FoleyPreset, GeneratedDubClip,
-    align_text_to_phoneme_segments, build_dubbing_timeline_commands, detect_audio_beats,
-    estimate_audio_offset_xcorr, measure_integrated_lufs, measure_true_peak_dbtp,
-    separate_vocal_bgm_stems, synthesize_foley_sfx_pcm, synthesize_offline_dubbing_pcm,
-    write_stereo_wav_file,
+    AudioGraph, BeatDetectionConfig, BgmComposeConfig, BgmGenre, DubbingVoicePreset, FoleyPreset,
+    GeneratedDubClip, align_text_to_phoneme_segments, build_dubbing_timeline_commands,
+    compose_bgm_track, detect_audio_beats, estimate_audio_offset_xcorr, measure_integrated_lufs,
+    measure_true_peak_dbtp, separate_vocal_bgm_stems, synthesize_foley_sfx_pcm,
+    synthesize_offline_dubbing_pcm, write_stereo_wav_file,
 };
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode,
     BroadcastProfile, BroadcastQcMetrics, Camera3D, ChannelSelector, CharacterSpriteConfig,
-    ColorCurves, ColorManagementConfig, ColorSpace, CommandSource, CompositeNode,
-    CompositeNodeKind, ConflictResolution, CornerPinConfig, CrdtOpKind, CrdtSyncLog, CubicBezier,
-    EditCommand, EditorKeymap, EffectNode, EffectPreset, FrameRate, GenerativeBgConfig,
-    GenerativeBgPreset, HighlightConfig, Interpolation, ItemKind, JumpCutConfig, Keyframe,
-    KeymapPreset, KineticHighlightMode, KineticSubtitleConfig, Light3DType, LipSyncMode,
-    LocalizationEntry, LocalizationTable, MaskMode, MaskVertex, MediaKind, Mesh3DConfig,
-    Mesh3DPreset, MotionPreset, MulticamCutPoint, NodeCompositeGraph, ParticleConfig,
-    ParticlePreset, PhysicsConfig, PhysicsPreset, ProjectTemplate, PsdCharacterConfig,
-    RationalTime, ReviewComment, ReviewSource, ReviewStatus, RgbaColor, SceneColorGrade,
-    ScriptBuildConfig, ShapeKind, TemplateParamValue, TextAnimator, TextStylePreset, TimelineItem,
-    TimelineMarker, ToneMapper, TrackMatte, TrackMatteMode, UiLanguage, UiThemePreset,
-    VectorShapeConfig, archive_project_to_zip, base64_encode, build_align_commands,
+    CinemaFinishingConfig, ColorCurves, ColorManagementConfig, ColorSpace, CommandSource,
+    CompositeNode, CompositeNodeKind, ConflictResolution, CornerPinConfig, CrdtOpKind, CrdtSyncLog,
+    CubicBezier, EditCommand, EditorKeymap, EffectNode, EffectPreset, FrameRate,
+    GenerativeBgConfig, GenerativeBgPreset, HighlightConfig, Interpolation, ItemKind,
+    JumpCutConfig, Keyframe, KeymapPreset, KineticHighlightMode, KineticSubtitleConfig,
+    LetterboxAspect, Light3DType, LipSyncMode, LocalizationEntry, LocalizationTable, MaskMode,
+    MaskVertex, MediaKind, Mesh3DConfig, Mesh3DPreset, MotionPreset, MulticamCutPoint,
+    NodeCompositeGraph, ParticleConfig, ParticlePreset, PhysicsConfig, PhysicsPreset,
+    ProjectTemplate, PsdCharacterConfig, RationalTime, ReviewComment, ReviewSource, ReviewStatus,
+    RgbaColor, Rig2DConfig, RigMotionPreset, SceneColorGrade, ScriptBuildConfig, ShapeKind,
+    SpeedRampKnot, SpeedRampPreset, TemplateParamValue, TextAnimator, TextStylePreset,
+    TimelineItem, TimelineMarker, ToneMapper, TrackMatte, TrackMatteMode, UiLanguage,
+    UiThemePreset, VectorShapeConfig, archive_project_to_zip, base64_encode, build_align_commands,
     build_apply_locale_commands, build_bake_expression_command, build_beat_cut_commands,
     build_beat_markers_command, build_close_gaps_commands, build_cube_mesh,
     build_fit_duration_to_layer_commands, build_instantiate_template_command,
     build_jump_cut_commands, build_motion_preset_commands, build_multicam_switch_cut_commands,
     build_multicam_sync_align_commands, build_physics_bake_commands, build_replace_text_commands,
-    build_review_comments_to_markers_commands, build_script_timeline_commands,
-    build_shorts_clip_scene_command, build_strip_filler_words_commands,
-    build_text_based_delete_commands, build_text_based_reorder_commands, builtin_motion_templates,
-    builtin_project_templates, compile_expression, detect_speech_intervals_from_rms, diff_projects,
-    encode_mesh_to_glb, evaluate_item_property, export_ass_subtitles, export_localization_csv,
-    export_ocio_config_yaml, export_otio_json, export_portable_web_review_html,
-    export_review_comments_csv, export_review_comments_json, export_srt_subtitles,
-    extract_highlight_candidates, extract_localization_table, extract_motion_template_from_scene,
-    extract_transcript_entries, format_diff_report, format_youtube_chapters,
-    import_localization_csv, import_review_comments_csv, import_review_comments_json,
-    import_youtube_review_comments, merge_projects_three_way, official_registry_catalog,
-    parse_ass_subtitles, parse_aviutl_exo, parse_gltf_or_glb, parse_script_auto,
-    parse_srt_subtitles, run_broadcast_qc_audit, search_text_items, simulate_scene_physics,
-    subtitle_entries_to_commands, sync_node_graph_to_scene_layers, validate_project_delivery,
-    verify_and_install_extension, wrap_subtitle_japanese,
+    build_review_comments_to_markers_commands, build_scene_cut_commands,
+    build_script_timeline_commands, build_shorts_clip_scene_command,
+    build_strip_filler_words_commands, build_text_based_delete_commands,
+    build_text_based_reorder_commands, builtin_motion_templates, builtin_project_templates,
+    compile_expression, detect_speech_intervals_from_rms, diff_projects, encode_mesh_to_glb,
+    evaluate_item_property, evaluate_rig_poses, export_ass_subtitles, export_cmx3600_edl,
+    export_fcpxml_v10, export_localization_csv, export_ocio_config_yaml, export_otio_json,
+    export_portable_web_review_html, export_review_comments_csv, export_review_comments_json,
+    export_srt_subtitles, extract_highlight_candidates, extract_localization_table,
+    extract_motion_template_from_scene, extract_transcript_entries, format_diff_report,
+    format_youtube_chapters, import_localization_csv, import_review_comments_csv,
+    import_review_comments_json, import_youtube_review_comments, merge_projects_three_way,
+    official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo, parse_gltf_or_glb,
+    parse_script_auto, parse_srt_subtitles, run_broadcast_qc_audit, search_text_items,
+    simulate_scene_physics, subtitle_entries_to_commands, sync_node_graph_to_scene_layers,
+    validate_project_delivery, verify_and_install_extension, wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, HwDecodeBackend, VideoEncoder, decode_audio_file,
@@ -60,8 +62,9 @@ use ve_render::{
     analyze_camera_shake, analyze_scene_auto_reframe, benchmark_v30_gpu_pipeline,
     build_3d_camera_track_command, build_auto_reframe_commands, build_stabilize_commands,
     compute_auto_color_match, detect_gpu_v30_capabilities, detect_local_vision_status,
-    emit_sample_cube_luts, encode_linear_image_png_bytes, measure_scene_video_qc_metrics,
-    run_gpu_or_cpu_grade_and_scopes, select_best_thumbnail_frame, validate_wgsl,
+    detect_scene_cuts_in_scene, emit_sample_cube_luts, encode_linear_image_png_bytes,
+    measure_scene_video_qc_metrics, run_gpu_or_cpu_grade_and_scopes, select_best_thumbnail_frame,
+    validate_wgsl,
 };
 
 const MAX_BATCH_COMMANDS: usize = 500;
@@ -1375,6 +1378,137 @@ pub fn tool_definitions() -> Value {
         }
     ]) {
         tools.extend(v10_extra);
+    }
+    if let Value::Array(v50_extra) = json!([
+        {
+            "name": "rig2d_puppet_control",
+            "description": "v5.0 #37: 2D スケルトンボーン＆2-Bone IK パペットリグ（階層 FK・解析的 2-Bone 逆運動学・髪/リボン二次バネ揺れ・4種モーションプリセット）の配置・編集・IK 姿勢プレビューを行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add_rigged_puppet", "update_rig", "solve_ik_preview"]
+                    },
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["idle_breathe", "wave_hello", "nod_talk", "dance_bounce"]
+                    },
+                    "layer_index": { "type": "integer" },
+                    "start_sec": { "type": "number" },
+                    "duration_sec": { "type": "number" },
+                    "motion_speed": { "type": "number" },
+                    "motion_amp": { "type": "number" },
+                    "show_bones_overlay": { "type": "boolean" },
+                    "right_ik_enabled": { "type": "boolean" },
+                    "right_ik_x": { "type": "number" },
+                    "right_ik_y": { "type": "number" },
+                    "left_ik_enabled": { "type": "boolean" },
+                    "left_ik_x": { "type": "number" },
+                    "left_ik_y": { "type": "number" },
+                    "time_sec": { "type": "number" }
+                }
+            }
+        },
+        {
+            "name": "offline_bgm_composer",
+            "description": "v5.0 #38: 完全オフライン・著作権フリーの自動 BGM コンポーザー（6 ジャンル・コード進行・ドラム/ベース/パッド/メロディ 48kHz ステレオ WAV 合成＆小節マーカー自動配置）を実行する",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["preview_arrangement", "compose_and_place_bgm"]
+                    },
+                    "genre": {
+                        "type": "string",
+                        "enum": ["lofi_chill", "upbeat_pop", "cinematic_epic", "cyber_synthwave", "acoustic_explainer", "suspense_pulse"]
+                    },
+                    "bpm": { "type": "number" },
+                    "key_semitone": { "type": "integer" },
+                    "duration_sec": { "type": "number" },
+                    "intensity": { "type": "number" },
+                    "seed": { "type": "integer" },
+                    "start_sec": { "type": "number" },
+                    "audio_layer_index": { "type": "integer" },
+                    "add_bar_markers": { "type": "boolean" },
+                    "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "speed_ramp_and_scene_detect",
+            "description": "v5.0 #39: クリップのスピードランプ（解析積分 Time-Remapping 曲線：バレットタイム・ヒーロー加速・滑らかスロー・カスタムノット）設定およびカラーヒストグラム χ² 距離による自動シーンカット検出＆1-Undo 自動分割を行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set_speed_ramp", "detect_scene_cuts"]
+                    },
+                    "id": { "type": "string" },
+                    "enabled": { "type": "boolean" },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["uniform", "bullet_time_dip", "ramp_up_hero", "ease_in_slow_mo", "flash_burst"]
+                    },
+                    "smooth_blend": { "type": "boolean" },
+                    "knots": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "norm_time": { "type": "number" },
+                                "speed": { "type": "number" }
+                            }
+                        }
+                    },
+                    "sample_interval_sec": { "type": "number" },
+                    "sensitivity": { "type": "number" },
+                    "split_clips": { "type": "boolean" },
+                    "target_layer_index": { "type": "integer" },
+                    "apply": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "cinema_finishing_and_edl",
+            "description": "v5.0 #40: プロ・シネマフィニッシング（35mm ハレーション・アナモルフィックフレア・フィルムグレイン・ビネット・レターボックス・SMPTE 透かしバーンイン）の制御および業界標準 CMX 3600 EDL / Final Cut Pro XML v1.10 (FCPXML) 書き出しを行う",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get_finishing", "set_finishing", "export_edl_cmx3600", "export_fcpxml"]
+                    },
+                    "enabled": { "type": "boolean" },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["kodak_35mm", "scifi_anamorphic", "agency_review_burnin"]
+                    },
+                    "halation_strength": { "type": "number" },
+                    "halation_threshold": { "type": "number" },
+                    "anamorphic_flare": { "type": "number" },
+                    "film_grain": { "type": "number" },
+                    "vignette": { "type": "number" },
+                    "letterbox": {
+                        "type": "string",
+                        "enum": ["none", "cinema239", "flat185", "academy43"]
+                    },
+                    "burn_in_timecode": { "type": "boolean" },
+                    "watermark_text": { "type": "string" },
+                    "output_path": { "type": "string" }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v50_extra);
     }
     Value::Array(tools)
 }
@@ -8312,6 +8446,604 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 )),
             }
         }
+        "rig2d_puppet_control" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let parse_rig_preset =
+                |raw: Option<&str>, fallback: RigMotionPreset| -> RigMotionPreset {
+                    match raw {
+                        Some("idle_breathe") => RigMotionPreset::IdleBreathe,
+                        Some("wave_hello") => RigMotionPreset::WaveHello,
+                        Some("nod_talk") => RigMotionPreset::NodTalk,
+                        Some("dance_bounce") => RigMotionPreset::DanceBounce,
+                        _ => fallback,
+                    }
+                };
+            let apply_rig_overrides = |mut cfg: Rig2DConfig| -> Rig2DConfig {
+                cfg.preset =
+                    parse_rig_preset(args.get("preset").and_then(Value::as_str), cfg.preset);
+                cfg.motion_speed = finite_clamped(
+                    args.get("motion_speed"),
+                    f64::from(cfg.motion_speed),
+                    0.0,
+                    6.0,
+                ) as f32;
+                cfg.motion_amp =
+                    finite_clamped(args.get("motion_amp"), f64::from(cfg.motion_amp), 0.0, 3.0)
+                        as f32;
+                if let Some(ov) = args.get("show_bones_overlay").and_then(Value::as_bool) {
+                    cfg.show_bones_overlay = ov;
+                }
+                if let Some(en) = args.get("right_ik_enabled").and_then(Value::as_bool) {
+                    cfg.right_arm_ik.enabled = en;
+                }
+                if let Some(x) = args.get("right_ik_x").and_then(Value::as_f64) {
+                    cfg.right_arm_ik.target_pos[0] = x.clamp(-400.0, 400.0) as f32;
+                }
+                if let Some(y) = args.get("right_ik_y").and_then(Value::as_f64) {
+                    cfg.right_arm_ik.target_pos[1] = y.clamp(-400.0, 400.0) as f32;
+                }
+                if let Some(en) = args.get("left_ik_enabled").and_then(Value::as_bool) {
+                    cfg.left_arm_ik.enabled = en;
+                }
+                if let Some(x) = args.get("left_ik_x").and_then(Value::as_f64) {
+                    cfg.left_arm_ik.target_pos[0] = x.clamp(-400.0, 400.0) as f32;
+                }
+                if let Some(y) = args.get("left_ik_y").and_then(Value::as_f64) {
+                    cfg.left_arm_ik.target_pos[1] = y.clamp(-400.0, 400.0) as f32;
+                }
+                cfg
+            };
+
+            match action {
+                "add_rigged_puppet" => {
+                    let layer_count = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.layers.len())
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    let layer_index = args
+                        .get("layer_index")
+                        .and_then(Value::as_u64)
+                        .map(|v| (v as usize).min(layer_count.saturating_sub(1)))
+                        .unwrap_or(1.min(layer_count.saturating_sub(1)));
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        0.0,
+                        0.0,
+                        36000.0,
+                    ));
+                    let dur = RationalTime::from_seconds(finite_clamped(
+                        args.get("duration_sec"),
+                        5.0,
+                        0.1,
+                        3600.0,
+                    ));
+                    let cfg = apply_rig_overrides(Rig2DConfig::default_humanoid());
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Rig2D Puppet")
+                        .to_string();
+                    let item = TimelineItem::new(
+                        name,
+                        start,
+                        dur,
+                        ItemKind::RiggedPuppet {
+                            config: Box::new(cfg.clone()),
+                        },
+                    );
+                    let item_id = item.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddObject { layer_index, item },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": item_id.to_string(),
+                                "bone_count": cfg.bones.len(),
+                                "preset": cfg.preset
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "update_rig" => {
+                    let id_str = args
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'id'".to_string())?;
+                    let item_id = Uuid::parse_str(id_str).map_err(|e| e.to_string())?;
+                    let cur = {
+                        let sc = s
+                            .project
+                            .active_scene()
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        sc.layers
+                            .iter()
+                            .flat_map(|l| l.items.iter())
+                            .find_map(|i| {
+                                if i.id == item_id
+                                    && let ItemKind::RiggedPuppet { config } = &i.kind
+                                {
+                                    Some((**config).clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .ok_or_else(|| format!("RiggedPuppet not found: {item_id}"))?
+                    };
+                    let next = apply_rig_overrides(cur);
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetRig2D {
+                                item_id,
+                                config: Box::new(next.clone()),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": item_id.to_string(),
+                                "preset": next.preset,
+                                "right_arm_ik": next.right_arm_ik
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "solve_ik_preview" => {
+                    let t = finite_clamped(args.get("time_sec"), 0.0, 0.0, 3600.0) as f32;
+                    let cfg = apply_rig_overrides(Rig2DConfig::default_humanoid());
+                    let poses = evaluate_rig_poses(&cfg, t);
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "time_sec": t,
+                                "bone_count": poses.len(),
+                                "poses": poses
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown rig2d_puppet_control action: {other}")),
+            }
+        }
+        "offline_bgm_composer" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            let genre = BgmGenre::from_id(
+                args.get("genre")
+                    .and_then(Value::as_str)
+                    .unwrap_or("lofi_chill"),
+            );
+            let cfg = BgmComposeConfig {
+                genre,
+                bpm: finite_clamped(args.get("bpm"), f64::from(genre.default_bpm()), 55.0, 200.0)
+                    as f32,
+                key_semitone: args
+                    .get("key_semitone")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    .rem_euclid(12) as i32,
+                duration_sec: finite_clamped(args.get("duration_sec"), 8.0, 1.0, 120.0) as f32,
+                intensity: finite_clamped(args.get("intensity"), 1.0, 0.3, 1.5) as f32,
+                seed: args.get("seed").and_then(Value::as_u64).unwrap_or(50_2026),
+            };
+            let sr = s.project.settings.audio_sample_rate.max(8_000);
+            let composed = compose_bgm_track(&cfg, sr);
+
+            match action {
+                "preview_arrangement" => Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": json!({
+                            "genre": genre.id(),
+                            "bpm": composed.bpm,
+                            "chord_progression": composed.chord_progression,
+                            "beat_count": composed.beat_times_sec.len(),
+                            "bar_count": composed.bar_times_sec.len(),
+                            "bar_times_sec": composed.bar_times_sec
+                        }).to_string()
+                    }]
+                })),
+                "compose_and_place_bgm" => {
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+                    let add_bar_markers = args
+                        .get("add_bar_markers")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        0.0,
+                        0.0,
+                        36000.0,
+                    ));
+                    let out_dir = s
+                        .folder
+                        .as_ref()
+                        .map(|f| f.assets_dir().join("bgm"))
+                        .unwrap_or_else(|| std::env::temp_dir().join("ve_bgm"));
+                    let wav_name = format!("bgm_{}_{}.wav", genre.id(), cfg.seed);
+                    let wav_path = out_dir.join(&wav_name);
+                    write_stereo_wav_file(&wav_path, &composed.pcm, composed.sample_rate)?;
+
+                    let asset_id = Uuid::new_v4();
+                    s.project.assets.push(AssetRef {
+                        id: asset_id,
+                        name: wav_name.clone(),
+                        relative_path: Some(PathBuf::from("assets/bgm").join(&wav_name)),
+                        fallback_absolute_path: Some(wav_path.clone()),
+                        collected: true,
+                        kind: MediaKind::Audio,
+                    });
+
+                    let mut clip_id: Option<String> = None;
+                    if apply {
+                        let layer_count = s
+                            .project
+                            .active_scene()
+                            .map(|sc| sc.layers.len())
+                            .ok_or_else(|| "no active scene".to_string())?;
+                        let audio_layer = args
+                            .get("audio_layer_index")
+                            .and_then(Value::as_u64)
+                            .map(|v| (v as usize).min(layer_count.saturating_sub(1)))
+                            .unwrap_or_else(|| layer_count.saturating_sub(1));
+                        let clip = TimelineItem::new(
+                            format!("BGM: {} ({:.0}BPM)", genre.id(), composed.bpm),
+                            start,
+                            RationalTime::from_seconds(f64::from(cfg.duration_sec)),
+                            ItemKind::Audio {
+                                asset_id,
+                                source_offset: RationalTime::ZERO,
+                                volume: 0.72,
+                            },
+                        );
+                        clip_id = Some(clip.id.to_string());
+                        let mut cmds = vec![EditCommand::AddObject {
+                            layer_index: audio_layer,
+                            item: clip,
+                        }];
+                        if add_bar_markers {
+                            for (idx, &bt) in composed.bar_times_sec.iter().enumerate() {
+                                cmds.push(EditCommand::AddMarker {
+                                    marker: TimelineMarker::new(
+                                        start + RationalTime::from_seconds(bt),
+                                        format!("Bar {}", idx + 1),
+                                    ),
+                                });
+                            }
+                        }
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: format!("自動 BGM 作曲＆配置 ({})", genre.id()),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "genre": genre.id(),
+                                "bpm": composed.bpm,
+                                "chord_progression": composed.chord_progression,
+                                "bar_markers_added": if apply && add_bar_markers { composed.bar_times_sec.len() } else { 0 },
+                                "wav_path": wav_path.display().to_string(),
+                                "asset_id": asset_id.to_string(),
+                                "item_id": clip_id,
+                                "applied": apply
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown offline_bgm_composer action: {other}")),
+            }
+        }
+        "speed_ramp_and_scene_detect" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            match action {
+                "set_speed_ramp" => {
+                    let id_str = args
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing 'id'".to_string())?;
+                    let item_id = Uuid::parse_str(id_str).map_err(|e| e.to_string())?;
+                    let preset = match args.get("preset").and_then(Value::as_str) {
+                        Some("bullet_time_dip") => SpeedRampPreset::BulletTimeDip,
+                        Some("ramp_up_hero") => SpeedRampPreset::RampUpHero,
+                        Some("ease_in_slow_mo") => SpeedRampPreset::EaseInSlowMo,
+                        Some("flash_burst") => SpeedRampPreset::FlashBurst,
+                        _ => SpeedRampPreset::Uniform,
+                    };
+                    let mut cfg = preset.default_config();
+                    if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                        cfg.enabled = en;
+                    }
+                    if let Some(sm) = args.get("smooth_blend").and_then(Value::as_bool) {
+                        cfg.smooth_blend = sm;
+                    }
+                    if let Some(arr) = args.get("knots").and_then(Value::as_array)
+                        && !arr.is_empty()
+                    {
+                        let parsed: Vec<SpeedRampKnot> = arr
+                            .iter()
+                            .filter_map(|v| {
+                                Some(SpeedRampKnot {
+                                    norm_time: v.get("norm_time")?.as_f64()? as f32,
+                                    speed: v.get("speed")?.as_f64()? as f32,
+                                })
+                            })
+                            .collect();
+                        if !parsed.is_empty() {
+                            cfg.knots = parsed;
+                        }
+                    }
+                    cfg.knots = cfg.normalized();
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetSpeedRamp {
+                                item_id,
+                                speed_ramp: cfg.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "item_id": item_id.to_string(),
+                                "speed_ramp": cfg,
+                                "applied": true
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "detect_scene_cuts" => {
+                    let interval = finite_clamped(args.get("sample_interval_sec"), 0.25, 0.08, 1.0);
+                    let sensitivity =
+                        finite_clamped(args.get("sensitivity"), 0.55, 0.1, 1.0) as f32;
+                    let split_clips = args
+                        .get("split_clips")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+                    let target_layer = args
+                        .get("target_layer_index")
+                        .and_then(Value::as_u64)
+                        .map(|v| v as usize);
+
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let cuts = detect_scene_cuts_in_scene(
+                        &mut rg,
+                        &s.project,
+                        s.project.active_scene_id,
+                        interval,
+                        sensitivity,
+                    );
+                    let applied_commands = if apply && !cuts.is_empty() {
+                        let cmds = {
+                            let sc = s
+                                .project
+                                .active_scene()
+                                .ok_or_else(|| "no active scene".to_string())?;
+                            build_scene_cut_commands(sc, &cuts, split_clips, target_layer)
+                        };
+                        let n = cmds.len();
+                        if !cmds.is_empty() {
+                            s.bus
+                                .execute(
+                                    &mut s.project,
+                                    EditCommand::Batch {
+                                        label: format!("自動シーンカット適用 ({}件)", cuts.len()),
+                                        commands: cmds,
+                                    },
+                                    CommandSource::Mcp,
+                                    None,
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
+                        n
+                    } else {
+                        0
+                    };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "cut_count": cuts.len(),
+                                "cuts": cuts,
+                                "applied_commands": applied_commands
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown speed_ramp_and_scene_detect action: {other}"
+                )),
+            }
+        }
+        "cinema_finishing_and_edl" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing 'action'".to_string())?;
+            match action {
+                "get_finishing" => {
+                    let cfg = s
+                        .project
+                        .active_scene()
+                        .map(|sc| sc.cinema_finishing.clone())
+                        .ok_or_else(|| "no active scene".to_string())?;
+                    Ok(json!({
+                        "content": [{ "type": "text", "text": serde_json::to_string(&cfg).unwrap_or_default() }]
+                    }))
+                }
+                "set_finishing" => {
+                    let mut cfg = match args.get("preset").and_then(Value::as_str) {
+                        Some("kodak_35mm") => CinemaFinishingConfig::preset_kodak_35mm(),
+                        Some("scifi_anamorphic") => {
+                            CinemaFinishingConfig::preset_scifi_anamorphic()
+                        }
+                        Some("agency_review_burnin") => {
+                            CinemaFinishingConfig::preset_agency_review_burnin()
+                        }
+                        _ => s
+                            .project
+                            .active_scene()
+                            .map(|sc| sc.cinema_finishing.clone())
+                            .ok_or_else(|| "no active scene".to_string())?,
+                    };
+                    if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                        cfg.enabled = en;
+                    }
+                    if args.get("halation_strength").is_some() {
+                        cfg.halation_strength = finite_clamped(
+                            args.get("halation_strength"),
+                            f64::from(cfg.halation_strength),
+                            0.0,
+                            1.5,
+                        ) as f32;
+                    }
+                    if args.get("halation_threshold").is_some() {
+                        cfg.halation_threshold = finite_clamped(
+                            args.get("halation_threshold"),
+                            f64::from(cfg.halation_threshold),
+                            0.3,
+                            1.0,
+                        ) as f32;
+                    }
+                    if args.get("anamorphic_flare").is_some() {
+                        cfg.anamorphic_flare = finite_clamped(
+                            args.get("anamorphic_flare"),
+                            f64::from(cfg.anamorphic_flare),
+                            0.0,
+                            1.5,
+                        ) as f32;
+                    }
+                    if args.get("film_grain").is_some() {
+                        cfg.film_grain = finite_clamped(
+                            args.get("film_grain"),
+                            f64::from(cfg.film_grain),
+                            0.0,
+                            0.5,
+                        ) as f32;
+                    }
+                    if args.get("vignette").is_some() {
+                        cfg.vignette =
+                            finite_clamped(args.get("vignette"), f64::from(cfg.vignette), 0.0, 1.0)
+                                as f32;
+                    }
+                    if let Some(lb) = args.get("letterbox").and_then(Value::as_str) {
+                        cfg.letterbox = match lb {
+                            "cinema239" => LetterboxAspect::Cinema239,
+                            "flat185" => LetterboxAspect::Flat185,
+                            "academy43" => LetterboxAspect::Academy43,
+                            _ => LetterboxAspect::None,
+                        };
+                    }
+                    if let Some(tc) = args.get("burn_in_timecode").and_then(Value::as_bool) {
+                        cfg.burn_in_timecode = tc;
+                    }
+                    if let Some(wm) = args.get("watermark_text").and_then(Value::as_str) {
+                        cfg.watermark_text = wm.to_string();
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetCinemaFinishing {
+                                config: cfg.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "applied": true, "config": cfg }).to_string()
+                        }]
+                    }))
+                }
+                "export_edl_cmx3600" => {
+                    let edl = export_cmx3600_edl(&s.project);
+                    let saved_path =
+                        if let Some(p) = args.get("output_path").and_then(Value::as_str) {
+                            let out_p = PathBuf::from(p);
+                            if let Some(parent) = out_p.parent()
+                                && !parent.as_os_str().is_empty()
+                            {
+                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            std::fs::write(&out_p, &edl).map_err(|e| e.to_string())?;
+                            Some(out_p.display().to_string())
+                        } else {
+                            None
+                        };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "edl": edl, "saved_path": saved_path }).to_string()
+                        }]
+                    }))
+                }
+                "export_fcpxml" => {
+                    let xml = export_fcpxml_v10(&s.project);
+                    let saved_path =
+                        if let Some(p) = args.get("output_path").and_then(Value::as_str) {
+                            let out_p = PathBuf::from(p);
+                            if let Some(parent) = out_p.parent()
+                                && !parent.as_os_str().is_empty()
+                            {
+                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            std::fs::write(&out_p, &xml).map_err(|e| e.to_string())?;
+                            Some(out_p.display().to_string())
+                        } else {
+                            None
+                        };
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "fcpxml": xml, "saved_path": saved_path }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown cinema_finishing_and_edl action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -8965,7 +9697,7 @@ mod tests {
 
         // Verify exact MCP tool count = 58 (v2.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 70);
+        assert_eq!(defs.as_array().unwrap().len(), 74);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -9160,7 +9892,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 70);
+        assert_eq!(defs.as_array().unwrap().len(), 74);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -9437,7 +10169,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 70);
+        assert_eq!(defs.as_array().unwrap().len(), 74);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -9655,7 +10387,7 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 70);
+        assert_eq!(defs.as_array().unwrap().len(), 74);
     }
 
     #[test]
@@ -9848,7 +10580,7 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 70);
+        assert_eq!(defs.as_array().unwrap().len(), 74);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -10056,7 +10788,228 @@ mod tests {
         assert!(html_body.contains("data:image/png;base64,"));
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 70);
+        assert_eq!(defs.as_array().unwrap().len(), 74);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v50_mcp_tools_rig2d_bgm_speed_ramp_and_finishing() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v50_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let mut proj = Project::new("v5.0 Pro Finishing Test", ProjectSettings::default());
+        proj.active_scene_mut().unwrap().width = 160;
+        proj.active_scene_mut().unwrap().height = 90;
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let session = std::sync::Arc::new(std::sync::Mutex::new(EditorSession::with_folder(
+            proj, folder,
+        )));
+
+        // 1. #37 rig2d_puppet_control: add + update + solve_ik_preview
+        let rig_add = call_tool(
+            &session,
+            "rig2d_puppet_control",
+            &json!({
+                "action": "add_rigged_puppet",
+                "preset": "wave_hello",
+                "layer_index": 1,
+                "duration_sec": 3.0,
+                "right_ik_enabled": true,
+                "right_ik_x": 80.0,
+                "right_ik_y": -85.0
+            }),
+        )
+        .unwrap();
+        let rig_json: Value =
+            serde_json::from_str(rig_add["content"][0]["text"].as_str().unwrap()).unwrap();
+        let rig_id = rig_json["item_id"].as_str().unwrap().to_string();
+        assert_eq!(rig_json["bone_count"], 10);
+
+        call_tool(
+            &session,
+            "rig2d_puppet_control",
+            &json!({
+                "action": "update_rig",
+                "id": rig_id.clone(),
+                "preset": "dance_bounce",
+                "motion_speed": 1.3
+            }),
+        )
+        .unwrap();
+
+        let ik_prev = call_tool(
+            &session,
+            "rig2d_puppet_control",
+            &json!({"action": "solve_ik_preview", "time_sec": 0.2}),
+        )
+        .unwrap();
+        let ik_json: Value =
+            serde_json::from_str(ik_prev["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(ik_json["bone_count"], 10);
+
+        // 2. #38 offline_bgm_composer: preview + compose_and_place_bgm with bar markers
+        let bgm_prev = call_tool(
+            &session,
+            "offline_bgm_composer",
+            &json!({
+                "action": "preview_arrangement",
+                "genre": "cyber_synthwave",
+                "duration_sec": 4.0
+            }),
+        )
+        .unwrap();
+        let bgm_prev_json: Value =
+            serde_json::from_str(bgm_prev["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(bgm_prev_json["bar_count"].as_u64().unwrap() >= 2);
+
+        let bgm_res = call_tool(
+            &session,
+            "offline_bgm_composer",
+            &json!({
+                "action": "compose_and_place_bgm",
+                "genre": "lofi_chill",
+                "duration_sec": 3.0,
+                "audio_layer_index": 3,
+                "add_bar_markers": true,
+                "apply": true
+            }),
+        )
+        .unwrap();
+        let bgm_json: Value =
+            serde_json::from_str(bgm_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(bgm_json["applied"], true);
+        assert!(bgm_json["bar_markers_added"].as_u64().unwrap() >= 1);
+        assert!(std::path::Path::new(bgm_json["wav_path"].as_str().unwrap()).exists());
+
+        // 3. #39 speed_ramp_and_scene_detect: set bullet_time_dip on rig + detect hard cut
+        let sr_res = call_tool(
+            &session,
+            "speed_ramp_and_scene_detect",
+            &json!({
+                "action": "set_speed_ramp",
+                "id": rig_id,
+                "preset": "bullet_time_dip",
+                "enabled": true
+            }),
+        )
+        .unwrap();
+        let sr_json: Value =
+            serde_json::from_str(sr_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(sr_json["applied"], true);
+
+        // Create two contrasting full-screen colored shots for scene cut detection
+        {
+            let mut g = session.lock().unwrap();
+            let sc = g.project.active_scene_mut().unwrap();
+            sc.layers[0].items.push(TimelineItem::new(
+                "RedShot",
+                RationalTime::ZERO,
+                RationalTime::from_seconds(1.5),
+                ItemKind::Shape {
+                    shape: ShapeKind::Rectangle,
+                    width: 160.0,
+                    height: 90.0,
+                    color: RgbaColor {
+                        r: 0.92,
+                        g: 0.12,
+                        b: 0.12,
+                        a: 1.0,
+                    },
+                },
+            ));
+            sc.layers[0].items.push(TimelineItem::new(
+                "BlueShot",
+                RationalTime::from_seconds(1.5),
+                RationalTime::from_seconds(1.5),
+                ItemKind::Shape {
+                    shape: ShapeKind::Rectangle,
+                    width: 160.0,
+                    height: 90.0,
+                    color: RgbaColor {
+                        r: 0.08,
+                        g: 0.22,
+                        b: 0.94,
+                        a: 1.0,
+                    },
+                },
+            ));
+        }
+
+        let cut_res = call_tool(
+            &session,
+            "speed_ramp_and_scene_detect",
+            &json!({
+                "action": "detect_scene_cuts",
+                "sample_interval_sec": 0.25,
+                "sensitivity": 0.6,
+                "split_clips": false,
+                "apply": true
+            }),
+        )
+        .unwrap();
+        let cut_json: Value =
+            serde_json::from_str(cut_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(cut_json["cut_count"].as_u64().unwrap() >= 1);
+        assert!(cut_json["applied_commands"].as_u64().unwrap() >= 1);
+
+        // 4. #40 cinema_finishing_and_edl: set_finishing + export EDL + export FCPXML
+        let fin_res = call_tool(
+            &session,
+            "cinema_finishing_and_edl",
+            &json!({
+                "action": "set_finishing",
+                "preset": "kodak_35mm",
+                "burn_in_timecode": true,
+                "watermark_text": "V5 REVIEW"
+            }),
+        )
+        .unwrap();
+        let fin_json: Value =
+            serde_json::from_str(fin_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(fin_json["applied"], true);
+        assert_eq!(fin_json["config"]["burn_in_timecode"], true);
+
+        let edl_path = tmp_dir.join("master.edl");
+        let edl_res = call_tool(
+            &session,
+            "cinema_finishing_and_edl",
+            &json!({
+                "action": "export_edl_cmx3600",
+                "output_path": edl_path.display().to_string()
+            }),
+        )
+        .unwrap();
+        let edl_json: Value =
+            serde_json::from_str(edl_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            edl_json["edl"]
+                .as_str()
+                .unwrap()
+                .contains("FCM: NON-DROP FRAME")
+        );
+        assert!(edl_path.exists());
+
+        let xml_path = tmp_dir.join("master.fcpxml");
+        let xml_res = call_tool(
+            &session,
+            "cinema_finishing_and_edl",
+            &json!({
+                "action": "export_fcpxml",
+                "output_path": xml_path.display().to_string()
+            }),
+        )
+        .unwrap();
+        let xml_json: Value =
+            serde_json::from_str(xml_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            xml_json["fcpxml"]
+                .as_str()
+                .unwrap()
+                .contains("<fcpxml version=\"1.10\">")
+        );
+        assert!(xml_path.exists());
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 74);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }
