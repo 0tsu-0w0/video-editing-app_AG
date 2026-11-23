@@ -15,6 +15,7 @@ pub mod rig_render;
 pub mod sprite;
 pub mod text;
 pub mod v09_fx;
+pub mod v60_render;
 pub mod vfx_track;
 
 pub use ai_vision::{
@@ -64,6 +65,7 @@ pub use text::{StyledSpan, TextRenderer, parse_inline_text_spans, strip_inline_t
 pub use v09_fx::{
     apply_3d_lighting_tint, build_drop_shadow_image, render_particle_emitter, render_vector_shape,
 };
+pub use v60_render::{apply_vfx_paint, render_data_chart};
 pub use vfx_track::{
     CameraMotionSample, StabilizeConfig, analyze_camera_shake, apply_corner_pin,
     build_stabilize_commands, compute_shake_compensation, estimate_global_frame_motion, invert_3x3,

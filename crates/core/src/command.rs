@@ -414,6 +414,16 @@ pub enum EditCommand {
     SetCinemaFinishing {
         config: crate::finishing::CinemaFinishingConfig,
     },
+    /// v6.0 #41: データ駆動インフォグラフィック・チャート設定を更新する
+    SetDataChart {
+        item_id: ItemId,
+        config: Box<crate::data_viz::DataChartConfig>,
+    },
+    /// v6.0 #42: クリップの非破壊 VFX ペイント／クローンスタンプ／ワイヤー消し設定を更新する
+    SetVfxPaint {
+        item_id: ItemId,
+        vfx_paint: crate::vfx_paint::VfxPaintConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -495,6 +505,8 @@ impl EditCommand {
             Self::SetRig2D { .. } => "set_rig_2d",
             Self::SetSpeedRamp { .. } => "set_speed_ramp",
             Self::SetCinemaFinishing { .. } => "set_cinema_finishing",
+            Self::SetDataChart { .. } => "set_data_chart",
+            Self::SetVfxPaint { .. } => "set_vfx_paint",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1810,6 +1822,31 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             next.film_grain = next.film_grain.clamp(0.0, 0.5);
             next.vignette = next.vignette.clamp(0.0, 1.0);
             scene.cinema_finishing = next;
+            Ok(())
+        }
+        EditCommand::SetDataChart { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::DataChart { config: ref mut c } = item.kind {
+                let mut next = (**config).clone();
+                next.width = next.width.clamp(120.0, 4096.0);
+                next.height = next.height.clamp(80.0, 4096.0);
+                next.animate_in_sec = next.animate_in_sec.clamp(0.05, 30.0);
+                **c = next;
+                Ok(())
+            } else {
+                Err(CommandError::ItemNotFound(*item_id))
+            }
+        }
+        EditCommand::SetVfxPaint { item_id, vfx_paint } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = vfx_paint.clone();
+            for stroke in &mut next.strokes {
+                stroke.radius_px = stroke.radius_px.clamp(1.0, 256.0);
+                stroke.hardness = stroke.hardness.clamp(0.05, 1.0);
+                stroke.opacity = stroke.opacity.clamp(0.0, 1.0);
+                stroke.write_on_progress = stroke.write_on_progress.clamp(0.0, 1.0);
+            }
+            item.vfx_paint = next;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

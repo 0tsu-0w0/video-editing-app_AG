@@ -1031,6 +1031,10 @@ pub enum ItemKind {
     RiggedPuppet {
         config: Box<crate::rigging::Rig2DConfig>,
     },
+    /// v6.0 #41: データ駆動モーショングラフィックス（棒グラフ・折れ線・ドーナツ・KPI カウンター）
+    DataChart {
+        config: Box<crate::data_viz::DataChartConfig>,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -1356,6 +1360,9 @@ pub struct TimelineItem {
     /// v5.0 #39: スピードランプ（Time-Remapping 速度曲線）設定
     #[serde(default)]
     pub speed_ramp: crate::speed_ramp::SpeedRampConfig,
+    /// v6.0 #42: 非破壊 VFX ペイント / クローンスタンプ / ワイヤー消し / 秘匿ぼかし設定
+    #[serde(default)]
+    pub vfx_paint: crate::vfx_paint::VfxPaintConfig,
     pub kind: ItemKind,
 }
 
@@ -1439,6 +1446,7 @@ impl TimelineItem {
             corner_pin: CornerPinConfig::default(),
             kinetic_subtitle: crate::kinetic_sub::KineticSubtitleConfig::default(),
             speed_ramp: crate::speed_ramp::SpeedRampConfig::default(),
+            vfx_paint: crate::vfx_paint::VfxPaintConfig::default(),
             kind,
         }
     }

@@ -478,3 +478,65 @@ fn golden_v50_rigged_puppet_speed_ramp_and_cinema_finishing_determinism() {
         "v5.0 rigged puppet + grain + timecode burn-in must progress over time: diff={diff}"
     );
 }
+
+#[test]
+fn golden_v60_data_chart_and_vfx_paint_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        let mut chart = TimelineItem::new(
+            "RevenueChart",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::DataChart {
+                config: Box::new(ve_core::DataChartConfig::for_kind(
+                    ve_core::ChartKind::BarChart,
+                )),
+            },
+        );
+        chart.transform.x = 20.0;
+        chart.transform.y = 10.0;
+        chart.vfx_paint = ve_core::VfxPaintConfig {
+            enabled: true,
+            animate_write_on: true,
+            strokes: vec![ve_core::PaintStroke::brush_glow(
+                vec![[0.12, 0.78], [0.88, 0.24]],
+                6.0,
+                ve_core::RgbaColor {
+                    r: 1.0,
+                    g: 0.35,
+                    b: 0.55,
+                    a: 1.0,
+                },
+            )],
+        };
+        scene.layers[2].items.push(chart);
+    }
+
+    let t0 = RationalTime::from_seconds(0.25);
+    let t1 = RationalTime::from_seconds(1.5);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let r1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let r2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    assert_eq!(
+        r1, r2,
+        "v6.0 DataChart + VfxPaint rendering must be bit-for-bit deterministic"
+    );
+
+    let later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let diff = r1.iter().zip(later.iter()).filter(|(a, b)| a != b).count();
+    assert!(
+        diff > 300,
+        "v6.0 DataChart bar growth + Write-On VFX paint must progress over time: diff={diff}"
+    );
+}

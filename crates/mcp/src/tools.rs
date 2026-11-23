@@ -9,32 +9,36 @@ use ve_ai::{
 };
 use ve_audio::{
     AudioGraph, BeatDetectionConfig, BgmComposeConfig, BgmGenre, DubbingVoicePreset, FoleyPreset,
-    GeneratedDubClip, align_text_to_phoneme_segments, build_dubbing_timeline_commands,
-    compose_bgm_track, detect_audio_beats, estimate_audio_offset_xcorr, measure_integrated_lufs,
-    measure_true_peak_dbtp, separate_vocal_bgm_stems, synthesize_foley_sfx_pcm,
-    synthesize_offline_dubbing_pcm, write_stereo_wav_file,
+    GeneratedDubClip, SpeakerTrackSpec, align_text_to_phoneme_segments, analyze_podcast_speakers,
+    apply_podcast_voice_leveler, build_dubbing_timeline_commands,
+    build_podcast_auto_switch_commands, compose_bgm_track, detect_audio_beats,
+    estimate_audio_offset_xcorr, measure_integrated_lufs, measure_true_peak_dbtp,
+    separate_vocal_bgm_stems, synthesize_foley_sfx_pcm, synthesize_offline_dubbing_pcm,
+    write_stereo_wav_file,
 };
 use ve_core::{
     AlignMode, AssetRef, AudioDuckingConfig, AudioEffectNode, BezierMask, BlendMode,
     BroadcastProfile, BroadcastQcMetrics, Camera3D, ChannelSelector, CharacterSpriteConfig,
-    CinemaFinishingConfig, ColorCurves, ColorManagementConfig, ColorSpace, CommandSource,
-    CompositeNode, CompositeNodeKind, ConflictResolution, CornerPinConfig, CrdtOpKind, CrdtSyncLog,
-    CubicBezier, EditCommand, EditorKeymap, EffectNode, EffectPreset, FrameRate,
-    GenerativeBgConfig, GenerativeBgPreset, HighlightConfig, Interpolation, ItemKind,
+    ChartKind, CinemaFinishingConfig, ColorCurves, ColorManagementConfig, ColorSpace,
+    CommandSource, CompositeNode, CompositeNodeKind, ConflictResolution, CornerPinConfig,
+    CrdtOpKind, CrdtSyncLog, CubicBezier, DataChartConfig, DataSeriesPoint, DeliveryBundleArtifact,
+    DeliveryBundleConfig, DeliveryPlatform, EditCommand, EditorKeymap, EffectNode, EffectPreset,
+    FrameRate, GenerativeBgConfig, GenerativeBgPreset, HighlightConfig, Interpolation, ItemKind,
     JumpCutConfig, Keyframe, KeymapPreset, KineticHighlightMode, KineticSubtitleConfig,
     LetterboxAspect, Light3DType, LipSyncMode, LocalizationEntry, LocalizationTable, MaskMode,
     MaskVertex, MediaKind, Mesh3DConfig, Mesh3DPreset, MotionPreset, MulticamCutPoint,
-    NodeCompositeGraph, ParticleConfig, ParticlePreset, PhysicsConfig, PhysicsPreset,
-    ProjectTemplate, PsdCharacterConfig, RationalTime, ReviewComment, ReviewSource, ReviewStatus,
-    RgbaColor, Rig2DConfig, RigMotionPreset, SceneColorGrade, ScriptBuildConfig, ShapeKind,
-    SpeedRampKnot, SpeedRampPreset, TemplateParamValue, TextAnimator, TextStylePreset,
+    NodeCompositeGraph, PaintStroke, PaintToolKind, ParticleConfig, ParticlePreset, PhysicsConfig,
+    PhysicsPreset, ProjectTemplate, PsdCharacterConfig, RationalTime, ReviewComment, ReviewSource,
+    ReviewStatus, RgbaColor, Rig2DConfig, RigMotionPreset, SceneColorGrade, ScriptBuildConfig,
+    ShapeKind, SpeedRampKnot, SpeedRampPreset, TemplateParamValue, TextAnimator, TextStylePreset,
     TimelineItem, TimelineMarker, ToneMapper, TrackMatte, TrackMatteMode, UiLanguage,
-    UiThemePreset, VectorShapeConfig, archive_project_to_zip, base64_encode, build_align_commands,
-    build_apply_locale_commands, build_bake_expression_command, build_beat_cut_commands,
-    build_beat_markers_command, build_close_gaps_commands, build_cube_mesh,
-    build_fit_duration_to_layer_commands, build_instantiate_template_command,
-    build_jump_cut_commands, build_motion_preset_commands, build_multicam_switch_cut_commands,
-    build_multicam_sync_align_commands, build_physics_bake_commands, build_replace_text_commands,
+    UiThemePreset, VectorShapeConfig, VfxPaintConfig, archive_project_to_zip, base64_encode,
+    build_align_commands, build_apply_locale_commands, build_bake_expression_command,
+    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
+    build_cube_mesh, build_delivery_manifest, build_fit_duration_to_layer_commands,
+    build_instantiate_template_command, build_jump_cut_commands, build_motion_preset_commands,
+    build_multicam_switch_cut_commands, build_multicam_sync_align_commands,
+    build_physics_bake_commands, build_reformatted_scene_command, build_replace_text_commands,
     build_review_comments_to_markers_commands, build_scene_cut_commands,
     build_script_timeline_commands, build_shorts_clip_scene_command,
     build_strip_filler_words_commands, build_text_based_delete_commands,
@@ -47,10 +51,11 @@ use ve_core::{
     extract_motion_template_from_scene, extract_transcript_entries, format_diff_report,
     format_youtube_chapters, import_localization_csv, import_review_comments_csv,
     import_review_comments_json, import_youtube_review_comments, merge_projects_three_way,
-    official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo, parse_gltf_or_glb,
-    parse_script_auto, parse_srt_subtitles, run_broadcast_qc_audit, search_text_items,
-    simulate_scene_physics, subtitle_entries_to_commands, sync_node_graph_to_scene_layers,
-    validate_project_delivery, verify_and_install_extension, wrap_subtitle_japanese,
+    official_registry_catalog, parse_ass_subtitles, parse_aviutl_exo, parse_chart_csv,
+    parse_gltf_or_glb, parse_script_auto, parse_srt_subtitles, run_broadcast_qc_audit,
+    search_text_items, simulate_scene_physics, subtitle_entries_to_commands,
+    sync_node_graph_to_scene_layers, validate_project_delivery, verify_and_install_extension,
+    wrap_subtitle_japanese,
 };
 use ve_media::{
     ExportConfig, ExportFormat, FfmpegCli, HwDecodeBackend, VideoEncoder, decode_audio_file,
@@ -1509,6 +1514,115 @@ pub fn tool_definitions() -> Value {
         }
     ]) {
         tools.extend(v50_extra);
+    }
+    if let Value::Array(v60_extra) = json!([
+        {
+            "name": "data_chart_motion_graphics",
+            "description": "v6.0 #41: データ駆動モーショングラフィックス＆インフォグラフィック・チャート（棒グラフ・折れ線・ドーナツ・KPIカウンター / CSV取り込み）を生成・更新する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create_chart", "update_chart", "import_csv"]
+                    },
+                    "item_id": { "type": "string" },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["bar_chart", "line_chart", "donut_chart", "kpi_counter"]
+                    },
+                    "layer_index": { "type": "integer" },
+                    "name": { "type": "string" },
+                    "title": { "type": "string" },
+                    "unit_suffix": { "type": "string" },
+                    "csv_text": { "type": "string" },
+                    "points": { "type": "array" },
+                    "start_sec": { "type": "number" },
+                    "duration_sec": { "type": "number" },
+                    "animate_in_sec": { "type": "number" },
+                    "width": { "type": "number" },
+                    "height": { "type": "number" },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "accent_color": { "type": "string" },
+                    "bg_color": { "type": "string" },
+                    "show_grid": { "type": "boolean" },
+                    "show_values": { "type": "boolean" }
+                }
+            }
+        },
+        {
+            "name": "vfx_paint_and_inpaint",
+            "description": "v6.0 #42: 非破壊 VFX ペイント（Write-On グローブラシ・クローンスタンプ・ワイヤー/不要物消しインペインティング・プライバシー秘匿ぼかし）をクリップへ設定・追加する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add_stroke", "set_paint", "clear_paint", "get_paint"]
+                    },
+                    "item_id": { "type": "string" },
+                    "tool": {
+                        "type": "string",
+                        "enum": ["brush_glow", "clone_stamp", "wire_erase_inpaint", "blur_redact"]
+                    },
+                    "points": { "type": "array" },
+                    "radius_px": { "type": "number" },
+                    "hardness": { "type": "number" },
+                    "opacity": { "type": "number" },
+                    "color": { "type": "string" },
+                    "clone_offset": { "type": "array" },
+                    "write_on_progress": { "type": "number" },
+                    "animate_write_on": { "type": "boolean" },
+                    "enabled": { "type": "boolean" }
+                },
+                "required": ["item_id"]
+            }
+        },
+        {
+            "name": "podcast_auto_director",
+            "description": "v6.0 #43: マルチトラック・ポッドキャスト＆コラボ実況オート編集（複数話者ダイアリゼーション・アクティブ話者カメラ自動切替キーフレーム＆マーカー・-16 LUFS 均一化レベラー）を実行する",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["analyze_and_direct", "level_wav"]
+                    },
+                    "speakers": { "type": "array" },
+                    "min_turn_sec": { "type": "number" },
+                    "silence_gate_db": { "type": "number" },
+                    "target_lufs": { "type": "number" },
+                    "apply_leveler_faders": { "type": "boolean" },
+                    "apply": { "type": "boolean" },
+                    "input_wav_path": { "type": "string" },
+                    "output_wav_path": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "multi_platform_packager",
+            "description": "v6.0 #44: プロ・マルチプラットフォーム自動リフォーマット（16:9 / 9:16 / 1:1 / 4K 派生シーン自動生成）および 1 クリック納品バンドル（SRT・チャプター・サムネイル・EDL・FCPXML・QCレポート・manifest.json）を書き出す",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create_platform_variants", "export_delivery_bundle"]
+                    },
+                    "platforms": { "type": "array" },
+                    "output_dir": { "type": "string" },
+                    "base_title": { "type": "string" },
+                    "tags": { "type": "array" },
+                    "include_thumbnail": { "type": "boolean" },
+                    "include_edl": { "type": "boolean" },
+                    "include_fcpxml": { "type": "boolean" },
+                    "include_qc_report": { "type": "boolean" }
+                }
+            }
+        }
+    ]) {
+        tools.extend(v60_extra);
     }
     Value::Array(tools)
 }
@@ -9044,6 +9158,876 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
                 other => Err(format!("unknown cinema_finishing_and_edl action: {other}")),
             }
         }
+        "data_chart_motion_graphics" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("create_chart");
+            let parse_kind = |k: &str| match k {
+                "line_chart" => ChartKind::LineChart,
+                "donut_chart" => ChartKind::DonutChart,
+                "kpi_counter" => ChartKind::KpiCounter,
+                _ => ChartKind::BarChart,
+            };
+            let parse_points_from_args = |a: &Value| -> Option<Vec<DataSeriesPoint>> {
+                if let Some(csv) = a.get("csv_text").and_then(Value::as_str) {
+                    let parsed = parse_chart_csv(csv);
+                    if !parsed.is_empty() {
+                        return Some(parsed);
+                    }
+                }
+                if let Some(arr) = a.get("points").and_then(Value::as_array) {
+                    let mut pts = Vec::new();
+                    for item in arr {
+                        let label = item
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or("ITEM")
+                            .to_string();
+                        let val = item.get("value").and_then(Value::as_f64).unwrap_or(0.0);
+                        let color = item
+                            .get("color")
+                            .and_then(Value::as_str)
+                            .and_then(RgbaColor::from_hex);
+                        if val.is_finite() {
+                            pts.push(DataSeriesPoint {
+                                label,
+                                value: val,
+                                color,
+                            });
+                        }
+                    }
+                    if !pts.is_empty() {
+                        return Some(pts);
+                    }
+                }
+                None
+            };
+            let apply_cfg_overrides = |cfg: &mut DataChartConfig, a: &Value| {
+                if let Some(k) = a.get("kind").and_then(Value::as_str) {
+                    cfg.kind = parse_kind(k);
+                }
+                if let Some(t) = a.get("title").and_then(Value::as_str) {
+                    cfg.title = t.to_string();
+                }
+                if let Some(u) = a.get("unit_suffix").and_then(Value::as_str) {
+                    cfg.unit_suffix = u.to_string();
+                }
+                if let Some(pts) = parse_points_from_args(a) {
+                    cfg.points = pts;
+                }
+                if let Some(sec) = a.get("animate_in_sec").and_then(Value::as_f64) {
+                    cfg.animate_in_sec = (sec as f32).clamp(0.05, 30.0);
+                }
+                if let Some(w) = a.get("width").and_then(Value::as_f64) {
+                    cfg.width = (w as f32).clamp(120.0, 4096.0);
+                }
+                if let Some(h) = a.get("height").and_then(Value::as_f64) {
+                    cfg.height = (h as f32).clamp(80.0, 4096.0);
+                }
+                if let Some(hex) = a.get("accent_color").and_then(Value::as_str)
+                    && let Some(c) = RgbaColor::from_hex(hex)
+                {
+                    cfg.accent_color = c;
+                }
+                if let Some(hex) = a.get("bg_color").and_then(Value::as_str)
+                    && let Some(c) = RgbaColor::from_hex(hex)
+                {
+                    cfg.bg_color = c;
+                }
+                if let Some(g) = a.get("show_grid").and_then(Value::as_bool) {
+                    cfg.show_grid = g;
+                }
+                if let Some(v) = a.get("show_values").and_then(Value::as_bool) {
+                    cfg.show_values = v;
+                }
+            };
+
+            match action {
+                "create_chart" => {
+                    let kind = args
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .map(parse_kind)
+                        .unwrap_or(ChartKind::BarChart);
+                    let mut cfg = DataChartConfig::for_kind(kind);
+                    apply_cfg_overrides(&mut cfg, args);
+
+                    let scene = s.project.active_scene().ok_or("no active scene")?;
+                    let layer_index = args
+                        .get("layer_index")
+                        .and_then(Value::as_u64)
+                        .map(|v| v as usize)
+                        .unwrap_or(1)
+                        .min(scene.layers.len().saturating_sub(1));
+                    let start = RationalTime::from_seconds(finite_clamped(
+                        args.get("start_sec"),
+                        0.0,
+                        0.0,
+                        36000.0,
+                    ));
+                    let duration = RationalTime::from_seconds(finite_clamped(
+                        args.get("duration_sec"),
+                        5.0,
+                        0.1,
+                        3600.0,
+                    ));
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&cfg.title)
+                        .to_string();
+                    let default_x = ((scene.width as f32) - cfg.width) * 0.5;
+                    let default_y = ((scene.height as f32) - cfg.height) * 0.5;
+                    let mut item = TimelineItem::new(
+                        name,
+                        start,
+                        duration,
+                        ItemKind::DataChart {
+                            config: Box::new(cfg.clone()),
+                        },
+                    );
+                    item.transform.x = args
+                        .get("x")
+                        .and_then(Value::as_f64)
+                        .map(|v| v as f32)
+                        .unwrap_or(default_x);
+                    item.transform.y = args
+                        .get("y")
+                        .and_then(Value::as_f64)
+                        .map(|v| v as f32)
+                        .unwrap_or(default_y);
+                    let created_id = item.id;
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::AddObject { layer_index, item },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "created_id": created_id,
+                                "layer_index": layer_index,
+                                "point_count": cfg.points.len(),
+                                "config": cfg
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "update_chart" | "import_csv" => {
+                    let item_id = args
+                        .get("item_id")
+                        .and_then(Value::as_str)
+                        .and_then(|u| Uuid::parse_str(u).ok())
+                        .ok_or("missing or invalid 'item_id'")?;
+                    let existing_cfg = {
+                        let scene = s.project.active_scene().ok_or("no active scene")?;
+                        scene
+                            .layers
+                            .iter()
+                            .flat_map(|l| l.items.iter())
+                            .find(|i| i.id == item_id)
+                            .and_then(|i| match &i.kind {
+                                ItemKind::DataChart { config } => Some((**config).clone()),
+                                _ => None,
+                            })
+                            .ok_or("DataChart item not found")?
+                    };
+                    let mut next = existing_cfg;
+                    apply_cfg_overrides(&mut next, args);
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetDataChart {
+                                item_id,
+                                config: Box::new(next.clone()),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "updated": true,
+                                "item_id": item_id,
+                                "point_count": next.points.len(),
+                                "config": next
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!(
+                    "unknown data_chart_motion_graphics action: {other}"
+                )),
+            }
+        }
+        "vfx_paint_and_inpaint" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("add_stroke");
+            let item_id = args
+                .get("item_id")
+                .and_then(Value::as_str)
+                .and_then(|u| Uuid::parse_str(u).ok())
+                .ok_or("missing or invalid 'item_id'")?;
+            let current = {
+                let scene = s.project.active_scene().ok_or("no active scene")?;
+                scene
+                    .layers
+                    .iter()
+                    .flat_map(|l| l.items.iter())
+                    .find(|i| i.id == item_id)
+                    .map(|i| i.vfx_paint.clone())
+                    .ok_or("item not found")?
+            };
+
+            match action {
+                "get_paint" => Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": json!({
+                            "item_id": item_id,
+                            "stroke_count": current.strokes.len(),
+                            "vfx_paint": current
+                        }).to_string()
+                    }]
+                })),
+                "clear_paint" => {
+                    let cleared = VfxPaintConfig::default();
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetVfxPaint {
+                                item_id,
+                                vfx_paint: cleared.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({ "cleared": true, "item_id": item_id }).to_string()
+                        }]
+                    }))
+                }
+                "add_stroke" | "set_paint" => {
+                    let tool = match args
+                        .get("tool")
+                        .and_then(Value::as_str)
+                        .unwrap_or("brush_glow")
+                    {
+                        "clone_stamp" => PaintToolKind::CloneStamp,
+                        "wire_erase_inpaint" => PaintToolKind::WireEraseInpaint,
+                        "blur_redact" => PaintToolKind::BlurRedact,
+                        _ => PaintToolKind::BrushGlow,
+                    };
+                    let mut pts = Vec::new();
+                    if let Some(arr) = args.get("points").and_then(Value::as_array) {
+                        for p in arr {
+                            if let Some(pair) = p.as_array()
+                                && pair.len() >= 2
+                                && let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64())
+                            {
+                                pts.push([(x as f32).clamp(0.0, 1.0), (y as f32).clamp(0.0, 1.0)]);
+                            }
+                        }
+                    }
+                    if pts.is_empty() {
+                        pts = vec![[0.2, 0.5], [0.8, 0.5]];
+                    }
+                    let radius_px = finite_clamped(args.get("radius_px"), 14.0, 1.0, 256.0) as f32;
+                    let hardness = finite_clamped(args.get("hardness"), 0.72, 0.05, 1.0) as f32;
+                    let opacity = finite_clamped(args.get("opacity"), 1.0, 0.0, 1.0) as f32;
+                    let write_on_progress =
+                        finite_clamped(args.get("write_on_progress"), 1.0, 0.0, 1.0) as f32;
+                    let color = args
+                        .get("color")
+                        .and_then(Value::as_str)
+                        .and_then(RgbaColor::from_hex)
+                        .unwrap_or(RgbaColor {
+                            r: 1.0,
+                            g: 0.28,
+                            b: 0.52,
+                            a: 1.0,
+                        });
+                    let clone_offset = args
+                        .get("clone_offset")
+                        .and_then(Value::as_array)
+                        .and_then(|a| {
+                            if a.len() >= 2 {
+                                Some([
+                                    a[0].as_f64().unwrap_or(0.08) as f32,
+                                    a[1].as_f64().unwrap_or(0.0) as f32,
+                                ])
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or([0.08, 0.0]);
+
+                    let stroke = PaintStroke {
+                        id: Uuid::new_v4(),
+                        tool,
+                        points: pts,
+                        radius_px,
+                        hardness,
+                        opacity,
+                        color,
+                        clone_offset,
+                        write_on_progress,
+                    };
+
+                    let mut next = if action == "set_paint" {
+                        VfxPaintConfig {
+                            enabled: args.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                            animate_write_on: args
+                                .get("animate_write_on")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            strokes: vec![stroke],
+                        }
+                    } else {
+                        let mut c = current;
+                        c.enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                        if let Some(aw) = args.get("animate_write_on").and_then(Value::as_bool) {
+                            c.animate_write_on = aw;
+                        }
+                        c.strokes.push(stroke);
+                        c
+                    };
+                    if let Some(en) = args.get("enabled").and_then(Value::as_bool) {
+                        next.enabled = en;
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::SetVfxPaint {
+                                item_id,
+                                vfx_paint: next.clone(),
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "applied": true,
+                                "item_id": item_id,
+                                "stroke_count": next.strokes.len(),
+                                "vfx_paint": next
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown vfx_paint_and_inpaint action: {other}")),
+            }
+        }
+        "podcast_auto_director" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("analyze_and_direct");
+            let target_lufs = finite_clamped(args.get("target_lufs"), -16.0, -30.0, -8.0) as f32;
+
+            match action {
+                "level_wav" => {
+                    let in_path = args
+                        .get("input_wav_path")
+                        .and_then(Value::as_str)
+                        .ok_or("missing 'input_wav_path'")?;
+                    let out_path = args
+                        .get("output_wav_path")
+                        .and_then(Value::as_str)
+                        .ok_or("missing 'output_wav_path'")?;
+                    let buf = decode_audio_file(&PathBuf::from(in_path))
+                        .map_err(|e| format!("decode failed: {e}"))?;
+                    let sr = buf.sample_rate.max(8_000);
+                    let mut stereo = Vec::with_capacity(buf.frame_count() * 2);
+                    if buf.channels <= 1 {
+                        for &v in &buf.samples {
+                            stereo.push(v);
+                            stereo.push(v);
+                        }
+                    } else {
+                        for f in 0..buf.frame_count() {
+                            let base = f * buf.channels;
+                            stereo.push(buf.samples[base]);
+                            stereo.push(buf.samples[base + 1]);
+                        }
+                    }
+                    let before_lufs = measure_integrated_lufs(&stereo, sr);
+                    apply_podcast_voice_leveler(&mut stereo, sr, target_lufs);
+                    let after_lufs = measure_integrated_lufs(&stereo, sr);
+                    let out_pb = PathBuf::from(out_path);
+                    if let Some(parent) = out_pb.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    write_stereo_wav_file(&out_pb, &stereo, sr).map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "before_lufs": before_lufs,
+                                "after_lufs": after_lufs,
+                                "target_lufs": target_lufs,
+                                "saved_path": out_pb.display().to_string()
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "analyze_and_direct" => {
+                    let min_turn_sec = finite_clamped(args.get("min_turn_sec"), 0.4, 0.1, 5.0);
+                    let silence_gate_db =
+                        finite_clamped(args.get("silence_gate_db"), -42.0, -70.0, -10.0) as f32;
+                    let apply_leveler_faders = args
+                        .get("apply_leveler_faders")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(true);
+
+                    let scene = s.project.active_scene().ok_or("no active scene")?.clone();
+                    let sr = s.project.settings.audio_sample_rate.max(8_000);
+                    let scene_dur_sec = scene.total_duration().as_seconds().clamp(1.0, 120.0);
+
+                    let mut specs: Vec<(SpeakerTrackSpec, Option<String>)> = Vec::new();
+                    if let Some(arr) = args.get("speakers").and_then(Value::as_array) {
+                        for (idx, sp) in arr.iter().enumerate() {
+                            let name = sp
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| format!("Speaker {}", idx + 1));
+                            let audio_layer_index =
+                                sp.get("audio_layer_index")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(idx as u64) as usize;
+                            let camera_layer_index = sp
+                                .get("camera_layer_index")
+                                .and_then(Value::as_u64)
+                                .map(|v| v as usize);
+                            let wav_path = sp
+                                .get("wav_path")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            specs.push((
+                                SpeakerTrackSpec {
+                                    name,
+                                    audio_layer_index,
+                                    camera_layer_index,
+                                },
+                                wav_path,
+                            ));
+                        }
+                    } else {
+                        for (li, layer) in scene.layers.iter().enumerate() {
+                            let has_audio = layer
+                                .items
+                                .iter()
+                                .any(|it| matches!(it.kind, ItemKind::Audio { .. }));
+                            if has_audio {
+                                specs.push((
+                                    SpeakerTrackSpec {
+                                        name: layer.name.clone(),
+                                        audio_layer_index: li,
+                                        camera_layer_index: None,
+                                    },
+                                    None,
+                                ));
+                            }
+                        }
+                    }
+
+                    let mut track_pcms: Vec<(String, Vec<f32>)> = Vec::with_capacity(specs.len());
+                    for (sp_idx, (spec, wav_opt)) in specs.iter().enumerate() {
+                        let loaded_pcm = wav_opt
+                            .as_ref()
+                            .and_then(|p| decode_audio_file(&PathBuf::from(p)).ok())
+                            .map(|buf| {
+                                let mut st = Vec::with_capacity(buf.frame_count() * 2);
+                                if buf.channels <= 1 {
+                                    for &v in &buf.samples {
+                                        st.push(v);
+                                        st.push(v);
+                                    }
+                                } else {
+                                    for f in 0..buf.frame_count() {
+                                        let base = f * buf.channels;
+                                        st.push(buf.samples[base]);
+                                        st.push(buf.samples[base + 1]);
+                                    }
+                                }
+                                st
+                            });
+
+                        let pcm = if let Some(st) = loaded_pcm {
+                            st
+                        } else {
+                            // タイムライン上の音声クリップ区間から決定論的な発話活性波形を生成
+                            let frames = ((scene_dur_sec * f64::from(sr)).round() as usize)
+                                .clamp(sr as usize, sr as usize * 120);
+                            let mut st = vec![0.0f32; frames * 2];
+                            let freq = 180.0 + (sp_idx as f32) * 45.0;
+                            let amp = (0.18 + (sp_idx as f32) * 0.08).min(0.45);
+                            if let Some(layer) = scene.layers.get(spec.audio_layer_index) {
+                                for it in &layer.items {
+                                    let f0 = ((it.start.as_seconds() * f64::from(sr)).round()
+                                        as usize)
+                                        .min(frames);
+                                    let f1 = ((it.end().as_seconds() * f64::from(sr)).round()
+                                        as usize)
+                                        .min(frames);
+                                    for fi in f0..f1 {
+                                        let t = fi as f32 / sr as f32;
+                                        let v = (std::f32::consts::TAU * freq * t).sin() * amp;
+                                        st[fi * 2] = v;
+                                        st[fi * 2 + 1] = v;
+                                    }
+                                }
+                            }
+                            st
+                        };
+                        track_pcms.push((spec.name.clone(), pcm));
+                    }
+
+                    let analysis = analyze_podcast_speakers(
+                        &track_pcms,
+                        sr,
+                        min_turn_sec,
+                        silence_gate_db,
+                        target_lufs,
+                    );
+                    let only_specs: Vec<SpeakerTrackSpec> =
+                        specs.iter().map(|(sp, _)| sp.clone()).collect();
+                    let cmds = build_podcast_auto_switch_commands(
+                        &scene,
+                        &only_specs,
+                        &analysis,
+                        apply_leveler_faders,
+                    );
+                    let command_count = cmds.len();
+                    if apply && !cmds.is_empty() {
+                        s.bus
+                            .execute(
+                                &mut s.project,
+                                EditCommand::Batch {
+                                    label: "Podcast Auto-Director".into(),
+                                    commands: cmds,
+                                },
+                                CommandSource::Mcp,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                    let turns_json: Vec<Value> = analysis
+                        .turns
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "speaker_idx": t.speaker_idx,
+                                "speaker_name": t.speaker_name,
+                                "start_sec": t.start_sec,
+                                "end_sec": t.end_sec,
+                                "avg_rms_db": t.avg_rms_db
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "applied": apply && command_count > 0,
+                                "turn_count": turns_json.len(),
+                                "command_count": command_count,
+                                "target_lufs": analysis.target_lufs,
+                                "speaker_lufs": analysis.speaker_lufs,
+                                "recommended_gains_db": analysis.recommended_gains_db,
+                                "turns": turns_json
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown podcast_auto_director action: {other}")),
+            }
+        }
+        "multi_platform_packager" => {
+            let s = &mut *guard;
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("create_platform_variants");
+
+            let parse_platform = |p: &str| match p {
+                "shorts_reels_9x16" | "9x16" => DeliveryPlatform::ShortsReels9x16,
+                "square_feed_1x1" | "1x1" => DeliveryPlatform::SquareFeed1x1,
+                "cinema_4k_master" | "4k" => DeliveryPlatform::Cinema4kMaster,
+                _ => DeliveryPlatform::YouTube16x9,
+            };
+            let targets = if let Some(arr) = args.get("platforms").and_then(Value::as_array) {
+                let mut list = Vec::new();
+                for v in arr {
+                    if let Some(ps) = v.as_str() {
+                        list.push(parse_platform(ps).default_target());
+                    }
+                }
+                if list.is_empty() {
+                    DeliveryBundleConfig::default().targets
+                } else {
+                    list
+                }
+            } else {
+                DeliveryBundleConfig::default().targets
+            };
+
+            let cfg = DeliveryBundleConfig {
+                targets,
+                include_thumbnail: args
+                    .get("include_thumbnail")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                include_edl: args
+                    .get("include_edl")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                include_fcpxml: args
+                    .get("include_fcpxml")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                include_qc_report: args
+                    .get("include_qc_report")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                base_title: args
+                    .get("base_title")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| s.project.name.clone()),
+                tags: args
+                    .get("tags")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec!["video".into(), "master".into()]),
+            };
+
+            match action {
+                "create_platform_variants" => {
+                    let src = s.project.active_scene().ok_or("no active scene")?.clone();
+                    let mut cmds = Vec::new();
+                    let mut summary = Vec::new();
+                    for tgt in &cfg.targets {
+                        let (sid, cmd) = build_reformatted_scene_command(&src, tgt);
+                        summary.push(json!({
+                            "scene_id": sid,
+                            "platform": tgt.platform.id(),
+                            "width": tgt.width,
+                            "height": tgt.height,
+                            "target_lufs": tgt.target_lufs
+                        }));
+                        cmds.push(cmd);
+                    }
+                    s.bus
+                        .execute(
+                            &mut s.project,
+                            EditCommand::Batch {
+                                label: "Multi-Platform Reformat Variants".into(),
+                                commands: cmds,
+                            },
+                            CommandSource::Mcp,
+                            None,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "created_count": summary.len(),
+                                "created_scenes": summary
+                            }).to_string()
+                        }]
+                    }))
+                }
+                "export_delivery_bundle" => {
+                    let out_dir = if let Some(p) = args.get("output_dir").and_then(Value::as_str) {
+                        PathBuf::from(p)
+                    } else if let Some(folder) = &s.folder {
+                        folder.root().join("deliverables")
+                    } else {
+                        std::env::temp_dir().join("ve_delivery_bundle")
+                    };
+                    std::fs::create_dir_all(out_dir.join("variants")).map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(out_dir.join("subtitles"))
+                        .map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(out_dir.join("metadata")).map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(out_dir.join("interchange"))
+                        .map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(out_dir.join("qc")).map_err(|e| e.to_string())?;
+
+                    let src = s.project.active_scene().ok_or("no active scene")?.clone();
+                    let mut artifacts: Vec<DeliveryBundleArtifact> = Vec::new();
+                    let mut wrote_chapters = false;
+
+                    for tgt in &cfg.targets {
+                        let (_sid, cmd) = build_reformatted_scene_command(&src, tgt);
+                        if let EditCommand::CreateScene { scene: vscene, .. } = cmd {
+                            let rel_scene = format!("variants/{}.scene.json", tgt.platform.id());
+                            let scene_bytes =
+                                serde_json::to_vec_pretty(&vscene).map_err(|e| e.to_string())?;
+                            std::fs::write(out_dir.join(&rel_scene), &scene_bytes)
+                                .map_err(|e| e.to_string())?;
+                            artifacts.push(DeliveryBundleArtifact {
+                                kind: "scene_variant".into(),
+                                platform: tgt.platform.id().into(),
+                                relative_path: rel_scene,
+                                bytes: scene_bytes.len(),
+                            });
+
+                            if tgt.include_srt {
+                                let srt = export_srt_subtitles(&vscene);
+                                let rel_srt = format!("subtitles/{}.srt", tgt.platform.id());
+                                std::fs::write(out_dir.join(&rel_srt), srt.as_bytes())
+                                    .map_err(|e| e.to_string())?;
+                                artifacts.push(DeliveryBundleArtifact {
+                                    kind: "subtitles_srt".into(),
+                                    platform: tgt.platform.id().into(),
+                                    relative_path: rel_srt,
+                                    bytes: srt.len(),
+                                });
+                            }
+
+                            if tgt.include_chapters && !wrote_chapters {
+                                let ch = format_youtube_chapters(&vscene.markers);
+                                let rel_ch = "metadata/youtube_chapters.txt".to_string();
+                                std::fs::write(out_dir.join(&rel_ch), ch.as_bytes())
+                                    .map_err(|e| e.to_string())?;
+                                artifacts.push(DeliveryBundleArtifact {
+                                    kind: "youtube_chapters".into(),
+                                    platform: tgt.platform.id().into(),
+                                    relative_path: rel_ch,
+                                    bytes: ch.len(),
+                                });
+                                wrote_chapters = true;
+                            }
+                        }
+                    }
+
+                    let mut rg = RenderGraph::new();
+                    rg.set_project_folder(s.folder.clone());
+                    let active_id = s.project.active_scene_id;
+
+                    if cfg.include_thumbnail
+                        && let Some((_t, _score, hero)) =
+                            select_best_thumbnail_frame(&mut rg, &s.project, active_id, 4)
+                    {
+                        let png = encode_linear_image_png_bytes(&hero)?;
+                        let rel_thumb = "thumbnail_1280x720.png".to_string();
+                        std::fs::write(out_dir.join(&rel_thumb), &png)
+                            .map_err(|e| e.to_string())?;
+                        artifacts.push(DeliveryBundleArtifact {
+                            kind: "thumbnail_png".into(),
+                            platform: "shared".into(),
+                            relative_path: rel_thumb,
+                            bytes: png.len(),
+                        });
+                    }
+
+                    if cfg.include_edl {
+                        let edl = export_cmx3600_edl(&s.project);
+                        let rel_edl = "interchange/master.edl".to_string();
+                        std::fs::write(out_dir.join(&rel_edl), edl.as_bytes())
+                            .map_err(|e| e.to_string())?;
+                        artifacts.push(DeliveryBundleArtifact {
+                            kind: "edl_cmx3600".into(),
+                            platform: "shared".into(),
+                            relative_path: rel_edl,
+                            bytes: edl.len(),
+                        });
+                    }
+
+                    if cfg.include_fcpxml {
+                        let xml = export_fcpxml_v10(&s.project);
+                        let rel_xml = "interchange/master.fcpxml".to_string();
+                        std::fs::write(out_dir.join(&rel_xml), xml.as_bytes())
+                            .map_err(|e| e.to_string())?;
+                        artifacts.push(DeliveryBundleArtifact {
+                            kind: "fcpxml_v10".into(),
+                            platform: "shared".into(),
+                            relative_path: rel_xml,
+                            bytes: xml.len(),
+                        });
+                    }
+
+                    if cfg.include_qc_report {
+                        let (
+                            peak_luma_ire,
+                            clipped_highlight_pct,
+                            crushed_shadow_pct,
+                            max_frame_luma_jump_ire,
+                        ) = measure_scene_video_qc_metrics(&mut rg, &s.project, active_id, 4);
+                        let report = run_broadcast_qc_audit(
+                            &s.project,
+                            BroadcastProfile::YouTube1080p,
+                            BroadcastQcMetrics {
+                                peak_luma_ire,
+                                clipped_highlight_pct,
+                                crushed_shadow_pct,
+                                max_frame_luma_jump_ire,
+                                true_peak_dbtp: -1.5,
+                                integrated_lufs: -14.0,
+                            },
+                        );
+                        let qc_bytes =
+                            serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
+                        let rel_qc = "qc/broadcast_qc_report.json".to_string();
+                        std::fs::write(out_dir.join(&rel_qc), &qc_bytes)
+                            .map_err(|e| e.to_string())?;
+                        artifacts.push(DeliveryBundleArtifact {
+                            kind: "broadcast_qc_json".into(),
+                            platform: "shared".into(),
+                            relative_path: rel_qc,
+                            bytes: qc_bytes.len(),
+                        });
+                    }
+
+                    let manifest = build_delivery_manifest(&s.project, &cfg, artifacts);
+                    let manifest_bytes =
+                        serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+                    std::fs::write(out_dir.join("manifest.json"), &manifest_bytes)
+                        .map_err(|e| e.to_string())?;
+
+                    Ok(json!({
+                        "content": [{
+                            "type": "text",
+                            "text": json!({
+                                "output_dir": out_dir.display().to_string(),
+                                "artifact_count": manifest.artifacts.len(),
+                                "manifest": manifest
+                            }).to_string()
+                        }]
+                    }))
+                }
+                other => Err(format!("unknown multi_platform_packager action: {other}")),
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -9697,7 +10681,7 @@ mod tests {
 
         // Verify exact MCP tool count = 58 (v2.0)
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -9892,7 +10876,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -10169,7 +11153,7 @@ mod tests {
         );
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -10387,7 +11371,7 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
     }
 
     #[test]
@@ -10580,7 +11564,7 @@ mod tests {
         }
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -10788,7 +11772,7 @@ mod tests {
         assert!(html_body.contains("data:image/png;base64,"));
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -11009,7 +11993,189 @@ mod tests {
         assert!(xml_path.exists());
 
         let defs = tool_definitions();
-        assert_eq!(defs.as_array().unwrap().len(), 74);
+        assert_eq!(defs.as_array().unwrap().len(), 78);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn v60_mcp_tools_dataviz_vfxpaint_podcast_and_packager() {
+        let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v60_test_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let proj = Project::new("V60CreatorStudioTest", ProjectSettings::default());
+        let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+        let session = Arc::new(Mutex::new(EditorSession::with_folder(proj, folder)));
+
+        // 1. #41 data_chart_motion_graphics: create_chart + import_csv
+        let chart_res = call_tool(
+            &session,
+            "data_chart_motion_graphics",
+            &json!({
+                "action": "create_chart",
+                "kind": "bar_chart",
+                "title": "ANNUAL SALES",
+                "unit_suffix": "K",
+                "layer_index": 1,
+                "duration_sec": 4.0
+            }),
+        )
+        .unwrap();
+        let chart_json: Value =
+            serde_json::from_str(chart_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        let chart_id = chart_json["created_id"].as_str().unwrap().to_string();
+        assert_eq!(chart_json["point_count"], 4);
+
+        let csv_res = call_tool(
+            &session,
+            "data_chart_motion_graphics",
+            &json!({
+                "action": "import_csv",
+                "item_id": chart_id,
+                "csv_text": "label,value,color\nJAN,45,#22ccff\nFEB,72,#ff4488\nMAR,118,#44ee88\n"
+            }),
+        )
+        .unwrap();
+        let csv_json: Value =
+            serde_json::from_str(csv_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(csv_json["updated"], true);
+        assert_eq!(csv_json["point_count"], 3);
+
+        // 2. #42 vfx_paint_and_inpaint: add_stroke (brush + wire_erase) -> get_paint -> clear_paint
+        let paint1 = call_tool(
+            &session,
+            "vfx_paint_and_inpaint",
+            &json!({
+                "action": "add_stroke",
+                "item_id": chart_id,
+                "tool": "brush_glow",
+                "points": [[0.1, 0.2], [0.9, 0.8]],
+                "radius_px": 12.0,
+                "color": "#ff3366",
+                "animate_write_on": true
+            }),
+        )
+        .unwrap();
+        let p1_json: Value =
+            serde_json::from_str(paint1["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(p1_json["applied"], true);
+        assert_eq!(p1_json["stroke_count"], 1);
+
+        let paint2 = call_tool(
+            &session,
+            "vfx_paint_and_inpaint",
+            &json!({
+                "action": "add_stroke",
+                "item_id": chart_id,
+                "tool": "wire_erase_inpaint",
+                "points": [[0.2, 0.5], [0.8, 0.5]],
+                "radius_px": 8.0
+            }),
+        )
+        .unwrap();
+        let p2_json: Value =
+            serde_json::from_str(paint2["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(p2_json["stroke_count"], 2);
+
+        // 3. #43 podcast_auto_director: write 2 speaker WAVs, analyze_and_direct + level_wav
+        let sr = 24_000u32;
+        let frames = sr as usize * 3;
+        let mut host_a = vec![0.0f32; frames * 2];
+        let mut host_b = vec![0.0f32; frames * 2];
+        for i in 0..frames {
+            let t = i as f32 / sr as f32;
+            if t < 1.3 {
+                let v = (std::f32::consts::TAU * 220.0 * t).sin() * 0.14;
+                host_a[i * 2] = v;
+                host_a[i * 2 + 1] = v;
+            }
+            if (1.5..2.8).contains(&t) {
+                let v = (std::f32::consts::TAU * 170.0 * t).sin() * 0.48;
+                host_b[i * 2] = v;
+                host_b[i * 2 + 1] = v;
+            }
+        }
+        let wav_a = tmp_dir.join("host_a.wav");
+        let wav_b = tmp_dir.join("host_b.wav");
+        let wav_leveled = tmp_dir.join("host_a_leveled.wav");
+        write_stereo_wav_file(&wav_a, &host_a, sr).unwrap();
+        write_stereo_wav_file(&wav_b, &host_b, sr).unwrap();
+
+        let pod_res = call_tool(
+            &session,
+            "podcast_auto_director",
+            &json!({
+                "action": "analyze_and_direct",
+                "speakers": [
+                    { "name": "Host A", "audio_layer_index": 2, "camera_layer_index": 0, "wav_path": wav_a.display().to_string() },
+                    { "name": "Host B", "audio_layer_index": 3, "camera_layer_index": 1, "wav_path": wav_b.display().to_string() }
+                ],
+                "min_turn_sec": 0.3,
+                "target_lufs": -16.0,
+                "apply": true
+            }),
+        )
+        .unwrap();
+        let pod_json: Value =
+            serde_json::from_str(pod_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(pod_json["applied"], true);
+        assert_eq!(pod_json["turn_count"], 2);
+
+        let lvl_res = call_tool(
+            &session,
+            "podcast_auto_director",
+            &json!({
+                "action": "level_wav",
+                "input_wav_path": wav_a.display().to_string(),
+                "output_wav_path": wav_leveled.display().to_string(),
+                "target_lufs": -16.0
+            }),
+        )
+        .unwrap();
+        let lvl_json: Value =
+            serde_json::from_str(lvl_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(wav_leveled.exists());
+        assert!(
+            lvl_json["after_lufs"].as_f64().unwrap() > lvl_json["before_lufs"].as_f64().unwrap()
+        );
+
+        // 4. #44 multi_platform_packager: create_platform_variants + export_delivery_bundle
+        let var_res = call_tool(
+            &session,
+            "multi_platform_packager",
+            &json!({
+                "action": "create_platform_variants",
+                "platforms": ["youtube_16x9", "shorts_reels_9x16", "square_feed_1x1"]
+            }),
+        )
+        .unwrap();
+        let var_json: Value =
+            serde_json::from_str(var_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(var_json["created_count"], 3);
+
+        let bundle_dir = tmp_dir.join("delivery_bundle");
+        let bdl_res = call_tool(
+            &session,
+            "multi_platform_packager",
+            &json!({
+                "action": "export_delivery_bundle",
+                "output_dir": bundle_dir.display().to_string(),
+                "platforms": ["youtube_16x9", "shorts_reels_9x16"],
+                "base_title": "V6 Launch Episode",
+                "tags": ["rust", "video", "v6"]
+            }),
+        )
+        .unwrap();
+        let bdl_json: Value =
+            serde_json::from_str(bdl_res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(bdl_json["artifact_count"].as_u64().unwrap() >= 8);
+        assert!(bundle_dir.join("manifest.json").exists());
+        assert!(bundle_dir.join("thumbnail_1280x720.png").exists());
+        assert!(bundle_dir.join("interchange/master.edl").exists());
+        assert!(bundle_dir.join("interchange/master.fcpxml").exists());
+        assert!(bundle_dir.join("qc/broadcast_qc_report.json").exists());
+        assert!(bundle_dir.join("subtitles/shorts_reels_9x16.srt").exists());
+
+        let defs = tool_definitions();
+        assert_eq!(defs.as_array().unwrap().len(), 78);
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

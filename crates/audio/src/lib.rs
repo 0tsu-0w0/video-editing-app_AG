@@ -7,6 +7,7 @@ pub mod foley;
 pub mod mixer;
 pub mod multicam;
 pub mod output;
+pub mod podcast_studio;
 pub mod recorder;
 pub mod spatial_master;
 pub mod waveform;
@@ -34,6 +35,10 @@ pub use foley::{
 pub use mixer::{AudioClip, AudioGraph};
 pub use multicam::{AudioSyncEstimate, estimate_audio_offset_xcorr};
 pub use output::{AudioEngineState, AudioOutputError};
+pub use podcast_studio::{
+    PodcastAnalysisResult, SpeakerTrackSpec, SpeakerTurnSegment, analyze_podcast_speakers,
+    apply_podcast_voice_leveler, build_podcast_auto_switch_commands,
+};
 pub use recorder::{VoiceoverError, VoiceoverRecorder};
 pub use spatial_master::{
     apply_binaural_spatial_3d, apply_multiband_compressor_3band, apply_true_peak_limiter,

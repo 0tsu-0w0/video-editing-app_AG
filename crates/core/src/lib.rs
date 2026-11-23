@@ -6,6 +6,7 @@ pub mod collab;
 pub mod color_mgmt;
 pub mod command;
 pub mod crdt_sync;
+pub mod data_viz;
 pub mod delivery;
 pub mod encoding;
 pub mod expression;
@@ -16,6 +17,7 @@ pub mod highlights;
 pub mod interop;
 pub mod kinetic_sub;
 pub mod lipsync;
+pub mod multi_deliver;
 pub mod multicam;
 pub mod node_graph;
 pub mod physics;
@@ -32,6 +34,7 @@ pub mod template;
 pub mod text_edit;
 pub mod time;
 pub mod timeline_ops;
+pub mod vfx_paint;
 
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
 pub use broadcast_qc::{
@@ -58,6 +61,7 @@ pub use crdt_sync::{
     CrdtOpKind, CrdtOperation, CrdtSyncLog, LanCollabHost, PeerCursorState, PeerId,
     sync_crdt_with_lan_peer,
 };
+pub use data_viz::{ChartKind, DataChartConfig, DataSeriesPoint, parse_chart_csv};
 pub use delivery::{
     ArchivePackageSummary, DeliveryIssue, DeliveryReport, IssueSeverity, archive_project_to_zip,
     crc32_ieee, validate_project_delivery,
@@ -91,6 +95,11 @@ pub use kinetic_sub::{
 pub use lipsync::{
     CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
     evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
+};
+pub use multi_deliver::{
+    DeliverableTarget, DeliveryBundleArtifact, DeliveryBundleConfig, DeliveryBundleManifest,
+    DeliveryPlatform, build_delivery_manifest, build_reformatted_scene_command,
+    serialize_pretty_json_bytes,
 };
 pub use multicam::{
     MulticamAngle, MulticamCutPoint, MulticamGridLayout, build_multicam_switch_cut_commands,
@@ -163,3 +172,4 @@ pub use timeline_ops::{
     build_snap_to_beats_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
     search_text_items, select_items_from_time, select_layer_items, wrap_subtitle_japanese,
 };
+pub use vfx_paint::{PaintStroke, PaintToolKind, VfxPaintConfig};

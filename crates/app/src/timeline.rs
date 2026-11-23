@@ -2882,6 +2882,7 @@ fn clip_color_for_kind(kind: &ItemKind) -> Color32 {
         ItemKind::Mesh3D { .. } => Color32::from_rgb(68, 146, 238),
         ItemKind::GenerativeBg { .. } => Color32::from_rgb(48, 186, 152),
         ItemKind::RiggedPuppet { .. } => Color32::from_rgb(232, 92, 148),
+        ItemKind::DataChart { .. } => Color32::from_rgb(56, 198, 232),
         ItemKind::Precomp { .. } => Color32::from_rgb(42, 152, 148),
         ItemKind::Audio { .. } => Color32::from_rgb(64, 152, 108),
         _ => Color32::from_rgb(88, 104, 138),

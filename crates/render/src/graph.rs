@@ -449,6 +449,10 @@ impl RenderGraph {
                         config.width = (config.width * sx).max(32.0);
                         config.height = (config.height * sy).max(32.0);
                     }
+                    ItemKind::DataChart { config } => {
+                        config.width = (config.width * sx).max(64.0);
+                        config.height = (config.height * sy).max(48.0);
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -460,6 +464,11 @@ impl RenderGraph {
                         item.text_style.box_radius *= uniform;
                     }
                     _ => {}
+                }
+                if item.vfx_paint.enabled {
+                    for stroke in &mut item.vfx_paint.strokes {
+                        stroke.radius_px = (stroke.radius_px * uniform).max(1.0);
+                    }
                 }
             }
         }
@@ -694,6 +703,17 @@ impl RenderGraph {
                             );
                             if !item.masks.is_empty() {
                                 crate::mask_tracker::apply_bezier_masks(&mut item_img, &item.masks);
+                            }
+                            if item.vfx_paint.enabled {
+                                let dur_s = item.duration.as_seconds().max(1e-4);
+                                let progress = ((time - item.start).as_seconds() / dur_s)
+                                    .clamp(0.0, 1.0)
+                                    as f32;
+                                crate::v60_render::apply_vfx_paint(
+                                    &mut item_img,
+                                    &item.vfx_paint,
+                                    progress,
+                                );
                             }
                             if item.corner_pin.enabled {
                                 item_img =
@@ -1338,6 +1358,20 @@ impl RenderGraph {
                 Some(crate::rig_render::render_rigged_puppet(
                     config, t_sec, sw, sh,
                 ))
+            }
+            ItemKind::DataChart { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(64.0, 4096.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(48.0, 4096.0) as u32;
+                let t_sec = if item.speed_ramp.enabled {
+                    ve_core::evaluate_speed_ramp_source_time(
+                        local_time.as_seconds(),
+                        item.duration.as_seconds(),
+                        &item.speed_ramp,
+                    ) as f32
+                } else {
+                    local_time.as_seconds() as f32
+                };
+                Some(crate::v60_render::render_data_chart(config, t_sec, sw, sh))
             }
             ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }
