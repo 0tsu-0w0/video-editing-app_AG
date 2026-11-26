@@ -119,6 +119,7 @@ impl Default for V60PanelsState {
 }
 
 impl V60PanelsState {
+    #[allow(dead_code)]
     pub fn show_v60_window(
         &mut self,
         ctx: &egui::Context,
@@ -180,7 +181,7 @@ impl V60PanelsState {
         mutated
     }
 
-    fn ui_dataviz_tab(
+    pub fn ui_dataviz_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -341,7 +342,7 @@ impl V60PanelsState {
         mutated
     }
 
-    fn ui_vfx_paint_tab(
+    pub fn ui_vfx_paint_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -569,7 +570,7 @@ impl V60PanelsState {
         mutated
     }
 
-    fn ui_podcast_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn ui_podcast_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut mutated = false;
         ui.heading("🎙 #43 マルチトラック・ポッドキャスト＆コラボ実況オート編集");
         ui.horizontal(|ui| {
@@ -707,7 +708,11 @@ impl V60PanelsState {
         out
     }
 
-    fn ui_multi_deliver_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn ui_multi_deliver_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &SharedEditorSession,
+    ) -> bool {
         let mut mutated = false;
         ui.heading("📦 #44 プロ・マルチプラットフォーム自動リフォーマット＆納品バンドル");
 

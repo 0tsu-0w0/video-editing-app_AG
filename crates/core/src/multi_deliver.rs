@@ -230,6 +230,7 @@ pub fn build_reformatted_scene_command(
         markers: src.markers.clone(),
         node_graph: src.node_graph.clone(),
         review_comments: Vec::new(),
+        ab_compare: crate::studio_hub::AbCompareConfig::default(),
         layers: new_layers,
     };
 

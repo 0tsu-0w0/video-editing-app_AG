@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
-> 更新日: 2026-11-24  
-> **v0.1〜v6.0 全 44 項目完全達成済み ＆ v7.0〜v10.0 次世代ロードマップ（#45〜#60・全 60 項目）策定済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー（全 78 MCP ツール）。  
-> 以下に **v0.8〜v6.0（✅ 全 44 項目実装済み）** および **v7.0〜v10.0（🔲 次期計画 #45〜#60）** をマイルストーン順に整理しています。
+> 更新日: 2026-11-25  
+> **v0.1〜v7.0 全 48 項目完全達成済み ＆ v8.0〜v10.0 次世代ロードマップ（#49〜#60・全 60 項目）策定済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・**役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 82 MCP ツール）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー**。  
+> 以下に **v0.8〜v7.0（✅ 全 48 項目実装済み）** および **v8.0〜v10.0（🔲 次期計画 #49〜#60）** をマイルストーン順に整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -18,7 +18,7 @@ flowchart LR
   V40["✅ v4.0 マスタースタジオ\nACEScg/OCIO・2D物理演算\n生成背景＆Foley SFX・放送QC＆HTML5レビュー"]
   V50["✅ v5.0 プロフィニッシング\n2Dボーン＆IK・自動BGM作曲\n速度曲線/カット検出・35mm仕上げ/EDL/FCPXML"]
   V60["✅ v6.0 クリエイターPro\nデータ可視化チャート・VFXペイント/ワイヤー消し\nポッドキャスト自動編集・マルチプラットフォーム納品"]
-  V70["🔲 v7.0 統合UX＆コアvNext\n6スタジオHub＆Ctrl+Kパレット・MCP分割\nGPUフレームプール・10k区間木/TCコンフォーム/AB比較"]
+  V70["✅ v7.0 統合UX＆コアvNext\n6スタジオHub＆Ctrl+Kパレット・MCP分割(82)\nGPUフレームプール・10k区間木/TCコンフォーム/AB比較"]
   V80["🔲 v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics"]
   V90["🔲 v9.0 ライブ配信＆VTuber＆HW\nRTMP/SRTスイッチャー・VTuber 2Dメッシュ/VMC\nOSC/MIDI/StreamDeck・スマートDAM索引"]
   V100["🔲 v10.0 空間映像＆流体＆自律AI\n360°全天球＆空間3D・2D流体/クロス＆HDRI\nBVHリターゲット・分散レンダー＆100 MCP"]
@@ -41,7 +41,7 @@ flowchart LR
 | **v4.0** | マスタースタジオ（ACEScg/OCIO・2D 物理演算・生成背景/Foley SFX・放送 QC/HTML5） | **#33〜#36** | ✅ 完了 |
 | **v5.0** | プロフィニッシング＆リギング（2D IK・自動 BGM・速度曲線/カット検出・EDL/FCPXML） | **#37〜#40** | ✅ 完了 |
 | **v6.0** | クリエイター Pro スタジオ（データチャート・VFX ペイント/消し・ポッドキャスト・マルチ納品） | **#41〜#44** | ✅ 完了 |
-| **v7.0** | Unified Studio UX & Core Architecture vNext（6 スタジオ Hub・`Ctrl+K`・MCP 分割・GPU プール・区間木/TC コンフォーム/AB 比較） | **#45〜#48** | 🔲 計画中 |
+| **v7.0** | Unified Studio UX & Core Architecture vNext（6 スタジオ Hub・`Ctrl+K`・MCP 分割・GPU プール・区間木/TC コンフォーム/AB 比較） | **#45〜#48** | ✅ 完了 |
 | **v8.0** | Pro Cinema VFX, Motion Foundry & Audio Restoration（平面追跡/ロト・SVG ワープ・光学 VFX・音響修復/ADR/Ambisonics） | **#49〜#52** | 🔲 計画中 |
 | **v9.0** | Live Broadcast, VTuber & Hardware Ecosystem（RTMP/SRT スイッチャー・VTuber メッシュ/VMC・OSC/MIDI/StreamDeck・スマート DAM） | **#53〜#56** | 🔲 計画中 |
 | **v10.0** | Spatial Computing, Physics Fluids & Autonomous Cinema OS（360°/空間 3D・流体/クロス＆HDRI・BVH リターゲット・分散レンダー＆100 MCP） | **#57〜#60** | 🔲 計画中 |
@@ -302,32 +302,32 @@ flowchart LR
 
 ---
 
-## 🔲 v7.0（Unified Studio UX & Core Architecture vNext）：6 スタジオ Hub 統合・`Ctrl+K` パレット・MCP 分割・GPU プール・大規模 NLE 基盤
+## ✅ v7.0（実装済み・Unified Studio UX & Core Architecture vNext）：6 スタジオ Hub 統合・`Ctrl+K` パレット・MCP 分割・GPU プール・大規模 NLE 基盤
 
-### 45. 役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` コマンドパレット
+### 45. ~~役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` コマンドパレット~~ ✅ 実装済み（v7.0）
 - **目的**: 現行の 3 空間（メイン編集空間・モーション合成空間・ノード合成空間）の直感性を維持しつつ、マイルストーン増加に伴い肥大化したトップバーのバージョン別ボタン群（`v0.9`〜`v6.0`）を制作ロール別の **6 スタジオ Hub（`Edit` / `VFX & Motion` / `Color` / `Audio` / `AI & Collab` / `Deliver`）** へ機能ゼロ欠落で再編成し、さらに `Ctrl+K`（`Ctrl+Shift+P` 併用可）のファジー検索コマンドパレットから全ツール・全操作へ 1 秒で到達できるようにする。
-- **設計・実装方針**:
-  - `ve-core`: `studio_hub` モジュール — 6 スタジオ Hub カタログ（`StudioHubId`）、全 48+ コマンド定義（日英バイリンガル・ロードマップ番号 `#1`〜`#48`・キーワード・ショートカット付）、最近使ったコマンド（MRU）優先度付きの決定論ファジー検索 `fuzzy_search_commands`、`EditorAction::OpenCommandPalette`
+- **実装内容**:
+  - `ve-core`: `studio_hub` モジュール — 6 スタジオ Hub カタログ（`StudioHubId`）、全 48+ コマンド定義 `STUDIO_PALETTE_CATALOG`（日英バイリンガル・ロードマップ番号 `#1`〜`#48`・キーワード・ショートカット付）、最近使ったコマンド（MRU）優先度付きの決定論ファジー検索 `fuzzy_search_commands`、`EditorAction::OpenCommandPalette`
   - `ve-app` / `ve-mcp`: トップバーの 6 スタジオ Hub 切替＆インライン統合ウィンドウ `V70StudioHubState`、`Ctrl+K` モーダルコマンドパレット（上下キー選択・Enter 即実行・Hub/空間自動遷移）、および MCP `studio_hub_and_command_palette` ツール
 
-### 46. 内蔵 MCP モジュール分割リファクタリング（ドメイン別サブモジュール整理 ＆ v7.0 ツール拡張）
+### 46. ~~内蔵 MCP モジュール分割リファクタリング（ドメイン別サブモジュール整理 ＆ v7.0 ツール拡張）~~ ✅ 実装済み（v7.0）
 - **目的**: 12,000 行超に肥大化した `crates/mcp/src/tools.rs` を 6 スタジオ Hub と対応するドメイン別サブモジュールへクリーンに分割し、保守性・コンパイル見通し・AI エージェントからのイントロスペクション性を抜本的に高める。
-- **設計・実装方針**:
+- **実装内容**:
   - `ve-mcp`: `crates/mcp/src/tools/`（`mod.rs` / `edit_nle.rs` / `vfx_motion.rs` / `color_finishing.rs` / `audio_voice.rs` / `ai_collab.rs` / `deliver_system.rs` / `v70_unified.rs` / `tests.rs`）へ分割し、既存 78 ツールの JSON スキーマ・入出力互換を 100% 維持したまま v7.0 新規 4 ツール（全 **82 MCP ツール**）を追加
-  - `ve-mcp` / `ve-app`: ドメイン別ツール集計・キーワード検索・スキーマ健全性検査を提供する `tool_domain_catalog` および MCP `mcp_catalog_introspect` ツール
+  - `ve-mcp` / `ve-app`: ドメイン別ツール集計・キーワード検索・スキーマ健全性検査を提供する `tool_domain_catalog` および MCP `mcp_catalog_introspect` ツール（AI & Collab Hub 内インスペクタ統合）
 
-### 47. GPU-Resident 4K/8K 合成フレームプール ＆ WGSL ブレンド/マスク/色管理高速パス（決定論 CPU フォールバック維持）
+### 47. ~~GPU-Resident 4K/8K 合成フレームプール ＆ WGSL ブレンド/マスク/色管理高速パス（決定論 CPU フォールバック維持）~~ ✅ 実装済み（v7.0）
 - **目的**: 4K (`3840×2160`) / 8K (`7680×4320`) マルチレイヤー合成時のフレームごとのバッファ再確保オーバーヘッドを排除し、ブレンド・トラックマット/フェザーマスク・ACEScg 色管理を WGSL コンピュート高速パスで処理できるようにする。
-- **設計・実装方針**:
-  - `ve-render`: `gpu_v70` モジュール — 解像度＆フォーマット別バケット管理・VRAM/RAM 予算上限＆LRU 自動 Eviction・再利用ヒット率計測を備える `ResidentFramePool`（`RenderGraph` 統合）、`pack2x16float` / ストライプ分割で `wgpu` 標準ストレージ上限内でも 4K/8K 動作する `@compute @workgroup_size(8, 8)` シェーダー `FAST_BLEND_MASK_WGSL`＆`FAST_ACES_COLOR_MGMT_WGSL`（`naga` 静的検証済）、および GPU 非搭載環境で完全一致する決定論 CPU フォールバック
+- **実装内容**:
+  - `ve-render`: `gpu_v70` モジュール — 解像度＆フォーマット別バケット管理・VRAM/RAM 予算上限＆LRU 自動 Eviction・再利用ヒット率計測を備える `ResidentFramePool`（`RenderGraph` 統合）、ポータブル IEEE-754 `f16` パック＆64 MiB ストライプ分割で `wgpu` 標準ストレージ上限内でも 4K/8K 動作する `@compute @workgroup_size(8, 8)` シェーダー `FAST_BLEND_MASK_WGSL`＆`FAST_ACES_COLOR_MGMT_WGSL`（`naga` 静的検証済）、ヘッドレス GPU パイプライン `GpuV70FastPipeline`、および GPU 非搭載環境で完全一致する決定論 CPU フォールバック（`execute_v70_blend_mask_or_cpu` / `execute_v70_aces_or_cpu`）
   - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「⚡ #47 GPU 4K/8K プール＆高速パス」パネルおよび MCP `gpu_v70_frame_pool` ツール
 
-### 48. 大規模タイムライン最適化（10,000+ クリップ区間木 $O(\log N)$ 検索）＆ プロキシ⇔原本タイムコード自動コンフォーム ＆ A/B スプリット比較ビュー
+### 48. ~~大規模タイムライン最適化（10,000+ クリップ区間木 $O(\log N)$ 検索）＆ プロキシ⇔原本タイムコード自動コンフォーム ＆ A/B スプリット比較ビュー~~ ✅ 実装済み（v7.0）
 - **目的**: 長編映画・大型配信アーカイブの 10,000+ クリップでも再生・スクラブ・範囲検索が遅延しないデータ構造と、オフラインプロキシ編集から 4K/8K カメラ原本への SMPTE タイムコード自動コンフォーム、さらにグレーディング前後の即座な A/B 比較ワイプを実現する。
-- **設計・実装方針**:
-  - `ve-core` / `ve-render` / `ve-app`: フラット配列型 Augmented Interval Tree `SceneIntervalIndex`（構築 $O(N \log N)$・時刻刺し `query_at` ＆ ビューポート範囲 `query_range` $O(\log N + K)$、線形走査との 100% 順序一致保証）を `RenderGraph`・`TimelineState`・MCP `get_timeline_range` へ統合
-  - `ve-core` / `ve-media`: リール名正規化＋SMPTE 開始タイムコード差分からクリップ `asset_id` と `source_offset` を 1-Undo で厳密再計算する `conform_timeline_assets`（`EditCommand::ConformClipSource` / `UpdateAssetConformMeta`）
-  - `ve-core` / `ve-render` / `ve-app` / `ve-mcp`: 垂直・水平・斜めワイプ＆差分強調（未グレーディング Bypass / 静止画フリーズ A / 参照秒数比較）を描画＆プレビュー分割線ドラッグ操作できる `AbCompareConfig` / `compose_ab_split_linear` および MCP `timeline_index_conform_ab` ツール
+- **実装内容**:
+  - `ve-core` / `ve-render` / `ve-app` / `ve-mcp`: フラット配列型 Augmented Interval Tree `SceneIntervalIndex` / `CachedSceneIntervalIndex`（構築 $O(N \log N)$・時刻刺し `query_at` ＆ ビューポート範囲 `query_range` $O(\log N + K)$、12,000 クリップ上で線形走査との 100% 順序一致検証済）を `RenderGraph`・`TimelineState`・MCP `get_timeline_range` へ統合
+  - `ve-core` / `ve-media` / `ve-app`: `ffprobe` からの SMPTE 開始タイムコード／リール名抽出（`MediaProbe.start_timecode` / `reel_name`）、インポート時 `Project::conform_meta` 自動記録、およびリール名正規化＋開始タイムコード差分からクリップ `asset_id` と `source_offset` を 1-Undo で厳密再計算する `plan_timeline_conform` / `build_timeline_conform_command`（`EditCommand::SetAssetConformMeta` / `ConformClipSource`）
+  - `ve-core` / `ve-render` / `ve-app` / `ve-mcp`: 垂直・水平・斜めワイプ＆差分強調（未グレーディング Bypass / 静止画フリーズ A / 参照時刻 / 別シーン比較）を描画＆プレビュー分割線直接ドラッグ操作（`Alt+W` トグル対応）できる `AbCompareConfig`（`EditCommand::SetAbCompare`）・`compose_ab_split_linear`・`render_ab_compare_scene`、および MCP `timeline_index_conform_ab` ツール（全 **82 MCP ツール**）＋ゴールデン視覚回帰テスト
 
 ---
 

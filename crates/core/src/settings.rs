@@ -56,6 +56,8 @@ pub enum EditorAction {
     SlideMode,
     RollMode,
     ToggleScopes,
+    /// v7.0 #45: `Ctrl+K` ファジー検索コマンドパレットを開く
+    OpenCommandPalette,
 }
 
 impl EditorAction {
@@ -80,6 +82,7 @@ impl EditorAction {
         Self::SlideMode,
         Self::RollMode,
         Self::ToggleScopes,
+        Self::OpenCommandPalette,
     ];
 
     pub fn label(self, lang: UiLanguage) -> &'static str {
@@ -124,6 +127,8 @@ impl EditorAction {
             (Self::RollMode, UiLanguage::English) => "Roll Trim Mode",
             (Self::ToggleScopes, UiLanguage::Japanese) => "ビデオスコープ切替",
             (Self::ToggleScopes, UiLanguage::English) => "Toggle Video Scopes",
+            (Self::OpenCommandPalette, UiLanguage::Japanese) => "コマンドパレットを開く",
+            (Self::OpenCommandPalette, UiLanguage::English) => "Open Command Palette",
         }
     }
 }
@@ -163,6 +168,7 @@ impl EditorKeymap {
         b.insert(EditorAction::SlideMode, "U".into());
         b.insert(EditorAction::RollMode, "N".into());
         b.insert(EditorAction::ToggleScopes, "Ctrl+Shift+S".into());
+        b.insert(EditorAction::OpenCommandPalette, "Ctrl+K".into());
 
         match preset {
             KeymapPreset::AviUtl2 => {
@@ -170,6 +176,7 @@ impl EditorKeymap {
             }
             KeymapPreset::Premiere => {
                 b.insert(EditorAction::SplitClip, "Ctrl+K".into());
+                b.insert(EditorAction::OpenCommandPalette, "Ctrl+Shift+P".into());
                 b.insert(EditorAction::Redo, "Ctrl+Shift+Z".into());
                 b.insert(EditorAction::UnlinkSelection, "Ctrl+L".into());
             }
@@ -302,10 +309,20 @@ pub fn tr(lang: UiLanguage, key: &str) -> &'static str {
         (UiLanguage::English, "pane.audio_ai") => "Audio / AI / 3D / Multicam",
         (UiLanguage::Japanese, "btn.scopes") => "📊 スコープ",
         (UiLanguage::English, "btn.scopes") => "📊 Scopes",
-        (UiLanguage::Japanese, "btn.multicam") => "🎥 マルチカム",
-        (UiLanguage::English, "btn.multicam") => "🎥 Multicam",
-        (UiLanguage::Japanese, "btn.settings") => "⚙ 設定",
-        (UiLanguage::English, "btn.settings") => "⚙ Settings",
+        (UiLanguage::Japanese, "btn.multicam") | (UiLanguage::Japanese, "multicam_title") => {
+            "🎥 マルチカム"
+        }
+        (UiLanguage::English, "btn.multicam") | (UiLanguage::English, "multicam_title") => {
+            "🎥 Multicam"
+        }
+        (UiLanguage::Japanese, "btn.settings") | (UiLanguage::Japanese, "settings_title") => {
+            "⚙ 設定"
+        }
+        (UiLanguage::English, "btn.settings") | (UiLanguage::English, "settings_title") => {
+            "⚙ Settings"
+        }
+        (UiLanguage::Japanese, "btn.palette") => "🔍 Ctrl+K",
+        (UiLanguage::English, "btn.palette") => "🔍 Ctrl+K",
         (UiLanguage::Japanese, "btn.save") => "💾 保存",
         (UiLanguage::English, "btn.save") => "💾 Save",
         _ => "",

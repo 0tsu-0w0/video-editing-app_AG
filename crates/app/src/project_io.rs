@@ -6,9 +6,10 @@ use uuid::Uuid;
 use ve_ai::import_tts_file_pair;
 use ve_audio::WaveformPeaks;
 use ve_core::{
-    AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, HistoryEntry, ItemKind,
-    LipSyncMode, MediaKind, Project, ProjectFolder, PsdCharacterConfig, RationalTime, RgbaColor,
-    TextAnimator, TimelineItem, content_hash_hex,
+    AssetConformMeta, AssetRef, CharacterSpriteConfig, CommandSource, EditCommand, HistoryEntry,
+    ItemKind, LipSyncMode, MediaKind, Project, ProjectFolder, PsdCharacterConfig, RationalTime,
+    RgbaColor, TextAnimator, TimelineItem, content_hash_hex, infer_is_proxy_name,
+    normalize_reel_stem,
 };
 use ve_mcp::EditorSession;
 use ve_media::{FfmpegCli, decode_audio_file};
@@ -123,6 +124,19 @@ pub fn import_dropped_files(
                     fallback_absolute_path: Some(path.clone()),
                     collected: false,
                 });
+                // v7.0 #48: ffprobe の SMPTE タイムコード / リール名をコンフォーム台帳へ自動登録
+                session.project.conform_meta.insert(
+                    asset_id,
+                    AssetConformMeta {
+                        reel_name: probe
+                            .as_ref()
+                            .and_then(|p| p.reel_name.clone())
+                            .or_else(|| Some(normalize_reel_stem(&file_name))),
+                        start_timecode: probe.as_ref().and_then(|p| p.start_timecode.clone()),
+                        is_proxy_media: infer_is_proxy_name(&file_name),
+                        linked_counterpart_id: None,
+                    },
+                );
 
                 // 動画に音声トラックがあれば波形ピークを抽出
                 if probe.as_ref().and_then(|p| p.audio_sample_rate).is_some()
@@ -201,6 +215,15 @@ pub fn import_dropped_files(
                         fallback_absolute_path: Some(path.clone()),
                         collected: false,
                     });
+                    session.project.conform_meta.insert(
+                        asset_id,
+                        AssetConformMeta {
+                            reel_name: Some(normalize_reel_stem(&file_name)),
+                            start_timecode: None,
+                            is_proxy_media: infer_is_proxy_name(&file_name),
+                            linked_counterpart_id: None,
+                        },
+                    );
                     let mut audio_item = TimelineItem::new(
                         file_name.clone(),
                         start_base,
@@ -258,14 +281,15 @@ pub fn import_dropped_files(
                     }
                 }
 
+                let audio_probe = cli.probe(path).ok();
                 let (dur_sec, wf_opt) = match decode_audio_file(path) {
                     Ok(buf) => (
                         buf.duration_sec().max(0.1),
                         Some(WaveformPeaks::from_buffer(&buf, 100)),
                     ),
                     Err(_) => (
-                        cli.probe(path)
-                            .ok()
+                        audio_probe
+                            .as_ref()
                             .map(|p| p.duration_sec)
                             .filter(|d| *d > 0.05)
                             .unwrap_or(3.0),
@@ -284,6 +308,18 @@ pub fn import_dropped_files(
                     fallback_absolute_path: Some(path.clone()),
                     collected: false,
                 });
+                session.project.conform_meta.insert(
+                    asset_id,
+                    AssetConformMeta {
+                        reel_name: audio_probe
+                            .as_ref()
+                            .and_then(|p| p.reel_name.clone())
+                            .or_else(|| Some(normalize_reel_stem(&file_name))),
+                        start_timecode: audio_probe.as_ref().and_then(|p| p.start_timecode.clone()),
+                        is_proxy_media: infer_is_proxy_name(&file_name),
+                        linked_counterpart_id: None,
+                    },
+                );
                 let dur = RationalTime::from_seconds(dur_sec);
                 let mut item = TimelineItem::new(
                     file_name.clone(),

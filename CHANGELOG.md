@@ -1,5 +1,25 @@
 # Changelog
 
+## [7.0.0] - 2026-11-25
+
+Unified Studio UX & Core Architecture vNext マイルストーン v7.0（#45〜#48）をすべて実装し、全 48 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **82 MCP ツール**）。また、`docs/future_features.md` を次世代ロードマップ **v8.0〜v10.0（#49〜#60・全 60 項目）** へ拡張しました。
+
+### #45 役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` ファジー検索コマンドパレット
+* `ve-core`: `studio_hub` モジュール — 制作ロール別の 6 スタジオ Hub（`StudioHubId`: `Edit` / `VfxMotion` / `Color` / `Audio` / `AiCollab` / `Deliver`）、日英バイリンガル＋ロードマップ番号 `#1`〜`#48`＋ショートカットヒント付き全コマンドカタログ `STUDIO_PALETTE_CATALOG`、MRU 優先度付き決定論ファジー検索 `fuzzy_search_commands`、および `EditorAction::OpenCommandPalette`（`Ctrl+K` / `Ctrl+Shift+P`）を追加
+* `ve-app` / `ve-mcp`: 現行 3 空間（メイン編集・モーション合成・ノード合成）を完全維持したまま、トップバーの `v0.9`〜`v6.0` 個別ボタン群を 6 スタジオ Hub 統合ウィンドウ＋`Ctrl+K` モーダルコマンドパレット `V70StudioHubState` へ機能ゼロ欠落で再編成し、MCP `studio_hub_and_command_palette` ツールを追加
+
+### #46 内蔵 MCP モジュール分割リファクタリング（ドメイン別サブモジュール整理 ＆ 全 82 ツール）
+* `ve-mcp`: 12,000 行超に肥大化した単一 `crates/mcp/src/tools.rs` を 6 スタジオ Hub 対応のドメイン別サブモジュール（`crates/mcp/src/tools/{mod,edit_nle,vfx_motion,color_finishing,audio_voice,ai_collab,deliver_system,v70_unified,tests}.rs`）へ完全分割。既存 78 ツールの JSON スキーマ＆動作互換を 100% 維持したまま v7.0 新規 4 ツールを追加し、ドメイン別カタログ統計＆検索 API `tool_domain_catalog` および MCP `mcp_catalog_introspect` を実装
+
+### #47 GPU-Resident 4K/8K 合成フレームプール ＆ WGSL ブレンド/マスク/色管理高速パス
+* `ve-render`: `gpu_v70` モジュール — 解像度＆フォーマット別バケット・VRAM/RAM 予算上限・LRU 自動 Eviction・再利用ヒット率計測を備えた `ResidentFramePool` を `RenderGraph` のレイヤー合成バッファ管理へ統合。さらに IEEE-754 `f16` パック＆64 MiB ストライプ分割で標準 `wgpu` ストレージ上限下でも 4K/8K 動作する `@compute @workgroup_size(8, 8)` シェーダー `FAST_BLEND_MASK_WGSL`＆`FAST_ACES_COLOR_MGMT_WGSL`（`naga` 静的検証済）、ヘッドレス GPU パイプライン `GpuV70FastPipeline`、および決定論的 CPU フォールバック（`execute_v70_blend_mask_or_cpu` / `execute_v70_aces_or_cpu`）を実装
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「⚡ #47 GPU 4K/8K プール＆高速パス」パネルおよび MCP `gpu_v70_frame_pool` を追加
+
+### #48 大規模タイムライン最適化（10,000+ クリップ区間木 $O(\log N)$）＆ プロキシ⇔原本 TC 自動コンフォーム ＆ A/B スプリット比較ビュー
+* `ve-core` / `ve-render` / `ve-app` / `ve-mcp`: フラット配列型 Augmented Interval Tree `SceneIntervalIndex` / `CachedSceneIntervalIndex`（構築 $O(N \log N)$・時刻刺し/範囲検索 $O(\log N + K)$、12,000 クリップ上で線形走査と 100% 順序一致検証済）を `RenderGraph`・`TimelineState`（ビューポートカリング＆スナップ最適化）・MCP `get_timeline_range` へ統合
+* `ve-core` / `ve-media` / `ve-app`: `ffprobe` からの SMPTE 開始タイムコード＆リール名自動抽出（`MediaProbe.start_timecode` / `reel_name`）、インポート時 `Project::conform_meta` 自動記録、およびリール名正規化＋開始タイムコード差分からクリップの `asset_id`＆`source_offset` を 1-Undo 自動変換する `plan_timeline_conform` / `build_timeline_conform_command`（`EditCommand::SetAssetConformMeta` / `ConformClipSource`）を実装
+* `ve-core` / `ve-render` / `ve-app` / `ve-mcp`: 垂直・水平・斜めワイプ＆差分強調（未グレーディング Bypass / 静止画フリーズ A / 参照タイムコード / 別シーン比較）の `AbCompareConfig`（`EditCommand::SetAbCompare`）・`compose_ab_split_linear`・`render_ab_compare_scene`・プレビューキャンバス上での分割線直接ドラッグ操作（`Alt+W` トグル対応）、および MCP `timeline_index_conform_ab`（全 **82 MCP ツール**）＋ゴールデン視覚回帰テストを追加
+
 ## [6.0.0] - 2026-11-22
 
 クリエイター Pro スタジオマイルストーン v6.0（#41〜#44）をすべて実装し、全 44 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **78 MCP ツール**）。

@@ -857,6 +857,7 @@ impl V20PanelsState {
     // #22 / #23 / #24: v2.0 フロンティアスタジオウィンドウ
     // =========================================================================
 
+    #[allow(dead_code)]
     pub fn show_frontier_window(
         &mut self,
         ctx: &egui::Context,
@@ -915,7 +916,7 @@ impl V20PanelsState {
     }
 
     // --- Tab 1: #22 ローカル AI ビジョン ---
-    fn ui_ai_vision_tab(&mut self, ui: &mut egui::Ui, sess: &mut EditorSession) -> bool {
+    pub fn ui_ai_vision_tab(&mut self, ui: &mut egui::Ui, sess: &mut EditorSession) -> bool {
         let mut dirty = false;
         let models_dir = sess.folder.as_ref().map(|f| f.models_dir());
         let status = detect_local_vision_status(models_dir.as_deref());
@@ -1199,7 +1200,7 @@ impl V20PanelsState {
     }
 
     // --- Tab 2: #23 マルチエージェント AI 編集ディレクター ---
-    fn ui_director_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn ui_director_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut dirty = false;
         let (all_recipes, run_snapshot) = {
             let g = session.lock().unwrap();
@@ -1446,7 +1447,7 @@ impl V20PanelsState {
     }
 
     // --- Tab 3: #24 共同編集・視覚 Diff・3-Way マージ・タイムコードレビュー ---
-    fn ui_collab_review_tab(&mut self, ui: &mut egui::Ui, sess: &mut EditorSession) -> bool {
+    pub fn ui_collab_review_tab(&mut self, ui: &mut egui::Ui, sess: &mut EditorSession) -> bool {
         let mut dirty = false;
         let snapshots = sess
             .folder

@@ -102,6 +102,7 @@ impl Default for V40PanelsState {
 }
 
 impl V40PanelsState {
+    #[allow(dead_code)]
     pub fn show_v40_window(
         &mut self,
         ctx: &egui::Context,
@@ -165,7 +166,7 @@ impl V40PanelsState {
         mutated
     }
 
-    fn show_aces_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn show_aces_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut mutated = false;
         let Ok(cur_cfg) = session.lock().map(|s| {
             s.project
@@ -326,7 +327,7 @@ impl V40PanelsState {
         mutated
     }
 
-    fn show_physics_tab(
+    pub fn show_physics_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -531,7 +532,7 @@ impl V40PanelsState {
         mutated
     }
 
-    fn show_generative_tab(
+    pub fn show_generative_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -736,7 +737,7 @@ impl V40PanelsState {
         mutated
     }
 
-    fn show_qc_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) {
+    pub fn show_qc_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) {
         ui.heading("📡 放送コンプライアンス QC・ヒーローサムネイル・HTML5 レビュー (#36)");
         egui::ComboBox::from_label("QC ターゲット規格")
             .selected_text(self.qc_profile.display_name())

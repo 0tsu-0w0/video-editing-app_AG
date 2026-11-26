@@ -254,6 +254,7 @@ impl V10PanelsState {
 
     /// v1.0 プロダクションスタジオ統合ウィンドウ（マルチカム / トラックミキサー＆録音 / 検証＆ZIP）
     /// 戻り値: `true` ならプレビュー再描画が必要
+    #[allow(dead_code)]
     pub fn show_studio_window(
         &mut self,
         ctx: &Context,
@@ -316,7 +317,7 @@ impl V10PanelsState {
         dirty
     }
 
-    fn show_multicam_tab(&mut self, ui: &mut Ui, session: &mut EditorSession) -> bool {
+    pub fn show_multicam_tab(&mut self, ui: &mut Ui, session: &mut EditorSession) -> bool {
         let mut dirty = false;
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(
@@ -580,7 +581,7 @@ impl V10PanelsState {
         false
     }
 
-    fn show_audio_mixer_tab(&mut self, ui: &mut Ui, session: &mut EditorSession) -> bool {
+    pub fn show_audio_mixer_tab(&mut self, ui: &mut Ui, session: &mut EditorSession) -> bool {
         let mut dirty = false;
         struct MixerStripSnapshot {
             idx: usize,
@@ -1089,7 +1090,7 @@ impl V10PanelsState {
         true
     }
 
-    fn show_delivery_zip_tab(&mut self, ui: &mut Ui, session: &mut EditorSession) {
+    pub fn show_delivery_zip_tab(&mut self, ui: &mut Ui, session: &mut EditorSession) {
         ui.horizontal_wrapped(|ui| {
             if ui.button("🔍 書き出し前検証チェックリストを実行").clicked() {
                 let rep = validate_project_delivery(&session.project, session.folder.as_ref());

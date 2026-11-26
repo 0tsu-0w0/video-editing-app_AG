@@ -20,6 +20,7 @@ mod v30_panels;
 mod v40_panels;
 mod v50_panels;
 mod v60_panels;
+mod v70_studio_hub;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -48,20 +49,21 @@ use v30_panels::V30PanelsState;
 use v40_panels::V40PanelsState;
 use v50_panels::V50PanelsState;
 use v60_panels::V60PanelsState;
+use v70_studio_hub::{StudioHubFrameOutcome, V70StudioHubState};
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
-    AssetResolution, BlendMode, CommandBus, CommandSource, CubicBezier, EditCommand,
-    EditorUserSettings, EffectNode, FilterTargetScope, FrameRate, HistoryEntry, Interpolation,
-    ItemKind, Keyframe, Project, ProjectSettings, RationalTime, RgbaColor, ScenePreset, ShapeKind,
-    TextAnimator, TimelineItem, TrackMatte, TrackMatteMode, Transform2D,
-    build_motion_track_keyframes_command, tr,
+    AbCompareConfig, AbCompareMode, AbReferenceSource, AssetResolution, BlendMode, CommandBus,
+    CommandSource, CubicBezier, EditCommand, EditorUserSettings, EffectNode, FilterTargetScope,
+    FrameRate, HistoryEntry, Interpolation, ItemKind, Keyframe, Project, ProjectSettings,
+    RationalTime, RgbaColor, ScenePreset, ShapeKind, StudioHubId, TextAnimator, TimelineItem,
+    TrackMatte, TrackMatteMode, Transform2D, build_motion_track_keyframes_command, tr,
 };
 use ve_mcp::{EditorSession, EmbeddedMcpServer, SharedEditorSession};
 use ve_media::{ExportConfig, ExportFormat, HwDecodeBackend, VideoEncoder};
 use ve_plugin_api::WasmPluginManager;
 use ve_render::{
     GpuPostProcessPass, RenderGraph, ShaderReloadStatus, WgpuPreviewPipeline, compute_video_scopes,
-    register_shader_dir, track_point_in_scene,
+    register_shader_dir, render_ab_compare_scene, track_point_in_scene,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +154,7 @@ struct EditorApp {
     v40_panels: V40PanelsState,
     v50_panels: V50PanelsState,
     v60_panels: V60PanelsState,
+    v70_hub: V70StudioHubState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -205,9 +208,39 @@ struct EditorApp {
     // v0.7 #9: WASM 動的プラグインマネージャー (plugins/*.wasm)
     wasm_manager: WasmPluginManager,
     preview_scale: u32,
-    last_rendered_key: Option<(u64, i64, u32, u32, usize, Uuid)>,
+    last_rendered_key: Option<(u64, i64, u32, u32, usize, Uuid, u64)>,
     preview_dirty: bool,
     last_shader_poll: std::time::Instant,
+}
+
+fn ab_compare_signature(ab: &AbCompareConfig, has_still: bool) -> u64 {
+    let mode_u = match ab.mode {
+        AbCompareMode::Off => 0u64,
+        AbCompareMode::VerticalSplit => 1,
+        AbCompareMode::HorizontalSplit => 2,
+        AbCompareMode::DiagonalSplit => 3,
+        AbCompareMode::DifferenceAmplified => 4,
+    };
+    let src_u = match ab.reference {
+        AbReferenceSource::UngradedBypass => 0u64,
+        AbReferenceSource::FrozenStill => 1,
+        AbReferenceSource::ReferenceTimecode => 2,
+        AbReferenceSource::AlternateScene => 3,
+    };
+    let ratio_bits = u64::from(ab.split_ratio.to_bits());
+    let amp_bits = u64::from(ab.diff_gain.to_bits());
+    let tc_bits = ab.reference_sec.to_bits();
+    let alt_bits = ab.reference_scene_id.map_or(0u64, |id| id.as_u128() as u64);
+    let flags = u64::from(ab.show_divider)
+        | (u64::from(ab.swap_sides) << 1)
+        | (u64::from(has_still) << 2)
+        | (mode_u << 4)
+        | (src_u << 8);
+    flags.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ ratio_bits.rotate_left(13)
+        ^ amp_bits.rotate_left(29)
+        ^ tc_bits.rotate_left(7)
+        ^ alt_bits
 }
 
 impl EditorApp {
@@ -354,6 +387,7 @@ impl EditorApp {
             v40_panels: V40PanelsState::default(),
             v50_panels: V50PanelsState::default(),
             v60_panels: V60PanelsState::default(),
+            v70_hub: V70StudioHubState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -1776,6 +1810,9 @@ impl eframe::App for EditorApp {
                 self.preview_dirty = true;
             }
         }
+        let mut hub_outcome = StudioHubFrameOutcome::default();
+        self.v70_hub
+            .handle_global_shortcuts(&ctx, &self.session, &mut hub_outcome);
         self.ime_panel.capture_events(&ctx);
 
         // バックグラウンド生成された軽量プロキシを RenderGraph へ登録
@@ -2046,75 +2083,38 @@ impl eframe::App for EditorApp {
                 {
                     self.preview_dirty = true;
                 }
+                let ab_active_now = self
+                    .session
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.project.active_scene().map(|sc| sc.ab_compare.is_active()))
+                    .unwrap_or(false);
                 if ui
-                    .toggle_value(
-                        &mut self.v10_panels.show_studio_window,
-                        tr(self.user_settings.language, "multicam_title"),
-                    )
-                    .on_hover_text("v1.0 プロダクションスタジオ（マルチカム / トラックミキサー＆マイク録音 / 納品検証＆ZIP）")
+                    .selectable_label(ab_active_now, "🌓 A/B")
+                    .on_hover_text("v7.0 #48: A/B スプリット比較ビュー切替 (Alt+W)")
                     .clicked()
                 {
-                    // toggle_value already flipped show_studio_window
+                    self.v70_hub
+                        .toggle_ab_compare(&self.session, &mut hub_outcome);
                 }
+                ui.separator();
                 if ui
-                    .toggle_value(
-                        &mut self.v20_panels.show_frontier_window,
-                        "🚀 AI・共同編集",
-                    )
-                    .on_hover_text("v2.0 フロンティアスタジオ（ローカルAI切り抜き/リフレーム/超解像・AI編集ディレクター・タイムラインDiff＆レビュー）")
+                    .button(tr(self.user_settings.language, "btn.palette"))
+                    .on_hover_text("v7.0 #45: 全 v0.1〜v7.0 機能をファジー検索＆即実行 (Ctrl+K / Ctrl+Shift+P)")
                     .clicked()
                 {
-                    // toggle_value already flipped show_frontier_window
+                    self.v70_hub.open_palette();
                 }
-                if ui
-                    .toggle_value(
-                        &mut self.v21_panels.show_window,
-                        "🎞 シネマ＆クリエイター",
-                    )
-                    .on_hover_text("v2.1 シネマ＆クリエイタースタジオ（RGBトーンカーブ/HSL二次補正/自動カラーマッチ・自動手ぶれ補正/4点コーナーピン・3D空間オーディオ/True-Peakマスタリング・キネティック字幕/多言語切替）")
-                    .clicked()
-                {
-                    // toggle_value already flipped show_window
-                }
-                if ui
-                    .toggle_value(
-                        &mut self.v30_panels.show_window,
-                        "🌌 v3.0 ワールド＆GPU",
-                    )
-                    .on_hover_text("v3.0 ワールド＆GPU スタジオ（フルGPUコンピュート＆4Kベンチ・3Dメッシュ/glTF 2.0＆カメラトラッカー・オフライン多言語AI吹替＆リップシンク・P2P/LAN CRDT同時共同編集）")
-                    .clicked()
-                {
-                    // toggle_value already flipped show_window
-                }
-                if ui
-                    .toggle_value(
-                        &mut self.v40_panels.show_window,
-                        "🏆 v4.0 マスター",
-                    )
-                    .on_hover_text("v4.0 マスタースタジオ（ACEScg/OpenColorIOカラー管理・2D剛体物理演算＆キーフレーム自動ベイク・プロシージャル背景＆Foley SFX合成・放送QC監査＆ヒーローサムネイル＆HTML5レビュー書き出し）")
-                    .clicked()
-                {
-                    // toggle_value already flipped show_window
-                }
-                if ui
-                    .toggle_value(
-                        &mut self.v50_panels.show_window,
-                        "🚀 v5.0 仕上げ＆IK",
-                    )
-                    .on_hover_text("v5.0 プロフィニッシング＆リギング（2Dスケルトンボーン＆2-Bone IK・オフライン自動BGM作曲・スピードランプ＆自動シーンカット検出・35mmハレーション/アナモルフィックフレア/EDL＆FCPXML書き出し）")
-                    .clicked()
-                {
-                    // toggle_value already flipped show_window
-                }
-                if ui
-                    .toggle_value(
-                        &mut self.v60_panels.show_window,
-                        "💎 v6.0 クリエイターPro",
-                    )
-                    .on_hover_text("v6.0 クリエイター Pro スタジオ（データ駆動モーショングラフィックス＆チャート・非破壊VFXペイント＆ワイヤー消し・マルチトラックポッドキャスト自動編集・マルチプラットフォーム1クリック納品パッケージャー）")
-                    .clicked()
-                {
-                    // toggle_value already flipped show_window
+                for &hub in StudioHubId::ALL {
+                    let selected =
+                        self.v70_hub.show_hub_window && self.v70_hub.active_hub == hub;
+                    if ui
+                        .selectable_label(selected, hub.button_label(self.user_settings.language))
+                        .on_hover_text(hub.summary(self.user_settings.language))
+                        .clicked()
+                    {
+                        self.v70_hub.open_hub(hub);
+                    }
                 }
                 if ui
                     .toggle_value(
@@ -2126,10 +2126,12 @@ impl eframe::App for EditorApp {
                 {
                     // toggle_value already flipped show_settings_window
                 }
+                let pool_m = self.render_graph.frame_pool.metrics(0);
                 ui.weak(format!(
-                    "Precomp: {}/{} | Proxy={}",
+                    "Precomp: {}/{} | Pool: {:.0}% | Proxy={}",
                     self.render_graph.cache_hits,
                     self.render_graph.cache_misses,
+                    pool_m.hit_rate() * 100.0,
                     self.render_graph.proxy_count()
                 ));
             });
@@ -2359,6 +2361,19 @@ impl eframe::App for EditorApp {
                 if pipe.sync_hot_shaders(&wgpu_state.device, &self.render_graph.hot_shaders) > 0 {
                     self.preview_dirty = true;
                 }
+                self.render_graph.active_revision = revision.max(1);
+                let (ab_active, ab_sig) = {
+                    let sess = self.session.lock().unwrap();
+                    let ab = sess
+                        .project
+                        .active_scene()
+                        .map(|s| s.ab_compare.clone())
+                        .unwrap_or_default();
+                    (
+                        ab.is_active(),
+                        ab_compare_signature(&ab, self.v70_hub.frozen_still_a.is_some()),
+                    )
+                };
                 let render_key = (
                     revision,
                     current_time.ticks,
@@ -2366,6 +2381,7 @@ impl eframe::App for EditorApp {
                     ph,
                     self.waveforms.len(),
                     active_id,
+                    ab_sig,
                 );
 
                 if self.preview_dirty || self.last_rendered_key != Some(render_key) {
@@ -2376,7 +2392,7 @@ impl eframe::App for EditorApp {
                         width: pw,
                         height: ph,
                     };
-                    let cached_img = if self.ram_preview.enabled {
+                    let cached_img = if self.ram_preview.enabled && !ab_active {
                         self.ram_preview.get_frame(ram_key)
                     } else {
                         None
@@ -2387,22 +2403,35 @@ impl eframe::App for EditorApp {
                     } else {
                         self.last_ram_cached_hit = false;
                         let proj_clone = self.session.lock().unwrap().project.clone();
-                        self.render_graph
-                            .render_project_scene_scaled(
+                        if ab_active {
+                            render_ab_compare_scene(
+                                &mut self.render_graph,
                                 &proj_clone,
                                 active_id,
                                 current_time,
                                 pw,
                                 ph,
-                                false,
+                                self.v70_hub.frozen_still_a.as_ref(),
                             )
-                            .map(|img| {
-                                let arc = Arc::new(img);
-                                if self.ram_preview.enabled {
-                                    self.ram_preview.insert_frame(ram_key, Arc::clone(&arc));
-                                }
-                                arc
-                            })
+                            .map(Arc::new)
+                        } else {
+                            self.render_graph
+                                .render_project_scene_scaled(
+                                    &proj_clone,
+                                    active_id,
+                                    current_time,
+                                    pw,
+                                    ph,
+                                    false,
+                                )
+                                .map(|img| {
+                                    let arc = Arc::new(img);
+                                    if self.ram_preview.enabled {
+                                        self.ram_preview.insert_frame(ram_key, Arc::clone(&arc));
+                                    }
+                                    arc
+                                })
+                        }
                     };
 
                     if let Some(linear_img) = rendered {
@@ -2539,17 +2568,6 @@ impl eframe::App for EditorApp {
                 .show_window(&ctx, &mut self.show_render_queue, &sess);
         }
 
-        // v1.0 #17/#19: プロダクションスタジオ（マルチカム / トラックミキサー＆アフレコ / 納品検証＆ZIP）
-        if self.v10_panels.show_studio_window {
-            let mut sess = self.session.lock().unwrap();
-            if self
-                .v10_panels
-                .show_studio_window(&ctx, &mut sess, self.user_settings.language)
-            {
-                self.preview_dirty = true;
-            }
-        }
-
         // v1.0 #18/#20: 環境設定・キーバインド・HWデコード・SHA-256公式拡張レジストリ
         if self.v10_panels.show_settings_window {
             let disk_stats = self.render_graph.disk_frame_cache_stats();
@@ -2576,92 +2594,131 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // v2.0 #22/#23/#24: フロンティアスタジオ（ローカルAIビジョン・AI編集ディレクター・共同編集＆レビュー）
-        if self.v20_panels.show_frontier_window
-            && self.v20_panels.show_frontier_window(&ctx, &self.session)
-        {
+        // v7.0 #45〜#48: 役割別 6 スタジオ Hub 統合ウィンドウ ＆ `Ctrl+K` ファジー検索コマンドパレット
+        let selected_item = self
+            .session
+            .lock()
+            .ok()
+            .and_then(|s| s.selected_items.first().copied());
+        self.v70_hub.show_studio_hub_window(
+            &ctx,
+            self.user_settings.language,
+            &self.session,
+            selected_item,
+            self.mcp_server.as_ref(),
+            &mut self.render_graph,
+            &self.render_queue,
+            &mut self.color_scopes,
+            &mut self.v09_panels,
+            &mut self.v10_panels,
+            &mut self.v20_panels,
+            &mut self.v21_panels,
+            &mut self.v30_panels,
+            &mut self.v40_panels,
+            &mut self.v50_panels,
+            &mut self.v60_panels,
+            &mut hub_outcome,
+        );
+        self.v70_hub.show_command_palette_modal(
+            &ctx,
+            self.user_settings.language,
+            &self.session,
+            &mut hub_outcome,
+        );
+
+        // 6 スタジオ Hub / Ctrl+K パレットからのアクションを反映
+        if let Some(ws_idx) = hub_outcome.switch_workspace_idx {
+            match ws_idx {
+                0 => self.switch_workspace(WorkspaceMode::MainEdit),
+                1 => self.switch_workspace(WorkspaceMode::MotionComposite),
+                2 => self.switch_workspace(WorkspaceMode::NodeComposite),
+                _ => {}
+            }
+        }
+        if let Some(new_proj) = hub_outcome.replaced_project {
+            let mut sess = self.session.lock().unwrap();
+            sess.project = new_proj;
+            sess.selected_items.clear();
+            sess.playhead = RationalTime::ZERO;
             self.ram_preview.clear();
             self.preview_dirty = true;
         }
-
-        // v2.1 #25〜#28: シネマ＆クリエイタースタジオ（トーンカーブ/HSL/カラーマッチ・手ぶれ補正/4点ピン・3D空間音響/True-Peak・キネティック字幕/多言語切替）
-        if self.v21_panels.show_window {
-            let selected_item = self
-                .session
-                .lock()
-                .ok()
-                .and_then(|s| s.selected_items.first().copied());
-            if self
-                .v21_panels
-                .show_cinema_creator_window(&ctx, &self.session, selected_item)
-            {
+        if hub_outcome.open_render_queue {
+            self.show_render_queue = true;
+        }
+        if hub_outcome.toggle_scopes {
+            self.color_scopes.show_scopes = !self.color_scopes.show_scopes;
+            if self.color_scopes.show_scopes {
+                self.preview_dirty = true;
+            }
+        }
+        if hub_outcome.toggle_proxies {
+            self.render_graph.use_proxies = !self.render_graph.use_proxies;
+            self.ram_preview.clear();
+            self.preview_dirty = true;
+        }
+        if hub_outcome.open_scene_settings {
+            self.scene_edit_width = scene_w;
+            self.scene_edit_height = scene_h;
+            self.scene_edit_fps = scene_fps;
+            self.show_scene_settings = true;
+        }
+        if hub_outcome.open_user_settings {
+            self.v10_panels.show_settings_window = true;
+        }
+        if hub_outcome.toggle_jump_cut_bar {
+            self.timeline_state.show_jump_cut_bar = !self.timeline_state.show_jump_cut_bar;
+        }
+        if hub_outcome.toggle_beat_bar {
+            self.timeline_state.show_beat_bar = !self.timeline_state.show_beat_bar;
+        }
+        if hub_outcome.toggle_search_bar {
+            self.timeline_state.show_search_bar = !self.timeline_state.show_search_bar;
+        }
+        if hub_outcome.trigger_undo {
+            let mut g = self.session.lock().unwrap();
+            let s = &mut *g;
+            if s.bus.undo(&mut s.project) {
                 self.ram_preview.clear();
                 self.preview_dirty = true;
             }
         }
-
-        // v3.0 #29〜#32: ワールド＆GPU スタジオ（フルGPUコンピュート・3Dメッシュ/glTF＆カメラ追跡・オフライン多言語吹替＆リップシンク・P2P/LAN CRDT共同編集）
-        if self.v30_panels.show_window {
-            let selected_item = self
-                .session
-                .lock()
-                .ok()
-                .and_then(|s| s.selected_items.first().copied());
-            if self
-                .v30_panels
-                .show_v30_window(&ctx, &self.session, selected_item)
-            {
+        if hub_outcome.trigger_redo {
+            let mut g = self.session.lock().unwrap();
+            let s = &mut *g;
+            if s.bus.redo(&mut s.project) {
                 self.ram_preview.clear();
                 self.preview_dirty = true;
             }
         }
-
-        // v4.0 #33〜#36: マスタースタジオ（ACEScg/OCIO・2D剛体物理演算＆ベイク・プロシージャル背景＆Foley SFX・放送QC＆HTML5レビュー）
-        if self.v40_panels.show_window {
-            let selected_item = self
-                .session
-                .lock()
-                .ok()
-                .and_then(|s| s.selected_items.first().copied());
-            if self
-                .v40_panels
-                .show_v40_window(&ctx, &self.session, selected_item)
-            {
-                self.ram_preview.clear();
+        if hub_outcome.trigger_save {
+            self.handle_save_project();
+        }
+        if hub_outcome.capture_still_a {
+            let proj_clone = self.session.lock().unwrap().project.clone();
+            if let Some(captured) = self.render_graph.render_project_scene_scaled(
+                &proj_clone,
+                active_id,
+                current_time,
+                pw,
+                ph,
+                false,
+            ) {
+                self.v70_hub.frozen_still_a = Some(captured);
+                self.v70_hub.ab_status_msg = format!(
+                    "静止画 A をキャプチャしました ({}×{} @ {:.2}s)",
+                    pw,
+                    ph,
+                    current_time.as_seconds()
+                );
                 self.preview_dirty = true;
             }
         }
-
-        // v5.0 #37〜#40: プロフィニッシング＆リギング（2Dボーン＆IK・オフライン自動BGM作曲・スピードランプ＆自動シーンカット検出・35mmハレーション/EDL/FCPXML）
-        if self.v50_panels.show_window {
-            let selected_item = self
-                .session
-                .lock()
-                .ok()
-                .and_then(|s| s.selected_items.first().copied());
-            if self
-                .v50_panels
-                .show_v50_window(&ctx, &self.session, selected_item)
-            {
-                self.ram_preview.clear();
-                self.preview_dirty = true;
-            }
+        if hub_outcome.clear_ram_preview {
+            self.ram_preview.clear();
         }
-
-        // v6.0 #41〜#44: クリエイター Pro スタジオ（データ駆動チャート・VFXペイント＆ワイヤー消し・ポッドキャスト自動編集・マルチプラットフォーム納品パッケージャー）
-        if self.v60_panels.show_window {
-            let selected_item = self
-                .session
-                .lock()
-                .ok()
-                .and_then(|s| s.selected_items.first().copied());
-            if self
-                .v60_panels
-                .show_v60_window(&ctx, &self.session, selected_item)
-            {
-                self.ram_preview.clear();
-                self.preview_dirty = true;
-            }
+        if hub_outcome.preview_dirty {
+            self.preview_dirty = true;
         }
 
         // ドラッグホバー中の視覚ガイドオーバーレイ
@@ -2690,7 +2747,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v6.0.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v7.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };

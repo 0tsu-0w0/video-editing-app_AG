@@ -5,6 +5,7 @@ pub mod camera;
 pub mod collab;
 pub mod color_mgmt;
 pub mod command;
+pub mod conform;
 pub mod crdt_sync;
 pub mod data_viz;
 pub mod delivery;
@@ -30,9 +31,11 @@ pub mod scene3d;
 pub mod script_import;
 pub mod settings;
 pub mod speed_ramp;
+pub mod studio_hub;
 pub mod template;
 pub mod text_edit;
 pub mod time;
+pub mod timeline_index;
 pub mod timeline_ops;
 pub mod vfx_paint;
 
@@ -57,6 +60,11 @@ pub use color_mgmt::{
     v_log_to_linear,
 };
 pub use command::{CommandBus, CommandError, CommandSource, DEFAULT_MAX_UNDO_DEPTH, EditCommand};
+pub use conform::{
+    AssetConformMeta, ConformClipAction, ConformDirection, ConformIssue, ConformReport,
+    build_timeline_conform_command, infer_is_proxy_name, normalize_reel_stem,
+    plan_timeline_conform,
+};
 pub use crdt_sync::{
     CrdtOpKind, CrdtOperation, CrdtSyncLog, LanCollabHost, PeerCursorState, PeerId,
     sync_crdt_with_lan_peer,
@@ -152,6 +160,11 @@ pub use speed_ramp::{
     DetectedSceneCut, SpeedRampConfig, SpeedRampKnot, SpeedRampPreset, build_scene_cut_commands,
     evaluate_speed_at_norm_time, evaluate_speed_ramp_source_time,
 };
+pub use studio_hub::{
+    AbCompareConfig, AbCompareMode, AbReferenceSource, PaletteCommandEntry, PaletteSearchHit,
+    STUDIO_PALETTE_CATALOG, StudioHubId, commands_for_hub, fuzzy_search_commands,
+    studio_palette_catalog,
+};
 pub use template::{
     ExposedParam, ExposedParamKind, MotionTemplate, ProjectTemplate, ResponsiveTimeRegion,
     TemplateBinding, TemplateParamValue, apply_responsive_time_stretch,
@@ -164,6 +177,10 @@ pub use text_edit::{
     build_text_based_reorder_commands, extract_transcript_entries, strip_control_tags,
 };
 pub use time::{FrameRate, RationalTime, TICKS_PER_SECOND, TimeInput};
+pub use timeline_index::{
+    CachedSceneIntervalIndex, FlatIntervalTree, IndexedClipRef, IntervalIndexBenchmark,
+    SceneIntervalIndex, benchmark_interval_index,
+};
 pub use timeline_ops::{
     AlignMode, JumpCutConfig, MotionPreset, SelectDirection, SpeechInterval, TextSearchMatch,
     build_align_commands, build_beat_cut_commands, build_beat_markers_command,
