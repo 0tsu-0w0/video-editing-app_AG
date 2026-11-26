@@ -7,9 +7,9 @@
 
 use crate::color::{LinearImage, LinearPremul, srgb_to_linear};
 use ve_core::{
-    ClothSimConfig, FluidPreset, FluidSimConfig, Projection360Mode, SpatialVideoConfig,
-    StereoLayout, evaluate_horizon_locked_euler, project_screen_to_equirect_uv,
-    simulate_cloth_pbd_at_time, simulate_fluid_2d_at_time,
+    ClothSimConfig, FluidPreset, FluidSimConfig, Projection360Mode, RotationYprMatrix,
+    SpatialVideoConfig, StereoLayout, evaluate_horizon_locked_euler,
+    project_screen_to_equirect_uv_fast, simulate_cloth_pbd_at_time, simulate_fluid_2d_at_time,
 };
 
 #[inline]
@@ -101,48 +101,55 @@ pub fn render_spatial_360_and_stereo_pass(
     let h = src.height;
     let aspect = w as f32 / h.max(1) as f32;
 
-    // ステップ 1: 360° Equirectangular 逆射影パス
-    let projected = if cfg.projection_mode != Projection360Mode::Off {
+    // ステップ 1: 360° Equirectangular 逆射影パス（フレーム単位で回転行列・FOV タンジェントを事前計算）
+    let projected_owned: Option<LinearImage> = if cfg.projection_mode != Projection360Mode::Off {
         let (yaw, pitch, roll) = evaluate_horizon_locked_euler(cfg, time_sec);
+        let rot = RotationYprMatrix::from_ypr_deg(yaw, pitch, roll);
+        let half_fov = (cfg.fov_deg.clamp(25.0, 155.0) * 0.5).to_radians();
+        let tan_half_x = half_fov.tan();
+        let tan_half_y = tan_half_x / aspect.max(0.1);
+        let inv_tiny_zoom = 1.0 / cfg.tiny_planet_zoom.clamp(0.25, 4.0);
+        let inv_w = 2.0 / w as f32;
+        let inv_h = 2.0 / h as f32;
+
         let mut out = LinearImage::new(w, h, LinearPremul::TRANSPARENT);
         for y in 0..h {
-            let ny = 1.0 - ((y as f32 + 0.5) / h as f32) * 2.0;
+            let ny = 1.0 - (y as f32 + 0.5) * inv_h;
             let row = (y * w) as usize;
             for x in 0..w {
-                let nx = ((x as f32 + 0.5) / w as f32) * 2.0 - 1.0;
-                let (u, v) = project_screen_to_equirect_uv(
+                let nx = (x as f32 + 0.5) * inv_w - 1.0;
+                let (u, v) = project_screen_to_equirect_uv_fast(
                     nx,
                     ny,
                     aspect,
                     cfg.projection_mode,
-                    yaw,
-                    pitch,
-                    roll,
-                    cfg.fov_deg,
-                    cfg.tiny_planet_zoom,
+                    &rot,
+                    tan_half_x,
+                    tan_half_y,
+                    inv_tiny_zoom,
                 );
                 out.pixels[row + x as usize] = sample_bilinear_wrap(src, u, v);
             }
         }
-        out
+        Some(out)
     } else {
-        src.clone()
+        None
     };
-
     // ステップ 2: ステレオスコピック空間 3D パス（SBS / TAB / Red-Cyan アナグリフ / Mono L・R）
     let mut final_img = if cfg.stereo_layout != StereoLayout::Off {
+        let projected_ref: &LinearImage = projected_owned.as_ref().unwrap_or(src);
         let ipd = cfg.ipd_parallax_px.clamp(0.0, 64.0);
         let conv = cfg.convergence_offset_px.clamp(-48.0, 48.0);
         let sample_eye = |x: f32, y: f32, eye_sign: f32| -> LinearPremul {
-            let center_px = sample_clamped(&projected, x, y);
+            let center_px = sample_clamped(projected_ref, x, y);
             let depth = pixel_depth_proxy(center_px);
             let shift = eye_sign * (depth * ipd * 0.5 + conv * 0.5);
-            sample_clamped(&projected, x + shift, y)
+            sample_clamped(projected_ref, x + shift, y)
         };
 
         let mut out = LinearImage::new(w, h, LinearPremul::TRANSPARENT);
         match cfg.stereo_layout {
-            StereoLayout::Off => projected,
+            StereoLayout::Off => unreachable!(),
             StereoLayout::SideBySide => {
                 let half_w = (w / 2).max(1);
                 for y in 0..h {
@@ -209,7 +216,7 @@ pub fn render_spatial_360_and_stereo_pass(
             }
         }
     } else {
-        projected
+        projected_owned.unwrap_or_else(|| src.clone())
     };
 
     // ステップ 3: 水平線ガイド＆中央レティクル描画（任意）

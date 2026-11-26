@@ -20,6 +20,12 @@ Spatial Computing, Physics Fluids & Autonomous Cinema OS 最終マイルスト�
 * `ve-core`: `cinema_os` モジュール — Pure-Rust RFC 2104 `hmac_sha256_hex`（RFC 4231 公式テストベクター検証済）、重み比例チャンク分割＆署名検証 `plan_render_farm_chunks` / `verify_chunk_hmac`、非ブロッキングローカル HTTP/1.1 コーディネータ `RenderFarmCoordinatorServer`、FFmpeg 無劣化 concat マニフェスト `build_farm_concat_manifest`（`Project::render_farm` / `EditCommand::SetRenderFarm`）、さらに台本→絵コンテ構造解析＆プレイアブルアニマティック 1-Undo 自動構築 `parse_script_to_storyboard` / `build_storyboard_animatic_commands`、秒別視聴維持率カーブ予測＆離脱診断 `analyze_viewer_retention`、戦略別 A/B 自動編集バリアント生成 `build_ab_edit_variant_command` を実装
 * `ve-app` / `ve-mcp`: AI & Collab Hub 内「🎬 自律 AI シネマプロデューサー (#60)」タブ（維持率グラフ可視化付）・Deliver Hub 内「🖥 LAN 分散レンダーファーム (#60)」タブ、MCP `manage_lan_render_farm` / `produce_storyboard_animatic_from_script` / `predict_retention_and_generate_ab_variants`（第 10 ドメイン `v100_spatial_cinema_os`・**全 100 MCP ツール完全体系化**）、およびゴールデン視覚回帰テスト `golden_v100_spatial_360_fluid_cloth_ibl_and_mocap_determinism` を追加
 
+### v10.0.0 品質・性能総仕上げ ＆ リリース準備ハードニング
+* **大規模ファイル分割リファクタリング（公開 API 互換 100%）:** `crates/core/src/command/`（`mod.rs` / `apply.rs` / `tests.rs`）、`crates/render/src/graph/`（`mod.rs` / `effects.rs` / `tests.rs`）、`crates/app/src/timeline/`（`mod.rs` / `actions.rs` / `tests.rs`）へ責務別分割整理
+* **GPU / WGSL コンピュート高速化 ＆ CPU ホットパス最適化:** `crates/render/src/gpu_v100.rs` に `SPATIAL_360_EQUIRECT_WGSL`・`FLUID_2D_ADVECTION_WGSL` コンピュートシェーダーと `GpuV100ComputePipeline`・全 8 本組み込み WGSL シェーダー Naga 一括検証器 `validate_all_builtin_wgsl_shaders` を追加（VFX Hub GPU パネルへ統合）。さらに 360° CPU パスへフレーム単位事前計算 `RotationYprMatrix` ＆ ゼロクローン借用を導入し毎ピクセルの三角関数再計算を排除
+* **全機能統合 E2E ＆ 100 MCP ツール耐障害性監査:** `crates/render/tests/e2e_v100_full_suite.rs`（v7.0〜v10.0 全コマンド Undo/Redo＆`history.jsonl` クラッシュ完全復旧・レガシー v0.1 JSON 後方互換ロード・全 8 WGSL シェーダー検証・全載せシーン 4 スレッド並列描画ビット完全一致）および `v100_mcp_all_100_tools_schema_audit_and_error_resilience` を追加
+* **マルチ OS リリース整備:** `.github/workflows/release.yml` の macOS `.app` `Info.plist` バージョンをリリースタグ連動（既定 `10.0.0`）＆ `CHANGELOG.md` 同梱対応へ更新し、`docs/architecture.md` を v10.0.0 最新構成へ刷新
+
 ## [9.0.0] - 2026-11-25
 
 Live Broadcast, VTuber & Hardware Ecosystem マイルストーン v9.0（#53〜#56）をすべて実装し、全 56 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **90 MCP ツール** / 9 ドメイン）。
