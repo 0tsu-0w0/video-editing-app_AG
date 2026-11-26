@@ -721,3 +721,68 @@ fn golden_v80_planar_roto_svg_morph_optical_vfx_and_adr_determinism() {
         "v8.0 SVG morph + flag warp + ADR streamer must animate over time: diff={diff}"
     );
 }
+
+#[test]
+fn golden_v90_vtuber_mesh_verlet_and_live_stinger_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        let mut vt = TimelineItem::new(
+            "VtuberHero",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::VtuberAvatar {
+                config: Box::new(ve_core::VtuberMeshConfig {
+                    width: 110.0,
+                    height: 110.0,
+                    preset: ve_core::VtuberAvatarPreset::CyberFoxViolet,
+                    blend_shapes: ve_core::VtuberBlendShapes {
+                        head_yaw_deg: 22.0,
+                        mouth_open: 0.65,
+                        mouth_smile: 0.7,
+                        ..ve_core::VtuberBlendShapes::default()
+                    },
+                    show_wireframe: true,
+                    ..ve_core::VtuberMeshConfig::default()
+                }),
+            },
+        );
+        vt.transform.x = 80.0;
+        vt.transform.y = 48.0;
+        scene.layers[1].items.push(vt);
+        scene.live_switcher.enabled = true;
+        scene.live_switcher.recording_active = true;
+        scene.live_switcher.show_tally_hud = true;
+    }
+
+    let t0 = RationalTime::from_seconds(0.4);
+    let t1 = RationalTime::from_seconds(1.1);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let f1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap();
+    let f2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap();
+    assert_eq!(
+        f1.to_rgba8_srgb(),
+        f2.to_rgba8_srgb(),
+        "v9.0 VTuber 2D mesh + Verlet physics + Live tally HUD must be bit-for-bit deterministic"
+    );
+
+    let f_later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap();
+    let stinger = ve_render::render_live_stinger_transition(
+        &f1,
+        &f_later,
+        &ve_core::StingerConfig::default(),
+        0.5,
+    );
+    assert_ne!(
+        stinger.to_rgba8_srgb(),
+        f1.to_rgba8_srgb(),
+        "Live stinger diagonal wipe must visibly transform frame at progress=0.5"
+    );
+}

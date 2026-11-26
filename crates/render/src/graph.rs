@@ -469,6 +469,10 @@ impl RenderGraph {
                         config.height = (config.height * sy).max(16.0);
                         config.stroke_width *= uniform;
                     }
+                    ItemKind::VtuberAvatar { config } => {
+                        config.width = (config.width * sx).max(32.0);
+                        config.height = (config.height * sy).max(32.0);
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -611,6 +615,11 @@ impl RenderGraph {
             && let Some(adr_state) = scene.adr_session.evaluate_countdown_at(time)
         {
             crate::v80_render::draw_adr_countdown_streamer(&mut canvas, &adr_state);
+        }
+
+        // v9.0 #53: ライブスイッチャー PGM/PVW タリー＆REC HUD
+        if depth == 0 && scene.live_switcher.enabled && scene.live_switcher.show_tally_hud {
+            crate::v90_render::draw_live_tally_hud(&mut canvas, &scene.live_switcher);
         }
 
         canvas
@@ -1494,6 +1503,63 @@ impl RenderGraph {
                     local_time.as_seconds() as f32,
                     sw,
                     sh,
+                ))
+            }
+            ItemKind::VtuberAvatar { config } => {
+                let mut scaled_cfg = (**config).clone();
+                scaled_cfg.width = (config.width * tf.scale_x).clamp(32.0, 1600.0);
+                scaled_cfg.height = (config.height * tf.scale_y).clamp(32.0, 1600.0);
+                let t_sec = local_time.as_seconds() as f32;
+                let mut shapes = ve_core::evaluate_vtuber_shapes(&scaled_cfg, t_sec);
+                if let Some(k) = item.keyframes.get("vt_yaw")
+                    && !k.is_empty()
+                {
+                    shapes.head_yaw_deg =
+                        ve_core::evaluate_track(shapes.head_yaw_deg, k, local_time)
+                            .clamp(-35.0, 35.0);
+                }
+                if let Some(k) = item.keyframes.get("vt_pitch")
+                    && !k.is_empty()
+                {
+                    shapes.head_pitch_deg =
+                        ve_core::evaluate_track(shapes.head_pitch_deg, k, local_time)
+                            .clamp(-25.0, 25.0);
+                }
+                if let Some(k) = item.keyframes.get("vt_roll")
+                    && !k.is_empty()
+                {
+                    shapes.head_roll_deg =
+                        ve_core::evaluate_track(shapes.head_roll_deg, k, local_time)
+                            .clamp(-25.0, 25.0);
+                }
+                if let Some(k) = item.keyframes.get("vt_mouth")
+                    && !k.is_empty()
+                {
+                    shapes.mouth_open =
+                        ve_core::evaluate_track(shapes.mouth_open, k, local_time).clamp(0.0, 1.0);
+                }
+                if let Some(k) = item.keyframes.get("vt_blink_l")
+                    && !k.is_empty()
+                {
+                    shapes.blink_l =
+                        ve_core::evaluate_track(shapes.blink_l, k, local_time).clamp(0.0, 1.0);
+                }
+                if let Some(k) = item.keyframes.get("vt_blink_r")
+                    && !k.is_empty()
+                {
+                    shapes.blink_r =
+                        ve_core::evaluate_track(shapes.blink_r, k, local_time).clamp(0.0, 1.0);
+                }
+                let custom_tex = scaled_cfg.asset_id.and_then(|aid| {
+                    let proj = project?;
+                    let (p, _) = self.resolve_asset_path(proj, aid, false)?;
+                    load_png_linear(&p)
+                });
+                Some(crate::v90_render::render_vtuber_avatar(
+                    &scaled_cfg,
+                    custom_tex.as_ref(),
+                    t_sec,
+                    &shapes,
                 ))
             }
             ItemKind::Audio { .. }

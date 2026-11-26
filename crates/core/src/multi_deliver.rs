@@ -234,6 +234,7 @@ pub fn build_reformatted_scene_command(
         optical_vfx: src.optical_vfx.clone(),
         adr_session: src.adr_session.clone(),
         spatial_bus: src.spatial_bus.clone(),
+        live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
         layers: new_layers,
     };
 

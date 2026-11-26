@@ -14,10 +14,12 @@ pub mod expression;
 pub mod finishing;
 pub mod folder;
 pub mod generative;
+pub mod hardware_ctrl;
 pub mod highlights;
 pub mod interop;
 pub mod kinetic_sub;
 pub mod lipsync;
+pub mod live_switcher;
 pub mod motion_foundry;
 pub mod multi_deliver;
 pub mod multicam;
@@ -31,6 +33,7 @@ pub mod rigging;
 pub mod scene3d;
 pub mod script_import;
 pub mod settings;
+pub mod smart_dam;
 pub mod speed_ramp;
 pub mod studio_hub;
 pub mod template;
@@ -40,6 +43,7 @@ pub mod timeline_index;
 pub mod timeline_ops;
 pub mod v80_vfx;
 pub mod vfx_paint;
+pub mod vtuber_rig;
 
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
 pub use broadcast_qc::{
@@ -87,6 +91,12 @@ pub use finishing::{
 };
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
 pub use generative::{GenerativeBgConfig, GenerativeBgPreset};
+pub use hardware_ctrl::{
+    HardwareBinding, HardwareBridgeServer, HardwareControllerConfig, HardwareControllerPreset,
+    HardwareDispatchOutcome, HardwareEvent, HardwareProtocol, HardwareTargetAction, MidiMessage,
+    compute_websocket_accept, decode_ws_text_frame, encode_ws_text_frame,
+    map_hardware_event_to_outcome, parse_midi_udp_packet, sha1_digest,
+};
 pub use highlights::{
     HighlightCandidate, HighlightConfig, build_motion_track_keyframes_command,
     build_shorts_clip_scene_command, extract_highlight_candidates,
@@ -105,6 +115,11 @@ pub use kinetic_sub::{
 pub use lipsync::{
     CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
     evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
+};
+pub use live_switcher::{
+    LiveSourceChannel, LiveSwitchEvent, LiveSwitcherConfig, StingerConfig, StingerKind,
+    StreamProtocol, StreamTargetConfig, build_live_switcher_veproj_commands,
+    export_live_session_veproj_json,
 };
 pub use motion_foundry::{
     SvgMorphConfig, SvgShapePreset, TextOnPathConfig, WarpDisplaceConfig, WarpPreset,
@@ -163,6 +178,12 @@ pub use script_import::{
 pub use settings::{
     EditorAction, EditorKeymap, EditorUserSettings, KeymapPreset, UiLanguage, UiThemePreset, tr,
 };
+pub use smart_dam::{
+    DamAssetRecord, DamDominantColor, RelinkMatch, RelinkPlan, SimilarShotHit, SmartBinRule,
+    SmartDamIndex, build_relink_assets_command, compute_file_head_fingerprint,
+    cosine_similarity_16, evaluate_smart_bin, extract_visual_features_from_rgba8,
+    find_similar_shots, relink_missing_assets_from_dir,
+};
 pub use speed_ramp::{
     DetectedSceneCut, SpeedRampConfig, SpeedRampKnot, SpeedRampPreset, build_scene_cut_commands,
     evaluate_speed_at_norm_time, evaluate_speed_ramp_source_time,
@@ -202,3 +223,10 @@ pub use v80_vfx::{
     RotoKeyframe, SpatialAudioBusMode, SpatialBusConfig, build_planar_track_corner_pin_command,
 };
 pub use vfx_paint::{PaintStroke, PaintToolKind, VfxPaintConfig};
+pub use vtuber_rig::{
+    Mesh2DTriangle, Mesh2DVertex, OscArg, OscMessage, VerletChainConfig, VmcTrackFrame,
+    VmcUdpReceiver, VtuberAvatarPreset, VtuberBlendShapes, VtuberMeshConfig,
+    apply_vmc_osc_message_to_blendshapes, build_vtuber_grid_mesh, build_vtuber_vmc_bake_command,
+    decode_osc_packet, deform_vtuber_mesh, encode_osc_message, evaluate_vtuber_shapes,
+    simulate_verlet_hair_chain,
+};

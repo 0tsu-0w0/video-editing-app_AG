@@ -1,4 +1,4 @@
-//! 内蔵 MCP 統合テストスイート（v0.3〜v8.0 全 86 ツール）
+//! 内蔵 MCP 統合テストスイート（v0.3〜v9.0 全 90 ツール）
 
 use super::*;
 use crate::session::EditorSession;
@@ -606,7 +606,7 @@ fn v09_mcp_tools_expressions_templates_and_fx() {
 
     // Verify exact MCP tool count = 58 (v2.0)
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -801,7 +801,7 @@ fn v10_mcp_tools_multicam_nle_delivery_and_ecosystem() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1078,7 +1078,7 @@ fn v20_mcp_tools_node_graph_ai_vision_director_and_collab() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1294,7 +1294,7 @@ fn v21_mcp_tools_color_vfx_spatial_and_kinetic() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
 }
 
 #[test]
@@ -1487,7 +1487,7 @@ fn v30_mcp_tools_gpu_3d_dubbing_and_crdt() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1695,7 +1695,7 @@ fn v40_mcp_tools_aces_physics_generative_and_qc() {
     assert!(html_body.contains("data:image/png;base64,"));
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1916,7 +1916,7 @@ fn v50_mcp_tools_rig2d_bgm_speed_ramp_and_finishing() {
     assert!(xml_path.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2096,7 +2096,7 @@ fn v60_mcp_tools_dataviz_vfxpaint_podcast_and_packager() {
     assert!(bundle_dir.join("subtitles/shorts_reels_9x16.srt").exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2183,8 +2183,8 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     .unwrap();
     let cat_json: Value =
         serde_json::from_str(cat_res["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(cat_json["domain_count"], 8);
-    assert_eq!(cat_json["total_tools"], 86);
+    assert_eq!(cat_json["domain_count"], 9);
+    assert_eq!(cat_json["total_tools"], 90);
 
     let verify_res = call_tool(
         &session,
@@ -2195,7 +2195,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     let verify_json: Value =
         serde_json::from_str(verify_res["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(verify_json["valid"], true);
-    assert_eq!(verify_json["unique_tool_count"], 86);
+    assert_eq!(verify_json["unique_tool_count"], 90);
 
     // 3. #47 gpu_v70_frame_pool: status, benchmark (custom lightweight), run_fast_blend_aces
     let gpu_st_res = call_tool(
@@ -2312,7 +2312,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     assert!(!ab_png["content"][0]["data"].as_str().unwrap().is_empty());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
 }
 
 #[test]
@@ -2639,6 +2639,260 @@ fn v80_mcp_tools_planar_roto_svg_morph_optical_and_audio_restoration() {
     assert!(wav_foa.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 86);
+    assert_eq!(defs.as_array().unwrap().len(), 90);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn v90_mcp_tools_live_switcher_vtuber_hardware_and_smart_dam() {
+    let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v90_{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let mut proj = Project::new("V90LiveVtuberHwDamTest", ProjectSettings::default());
+    let moved_file = tmp_dir.join("relocated_raw_shot.bin");
+    std::fs::write(
+        &moved_file,
+        b"v90-mcp-relink-fingerprint-payload-0123456789",
+    )
+    .unwrap();
+    let (sz, sha) = ve_core::compute_file_head_fingerprint(&moved_file).unwrap();
+
+    let missing_id = Uuid::new_v4();
+    proj.assets.push(AssetRef {
+        id: missing_id,
+        name: "missing_camera_a.mov".into(),
+        kind: MediaKind::Video,
+        relative_path: None,
+        fallback_absolute_path: Some(std::path::PathBuf::from(
+            "/offline_disk/missing_camera_a.mov",
+        )),
+        collected: false,
+    });
+    proj.smart_dam.upsert_record(ve_core::DamAssetRecord {
+        asset_id: Some(missing_id),
+        file_path: "/offline_disk/missing_camera_a.mov".into(),
+        file_name: "missing_camera_a.mov".into(),
+        kind: MediaKind::Video,
+        file_size_bytes: sz,
+        head_sha256: sha,
+        dominant_colors: Vec::new(),
+        avg_luma: 0.5,
+        avg_saturation: 0.5,
+        warmth_score: 0.3,
+        edge_energy: 0.2,
+        feature_vec: [0.25; 16],
+        bpm: None,
+        integrated_lufs: None,
+        duration_sec: Some(4.0),
+        tags: vec!["camA".into()],
+    });
+    let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+    // 1. #53 live_switcher_and_broadcast: configure -> trigger_take -> bake_nle_timeline -> export_veproj -> preview_ffmpeg_args
+    call_tool(
+        &session,
+        "live_switcher_and_broadcast",
+        &json!({
+            "action": "configure",
+            "enabled": true,
+            "recording_active": true,
+            "protocol": "srt",
+            "endpoint_url": "srt://127.0.0.1:9000",
+            "stinger_kind": "diagonal_wipe"
+        }),
+    )
+    .unwrap();
+    let take_res = call_tool(
+        &session,
+        "live_switcher_and_broadcast",
+        &json!({ "action": "trigger_take", "timestamp_sec": 2.5, "use_stinger": true, "note": "Intro" }),
+    )
+    .unwrap();
+    let take_json: Value =
+        serde_json::from_str(take_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(take_json["program_channel"], 1);
+    assert_eq!(take_json["event_count"], 1);
+
+    let veproj_path = tmp_dir.join("live_show.veproj.json");
+    call_tool(
+        &session,
+        "live_switcher_and_broadcast",
+        &json!({ "action": "export_veproj", "output_path": veproj_path.display().to_string() }),
+    )
+    .unwrap();
+    assert!(veproj_path.exists());
+
+    let ff_res = call_tool(
+        &session,
+        "live_switcher_and_broadcast",
+        &json!({ "action": "preview_ffmpeg_args" }),
+    )
+    .unwrap();
+    assert!(
+        ff_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("mpegts")
+    );
+
+    // 2. #54 vtuber_mesh_physics_and_vmc: add_avatar -> apply_vmc_osc -> bake_vmc_frames -> test_verlet_physics
+    let vt_add = call_tool(
+        &session,
+        "vtuber_mesh_physics_and_vmc",
+        &json!({
+            "action": "add_avatar",
+            "layer_index": 1,
+            "preset": "cyber_fox_violet",
+            "width": 400.0,
+            "height": 400.0
+        }),
+    )
+    .unwrap();
+    let vt_id = serde_json::from_str::<Value>(vt_add["content"][0]["text"].as_str().unwrap())
+        .unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    call_tool(
+        &session,
+        "vtuber_mesh_physics_and_vmc",
+        &json!({
+            "action": "apply_vmc_osc",
+            "item_id": vt_id,
+            "vmc_blend_name": "A",
+            "vmc_blend_value": 0.9
+        }),
+    )
+    .unwrap();
+    let bake_res = call_tool(
+        &session,
+        "vtuber_mesh_physics_and_vmc",
+        &json!({ "action": "bake_vmc_frames", "item_id": vt_id, "sample_count": 5 }),
+    )
+    .unwrap();
+    assert!(
+        bake_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"baked_frames\": 5")
+    );
+
+    let verlet_res = call_tool(
+        &session,
+        "vtuber_mesh_physics_and_vmc",
+        &json!({ "action": "test_verlet_physics", "head_yaw_deg": 28.0, "wind_amp": 0.3 }),
+    )
+    .unwrap();
+    assert!(
+        verlet_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("tip_offset")
+    );
+
+    // 3. #55 hardware_controller_osc_midi_deck: apply_preset -> dispatch_event (OSC + Stream Deck) -> test_loopback_bridge
+    call_tool(
+        &session,
+        "hardware_controller_osc_midi_deck",
+        &json!({ "action": "apply_preset", "preset": "full_broadcast_rig", "enabled": true }),
+    )
+    .unwrap();
+    let disp_res = call_tool(
+        &session,
+        "hardware_controller_osc_midi_deck",
+        &json!({
+            "action": "dispatch_event",
+            "protocol": "osc_udp",
+            "pattern": "/ve/color/exposure",
+            "value_01": 0.75
+        }),
+    )
+    .unwrap();
+    assert!(
+        disp_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("set_scene_color_grade")
+    );
+
+    let lb_res = call_tool(
+        &session,
+        "hardware_controller_osc_midi_deck",
+        &json!({ "action": "test_loopback_bridge" }),
+    )
+    .unwrap();
+    let lb_json: Value =
+        serde_json::from_str(lb_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(lb_json["received_count"].as_u64().unwrap() >= 2);
+
+    // 4. #56 smart_dam_search_and_relink: upsert warm/cool -> query_smart_bin -> find_similar -> relink_missing_from_dir
+    call_tool(
+        &session,
+        "smart_dam_search_and_relink",
+        &json!({
+            "action": "upsert_synthetic_record",
+            "file_name": "sunset_beach.mp4",
+            "file_path": "/shots/sunset_beach.mp4",
+            "rgb": [248, 128, 42],
+            "tags": ["sunset", "hero"]
+        }),
+    )
+    .unwrap();
+    call_tool(
+        &session,
+        "smart_dam_search_and_relink",
+        &json!({
+            "action": "upsert_synthetic_record",
+            "file_name": "cool_neon.mp4",
+            "file_path": "/shots/cool_neon.mp4",
+            "rgb": [28, 92, 235],
+            "tags": ["night"]
+        }),
+    )
+    .unwrap();
+    let bin_res = call_tool(
+        &session,
+        "smart_dam_search_and_relink",
+        &json!({ "action": "query_smart_bin", "bin_index": 0 }),
+    )
+    .unwrap();
+    assert!(
+        bin_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("sunset_beach.mp4")
+    );
+
+    let sim_res = call_tool(
+        &session,
+        "smart_dam_search_and_relink",
+        &json!({ "action": "find_similar", "query_path": "/shots/sunset_beach.mp4", "top_k": 2 }),
+    )
+    .unwrap();
+    assert!(
+        sim_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("hits")
+    );
+
+    let relink_res = call_tool(
+        &session,
+        "smart_dam_search_and_relink",
+        &json!({
+            "action": "relink_missing_from_dir",
+            "search_dir": tmp_dir.display().to_string(),
+            "apply": true
+        }),
+    )
+    .unwrap();
+    let relink_json: Value =
+        serde_json::from_str(relink_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(relink_json["matched_count"], 1);
+    assert_eq!(relink_json["applied"], true);
+
+    let defs = tool_definitions();
+    assert_eq!(defs.as_array().unwrap().len(), 90);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

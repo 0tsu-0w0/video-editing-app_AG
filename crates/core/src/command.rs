@@ -471,6 +471,27 @@ pub enum EditCommand {
     SetSpatialBus {
         spatial_bus: crate::v80_vfx::SpatialBusConfig,
     },
+    /// v9.0 #53: アクティブシーンの 2 バスライブスイッチャー＆NLE 同時収録設定を更新する
+    SetLiveSwitcher {
+        live_switcher: crate::live_switcher::LiveSwitcherConfig,
+    },
+    /// v9.0 #54: VTuber 2D 三角メッシュ＆Verlet 物理設定を更新する
+    SetVtuberAvatar {
+        item_id: ItemId,
+        config: Box<crate::vtuber_rig::VtuberMeshConfig>,
+    },
+    /// v9.0 #55: プロジェクトの OSC/MIDI/Stream Deck ハードウェアコントローラー設定を更新する
+    SetHardwareController {
+        hardware_ctrl: crate::hardware_ctrl::HardwareControllerConfig,
+    },
+    /// v9.0 #56: プロジェクトのローカル スマート DAM インデックスを更新する
+    SetSmartDamIndex {
+        smart_dam: crate::smart_dam::SmartDamIndex,
+    },
+    /// v9.0 #56: 行方不明アセットのファイルパスを 1-Undo で一括自動再リンクする
+    RelinkAssets {
+        relinks: Vec<(crate::project::AssetId, String)>,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -564,6 +585,11 @@ impl EditCommand {
             Self::SetOpticalVfx { .. } => "set_optical_vfx",
             Self::SetAdrSession { .. } => "set_adr_session",
             Self::SetSpatialBus { .. } => "set_spatial_bus",
+            Self::SetLiveSwitcher { .. } => "set_live_switcher",
+            Self::SetVtuberAvatar { .. } => "set_vtuber_avatar",
+            Self::SetHardwareController { .. } => "set_hardware_controller",
+            Self::SetSmartDamIndex { .. } => "set_smart_dam_index",
+            Self::RelinkAssets { .. } => "relink_assets",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1053,6 +1079,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 optical_vfx: crate::v80_vfx::OpticalVfxConfig::default(),
                 adr_session: crate::v80_vfx::AdrSessionConfig::default(),
                 spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
+                live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -2068,6 +2095,57 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             next.head_yaw_deg = next.head_yaw_deg.clamp(-180.0, 180.0);
             next.head_pitch_deg = next.head_pitch_deg.clamp(-90.0, 90.0);
             scene.spatial_bus = next;
+            Ok(())
+        }
+        EditCommand::SetLiveSwitcher { live_switcher } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = live_switcher.clone();
+            next.transition_progress = next.transition_progress.clamp(0.0, 1.0);
+            if !next.sources.is_empty() {
+                let max_i = next.sources.len() - 1;
+                next.program_channel = next.program_channel.min(max_i);
+                next.preview_channel = next.preview_channel.min(max_i);
+            }
+            scene.live_switcher = next;
+            Ok(())
+        }
+        EditCommand::SetVtuberAvatar { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = (**config).clone();
+            next.width = next.width.clamp(64.0, 2048.0);
+            next.height = next.height.clamp(64.0, 2048.0);
+            next.grid_cols = next.grid_cols.clamp(3, 18);
+            next.grid_rows = next.grid_rows.clamp(3, 18);
+            item.kind = ItemKind::VtuberAvatar {
+                config: Box::new(next),
+            };
+            Ok(())
+        }
+        EditCommand::SetHardwareController { hardware_ctrl } => {
+            project.hardware_ctrl = hardware_ctrl.clone();
+            Ok(())
+        }
+        EditCommand::SetSmartDamIndex { smart_dam } => {
+            project.smart_dam = smart_dam.clone();
+            Ok(())
+        }
+        EditCommand::RelinkAssets { relinks } => {
+            for (aid, new_path) in relinks {
+                if let Some(asset) = project.assets.iter_mut().find(|a| a.id == *aid) {
+                    asset.fallback_absolute_path = Some(std::path::PathBuf::from(new_path));
+                    asset.relative_path = None;
+                }
+                if let Some(rec) = project
+                    .smart_dam
+                    .records
+                    .iter_mut()
+                    .find(|r| r.asset_id == Some(*aid))
+                {
+                    rec.file_path = new_path.clone();
+                }
+            }
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {
