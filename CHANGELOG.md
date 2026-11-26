@@ -1,5 +1,25 @@
 # Changelog
 
+## [10.0.0] - 2026-11-25
+
+Spatial Computing, Physics Fluids & Autonomous Cinema OS 最終マイルストーン v10.0（#57〜#60）をすべて実装し、**全 60 ロードマップ項目を完全達成**しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・**全 100 MCP ツール / 10 ドメイン**）。
+
+### #57 360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ ステレオスコピック空間 3D ビデオ編集
+* `ve-core` / `ve-render`: `spatial_video` / `v100_render` モジュール — Equirectangular ⇔ 透視投影リフレーム（`OverCapture`）・逆ステレオ投影（`TinyPlanet`）・全天球レビュー（`EquirectangularReview`）の厳密逆射影関数 `project_screen_to_equirect_uv`、ジャイロ時系列サンプルからの指数平滑化水平ロック `evaluate_horizon_locked_euler`、および Side-by-Side / Top-and-Bottom / Red-Cyan アナグリフ / 単眼 L・R ステレオスコピック空間 3D パス `render_spatial_360_and_stereo_pass`（`Scene::spatial_video` / `EditCommand::SetSpatialVideo`）を `RenderGraph` へ統合
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🌐 360° 全天球動画＆空間 3D (#57)」タブ、MCP `configure_360_overcapture_and_horizon_lock` / `configure_stereoscopic_spatial_3d` を追加
+
+### #58 決定論 2D Navier-Stokes 流体（煙・炎・インク）＆ クロス物理 ＋ 3D シャドウマップ / HDRI IBL
+* `ve-core` / `ve-render`: `fluid_cloth` / `v100_render` / `mesh3d_render` モジュール — Jos Stam 安定法 2D オイラー格子流体ソルバー `simulate_fluid_2d_at_time`（移流・暗黙拡散・渦度閉じ込め・圧力ポアソン反復・`ItemKind::FluidSim` / `EditCommand::SetFluidSim`）、構造・せん断・曲げ距離拘束付き決定論 PBD クロス物理ソルバー `simulate_cloth_pbd_at_time`（`ItemKind::ClothSim` / `EditCommand::SetClothSim`）、および 2 パス直交デプスシャドウマップ（3×3 / 5×5 PCF ソフトシャドウ＋地面シャドウキャッチャー）＆ Equirectangular プロシージャル HDRI 拡散/鏡面 IBL `sample_hdri_ibl` / `render_mesh_data_pbr_with_adv`（`Scene::lighting_3d_adv` / `EditCommand::SetLighting3DAdv`）を `RenderGraph` へ統合
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🔥 2D 流体・クロス物理＆3D シャドウ/HDRI IBL (#58)」タブ、MCP `add_or_update_fluid_simulation` / `add_or_update_cloth_simulation` / `configure_3d_shadows_and_hdri_ibl` を追加
+
+### #59 BVH / 動画シルエット モーションキャプチャ → 2D / 3D リグ自動リターゲット（足接地ロック付）
+* `ve-core`: `mocap_retarget` モジュール — Pure-Rust 標準 `.bvh`（`HIERARCHY` / `MOTION`）パーサ `parse_bvh`＆3D 順運動学 `evaluate_bvh_world_joints`、前景シルエット RGBA8 からの 7 関節 2D 骨格姿勢推定 `extract_silhouette_pose_from_rgba8`、ボーン長比率スケーリング＋足滑り防止 Foot Skate Locking IK リターゲット `retarget_bvh_to_rig2d` / `retarget_silhouette_sequence_to_rig2d`、および 1-Undo キーフレームベイク `build_mocap_retarget_bake_commands` を実装
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🏃 BVH / シルエットモキャップ＆足接地リターゲット (#59)」タブ、MCP `import_bvh_mocap_and_retarget` / `extract_silhouette_mocap_pose` を追加
+
+### #60 LAN 分散レンダーファーム ＆ 自律 AI シネマプロデューサー（台本→絵コンテ・A/B 自動編集・視聴維持率予測・全 100 MCP ツール）
+* `ve-core`: `cinema_os` モジュール — Pure-Rust RFC 2104 `hmac_sha256_hex`（RFC 4231 公式テストベクター検証済）、重み比例チャンク分割＆署名検証 `plan_render_farm_chunks` / `verify_chunk_hmac`、非ブロッキングローカル HTTP/1.1 コーディネータ `RenderFarmCoordinatorServer`、FFmpeg 無劣化 concat マニフェスト `build_farm_concat_manifest`（`Project::render_farm` / `EditCommand::SetRenderFarm`）、さらに台本→絵コンテ構造解析＆プレイアブルアニマティック 1-Undo 自動構築 `parse_script_to_storyboard` / `build_storyboard_animatic_commands`、秒別視聴維持率カーブ予測＆離脱診断 `analyze_viewer_retention`、戦略別 A/B 自動編集バリアント生成 `build_ab_edit_variant_command` を実装
+* `ve-app` / `ve-mcp`: AI & Collab Hub 内「🎬 自律 AI シネマプロデューサー (#60)」タブ（維持率グラフ可視化付）・Deliver Hub 内「🖥 LAN 分散レンダーファーム (#60)」タブ、MCP `manage_lan_render_farm` / `produce_storyboard_animatic_from_script` / `predict_retention_and_generate_ab_variants`（第 10 ドメイン `v100_spatial_cinema_os`・**全 100 MCP ツール完全体系化**）、およびゴールデン視覚回帰テスト `golden_v100_spatial_360_fluid_cloth_ibl_and_mocap_determinism` を追加
+
 ## [9.0.0] - 2026-11-25
 
 Live Broadcast, VTuber & Hardware Ecosystem マイルストーン v9.0（#53〜#56）をすべて実装し、全 56 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **90 MCP ツール** / 9 ドメイン）。

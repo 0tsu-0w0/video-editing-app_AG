@@ -2928,6 +2928,8 @@ fn clip_color_for_kind(kind: &ItemKind) -> Color32 {
         ItemKind::VectorShape { .. } => Color32::from_rgb(172, 86, 214),
         ItemKind::SvgMorph { .. } => Color32::from_rgb(204, 92, 232),
         ItemKind::VtuberAvatar { .. } => Color32::from_rgb(242, 108, 178),
+        ItemKind::FluidSim { .. } => Color32::from_rgb(248, 132, 46),
+        ItemKind::ClothSim { .. } => Color32::from_rgb(198, 78, 118),
         ItemKind::Mesh3D { .. } => Color32::from_rgb(68, 146, 238),
         ItemKind::GenerativeBg { .. } => Color32::from_rgb(48, 186, 152),
         ItemKind::RiggedPuppet { .. } => Color32::from_rgb(232, 92, 148),
