@@ -2926,6 +2926,7 @@ fn clip_color_for_kind(kind: &ItemKind) -> Color32 {
         ItemKind::AudioSpectrum { .. } => Color32::from_rgb(46, 178, 212),
         ItemKind::ParticleEmitter { .. } => Color32::from_rgb(218, 152, 42),
         ItemKind::VectorShape { .. } => Color32::from_rgb(172, 86, 214),
+        ItemKind::SvgMorph { .. } => Color32::from_rgb(204, 92, 232),
         ItemKind::Mesh3D { .. } => Color32::from_rgb(68, 146, 238),
         ItemKind::GenerativeBg { .. } => Color32::from_rgb(48, 186, 152),
         ItemKind::RiggedPuppet { .. } => Color32::from_rgb(232, 92, 148),

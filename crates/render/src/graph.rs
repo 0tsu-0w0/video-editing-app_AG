@@ -464,6 +464,11 @@ impl RenderGraph {
                         config.width = (config.width * sx).max(64.0);
                         config.height = (config.height * sy).max(48.0);
                     }
+                    ItemKind::SvgMorph { config } => {
+                        config.width = (config.width * sx).max(16.0);
+                        config.height = (config.height * sy).max(16.0);
+                        config.stroke_width *= uniform;
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -473,6 +478,10 @@ impl RenderGraph {
                         item.text_style.box_padding[0] *= sx;
                         item.text_style.box_padding[1] *= sy;
                         item.text_style.box_radius *= uniform;
+                        if item.text_on_path.enabled {
+                            item.text_on_path.letter_spacing_px *= uniform;
+                            item.text_on_path.vertical_offset_px *= uniform;
+                        }
                     }
                     _ => {}
                 }
@@ -481,7 +490,20 @@ impl RenderGraph {
                         stroke.radius_px = (stroke.radius_px * uniform).max(1.0);
                     }
                 }
+                if item.roto_brush.enabled {
+                    for kf in &mut item.roto_brush.keyframes {
+                        kf.feather_px *= uniform;
+                        kf.expansion_px *= uniform;
+                    }
+                }
+                if item.warp_displace.enabled {
+                    item.warp_displace.luma_displace_px *= uniform;
+                }
             }
+        }
+        if scaled.optical_vfx.bokeh_enabled {
+            scaled.optical_vfx.bokeh_radius_px =
+                (scaled.optical_vfx.bokeh_radius_px * uniform).max(0.5);
         }
         Some(self.render_scene_inner(Some(project), &scaled, time, transparent_bg, 0))
     }
@@ -569,6 +591,11 @@ impl RenderGraph {
             apply_scene_color_management(&mut canvas, &scene.color_management);
         }
 
+        // v8.0 #51: シネマ光学 VFX（擬似深度ボケ Rack Focus・ゴッドレイ・Brown-Conrady レンズ歪み＆物理色収差）
+        if scene.optical_vfx.is_active() {
+            crate::v80_render::apply_cinema_optical_vfx(&mut canvas, &scene.optical_vfx);
+        }
+
         // v5.0 #40: シネマフィニッシング（35mm ハレーション・アナモルフィックフレア・グレイン・レターボックス・バーンイン）
         if scene.cinema_finishing.enabled {
             crate::finishing_render::apply_cinema_finishing(
@@ -577,6 +604,13 @@ impl RenderGraph {
                 time,
                 scene.fps,
             );
+        }
+
+        // v8.0 #52: ADR カウント収録 3-2-1 映像ストリーマ
+        if depth == 0
+            && let Some(adr_state) = scene.adr_session.evaluate_countdown_at(time)
+        {
+            crate::v80_render::draw_adr_countdown_streamer(&mut canvas, &adr_state);
         }
 
         canvas
@@ -739,6 +773,14 @@ impl RenderGraph {
                             if !item.masks.is_empty() {
                                 crate::mask_tracker::apply_bezier_masks(&mut item_img, &item.masks);
                             }
+                            if let Some(roto_mask) =
+                                item.roto_brush.evaluate_mask_at(time - item.start)
+                            {
+                                crate::mask_tracker::apply_bezier_masks(
+                                    &mut item_img,
+                                    std::slice::from_ref(&roto_mask),
+                                );
+                            }
                             if item.vfx_paint.enabled {
                                 let dur_s = item.duration.as_seconds().max(1e-4);
                                 let progress = ((time - item.start).as_seconds() / dur_s)
@@ -750,9 +792,17 @@ impl RenderGraph {
                                     progress,
                                 );
                             }
-                            if item.corner_pin.enabled {
+                            if item.warp_displace.enabled {
+                                item_img = crate::v80_render::apply_warp_and_displacement(
+                                    &item_img,
+                                    &item.warp_displace,
+                                    (time - item.start).as_seconds() as f32,
+                                );
+                            }
+                            let eff_corner_pin = item.eval_corner_pin(time);
+                            if eff_corner_pin.enabled {
                                 item_img =
-                                    crate::vfx_track::apply_corner_pin(&item_img, &item.corner_pin);
+                                    crate::vfx_track::apply_corner_pin(&item_img, &eff_corner_pin);
                             }
 
                             let (mut draw_x, mut draw_y) =
@@ -1063,6 +1113,21 @@ impl RenderGraph {
                     .map(|p| &p.color_palette)
                     .unwrap_or(&default_palette);
                 let scaled_font_size = *font_size * tf.scale_y.max(0.1);
+                if item.text_on_path.enabled {
+                    return Some(crate::v80_render::render_text_on_path(
+                        content,
+                        font_family,
+                        scaled_font_size,
+                        *color,
+                        &item.text_on_path,
+                        &item.text_style,
+                        palette,
+                        &mut self.text_renderer,
+                        canvas_w,
+                        canvas_h,
+                        local_time.as_seconds() as f32,
+                    ));
+                }
                 let kinetic_buf;
                 let effective_content: &str = if item.kinetic_subtitle.enabled {
                     let dur_s = item.duration.as_seconds().max(1e-4);
@@ -1414,6 +1479,22 @@ impl RenderGraph {
                     local_time.as_seconds() as f32
                 };
                 Some(crate::v60_render::render_data_chart(config, t_sec, sw, sh))
+            }
+            ItemKind::SvgMorph { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(16.0, 4096.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(16.0, 4096.0) as u32;
+                let morph_override = item
+                    .keyframes
+                    .get("morph")
+                    .filter(|k| !k.is_empty())
+                    .map(|k| ve_core::evaluate_track(config.morph_progress, k, local_time));
+                Some(crate::v80_render::render_svg_morph(
+                    config,
+                    morph_override,
+                    local_time.as_seconds() as f32,
+                    sw,
+                    sh,
+                ))
             }
             ItemKind::Audio { .. }
             | ItemKind::FilterObject { .. }

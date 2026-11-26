@@ -9,6 +9,7 @@ pub mod multicam;
 pub mod output;
 pub mod podcast_studio;
 pub mod recorder;
+pub mod restoration;
 pub mod spatial_master;
 pub mod waveform;
 
@@ -40,6 +41,12 @@ pub use podcast_studio::{
     apply_podcast_voice_leveler, build_podcast_auto_switch_commands,
 };
 pub use recorder::{VoiceoverError, VoiceoverRecorder};
+pub use restoration::{
+    DeclickReport, FoaAmbiXBuffer, Surround51Buffer, apply_adaptive_dereverb, apply_declick,
+    apply_hum_removal, build_adr_cue_timeline_commands, decode_foa_ambix_to_binaural_stereo,
+    downmix_51_to_stereo_itu, encode_stereo_to_51_surround, encode_stereo_to_foa_ambix,
+    rotate_foa_ambix, synthesize_adr_preroll_beeps, write_multichannel_wav_file,
+};
 pub use spatial_master::{
     apply_binaural_spatial_3d, apply_multiband_compressor_3band, apply_true_peak_limiter,
     measure_true_peak_dbtp,

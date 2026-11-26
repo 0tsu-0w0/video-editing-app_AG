@@ -1721,6 +1721,7 @@ pub fn render_ab_compare_scene(
                 sc.color_grade.enabled = false;
                 sc.color_management.enabled = false;
                 sc.cinema_finishing.enabled = false;
+                sc.optical_vfx.enabled = false;
             }
             graph
                 .render_project_scene_scaled(&bypassed, scene_id, time, target_w, target_h, false)?
@@ -1734,6 +1735,7 @@ pub fn render_ab_compare_scene(
                     sc.color_grade.enabled = false;
                     sc.color_management.enabled = false;
                     sc.cinema_finishing.enabled = false;
+                    sc.optical_vfx.enabled = false;
                 }
                 graph.render_project_scene_scaled(
                     &bypassed, scene_id, time, target_w, target_h, false,

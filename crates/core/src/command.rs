@@ -439,6 +439,38 @@ pub enum EditCommand {
     SetAbCompare {
         ab_compare: crate::studio_hub::AbCompareConfig,
     },
+    /// v8.0 #49: クリップのエッジ吸着キーフレームロトブラシ設定を更新する
+    SetRotoBrush {
+        item_id: ItemId,
+        roto_brush: crate::v80_vfx::RotoBrushConfig,
+    },
+    /// v8.0 #50: SVG `<path>` インポート＆モーフィング設定を更新する
+    SetSvgMorph {
+        item_id: ItemId,
+        config: Box<crate::motion_foundry::SvgMorphConfig>,
+    },
+    /// v8.0 #50: テキストクリップの Text-on-Path 設定を更新する
+    SetTextOnPath {
+        item_id: ItemId,
+        text_on_path: crate::motion_foundry::TextOnPathConfig,
+    },
+    /// v8.0 #50: クリップのディスプレイスメント／グリッドワープ設定を更新する
+    SetWarpDisplace {
+        item_id: ItemId,
+        warp_displace: crate::motion_foundry::WarpDisplaceConfig,
+    },
+    /// v8.0 #51: アクティブシーンのシネマ光学 VFX 設定を更新する
+    SetOpticalVfx {
+        optical_vfx: crate::v80_vfx::OpticalVfxConfig,
+    },
+    /// v8.0 #52: アクティブシーンの ADR カウント収録セッション設定を更新する
+    SetAdrSession {
+        adr_session: crate::v80_vfx::AdrSessionConfig,
+    },
+    /// v8.0 #52: アクティブシーンの 5.1ch / FOA Ambisonics 空間音声バス設定を更新する
+    SetSpatialBus {
+        spatial_bus: crate::v80_vfx::SpatialBusConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -525,6 +557,13 @@ impl EditCommand {
             Self::SetAssetConformMeta { .. } => "set_asset_conform_meta",
             Self::ConformClipSource { .. } => "conform_clip_source",
             Self::SetAbCompare { .. } => "set_ab_compare",
+            Self::SetRotoBrush { .. } => "set_roto_brush",
+            Self::SetSvgMorph { .. } => "set_svg_morph",
+            Self::SetTextOnPath { .. } => "set_text_on_path",
+            Self::SetWarpDisplace { .. } => "set_warp_displace",
+            Self::SetOpticalVfx { .. } => "set_optical_vfx",
+            Self::SetAdrSession { .. } => "set_adr_session",
+            Self::SetSpatialBus { .. } => "set_spatial_bus",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1011,6 +1050,9 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 node_graph: NodeCompositeGraph::default(),
                 review_comments: Vec::new(),
                 ab_compare: crate::studio_hub::AbCompareConfig::default(),
+                optical_vfx: crate::v80_vfx::OpticalVfxConfig::default(),
+                adr_session: crate::v80_vfx::AdrSessionConfig::default(),
+                spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -1910,6 +1952,122 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
             next.diff_gain = next.diff_gain.clamp(1.0, 16.0);
             next.reference_sec = next.reference_sec.max(0.0);
             scene.ab_compare = next;
+            Ok(())
+        }
+        EditCommand::SetRotoBrush {
+            item_id,
+            roto_brush,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = roto_brush.clone();
+            next.edge_snap_radius_px = next.edge_snap_radius_px.clamp(1, 48);
+            next.edge_weight = next.edge_weight.clamp(0.05, 1.0);
+            next.keyframes.sort_by_key(|k| k.time);
+            item.roto_brush = next;
+            Ok(())
+        }
+        EditCommand::SetSvgMorph { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            if let ItemKind::SvgMorph { config: ref mut c } = item.kind {
+                let mut next = (**config).clone();
+                next.width = next.width.clamp(32.0, 4096.0);
+                next.height = next.height.clamp(32.0, 4096.0);
+                next.morph_progress = next.morph_progress.clamp(0.0, 1.0);
+                next.auto_morph_hz = next.auto_morph_hz.clamp(0.0, 8.0);
+                next.stroke_width = next.stroke_width.clamp(0.0, 64.0);
+                next.trim_start = next.trim_start.clamp(0.0, 1.0);
+                next.trim_end = next.trim_end.clamp(0.0, 1.0);
+                next.sample_count = next.sample_count.clamp(12, 256);
+                **c = next;
+                Ok(())
+            } else {
+                Err(CommandError::ItemNotFound(*item_id))
+            }
+        }
+        EditCommand::SetTextOnPath {
+            item_id,
+            text_on_path,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = text_on_path.clone();
+            next.path_offset = next.path_offset.clamp(-1.0, 2.0);
+            next.animate_speed = next.animate_speed.clamp(-2.0, 2.0);
+            next.letter_spacing_px = next.letter_spacing_px.clamp(-24.0, 96.0);
+            next.vertical_offset_px = next.vertical_offset_px.clamp(-200.0, 200.0);
+            item.text_on_path = next;
+            Ok(())
+        }
+        EditCommand::SetWarpDisplace {
+            item_id,
+            warp_displace,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = warp_displace.clone();
+            next.amount = next.amount.clamp(-1.0, 1.0);
+            next.frequency = next.frequency.clamp(0.2, 16.0);
+            next.speed = next.speed.clamp(-10.0, 10.0);
+            next.luma_displace_px = next.luma_displace_px.clamp(-64.0, 64.0);
+            next.ensure_grid_size();
+            item.warp_displace = next;
+            Ok(())
+        }
+        EditCommand::SetOpticalVfx { optical_vfx } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = optical_vfx.clone();
+            next.focus_depth = next.focus_depth.clamp(0.0, 1.0);
+            next.focus_band = next.focus_band.clamp(0.02, 0.6);
+            next.bokeh_radius_px = next.bokeh_radius_px.clamp(0.0, 20.0);
+            next.bokeh_highlight_boost = next.bokeh_highlight_boost.clamp(0.0, 3.0);
+            next.bokeh_blades = if next.bokeh_blades == 0 {
+                0
+            } else {
+                next.bokeh_blades.clamp(5, 8)
+            };
+            next.light_pos = [
+                next.light_pos[0].clamp(-0.5, 1.5),
+                next.light_pos[1].clamp(-0.5, 1.5),
+            ];
+            next.god_rays_intensity = next.god_rays_intensity.clamp(0.0, 2.0);
+            next.god_rays_decay = next.god_rays_decay.clamp(0.80, 0.99);
+            next.god_rays_threshold = next.god_rays_threshold.clamp(0.1, 2.0);
+            next.god_rays_samples = next.god_rays_samples.clamp(8, 64);
+            next.k1 = next.k1.clamp(-0.6, 0.6);
+            next.k2 = next.k2.clamp(-0.4, 0.4);
+            next.p1 = next.p1.clamp(-0.15, 0.15);
+            next.p2 = next.p2.clamp(-0.15, 0.15);
+            next.chromatic_aberration = next.chromatic_aberration.clamp(-0.05, 0.05);
+            scene.optical_vfx = next;
+            Ok(())
+        }
+        EditCommand::SetAdrSession { adr_session } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = adr_session.clone();
+            next.cues.sort_by_key(|c| c.start_time);
+            if !next.cues.is_empty() {
+                next.active_cue_idx = next.active_cue_idx.min(next.cues.len() - 1);
+            } else {
+                next.active_cue_idx = 0;
+            }
+            scene.adr_session = next;
+            Ok(())
+        }
+        EditCommand::SetSpatialBus { spatial_bus } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = spatial_bus.clone();
+            next.azimuth_deg = next.azimuth_deg.clamp(-180.0, 180.0);
+            next.elevation_deg = next.elevation_deg.clamp(-90.0, 90.0);
+            next.lfe_crossover_hz = next.lfe_crossover_hz.clamp(40.0, 160.0);
+            next.center_dialogue_boost = next.center_dialogue_boost.clamp(0.0, 1.0);
+            next.room_width = next.room_width.clamp(0.0, 1.0);
+            next.head_yaw_deg = next.head_yaw_deg.clamp(-180.0, 180.0);
+            next.head_pitch_deg = next.head_pitch_deg.clamp(-90.0, 90.0);
+            scene.spatial_bus = next;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

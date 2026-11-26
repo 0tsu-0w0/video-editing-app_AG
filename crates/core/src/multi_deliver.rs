@@ -231,6 +231,9 @@ pub fn build_reformatted_scene_command(
         node_graph: src.node_graph.clone(),
         review_comments: Vec::new(),
         ab_compare: crate::studio_hub::AbCompareConfig::default(),
+        optical_vfx: src.optical_vfx.clone(),
+        adr_session: src.adr_session.clone(),
+        spatial_bus: src.spatial_bus.clone(),
         layers: new_layers,
     };
 

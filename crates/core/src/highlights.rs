@@ -360,6 +360,9 @@ pub fn build_shorts_clip_scene_command(
         node_graph: crate::node_graph::NodeCompositeGraph::default(),
         review_comments: Vec::new(),
         ab_compare: crate::studio_hub::AbCompareConfig::default(),
+        optical_vfx: crate::v80_vfx::OpticalVfxConfig::default(),
+        adr_session: crate::v80_vfx::AdrSessionConfig::default(),
+        spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
         layers: new_layers,
     };
 

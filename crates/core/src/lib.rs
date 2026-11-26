@@ -18,6 +18,7 @@ pub mod highlights;
 pub mod interop;
 pub mod kinetic_sub;
 pub mod lipsync;
+pub mod motion_foundry;
 pub mod multi_deliver;
 pub mod multicam;
 pub mod node_graph;
@@ -37,6 +38,7 @@ pub mod text_edit;
 pub mod time;
 pub mod timeline_index;
 pub mod timeline_ops;
+pub mod v80_vfx;
 pub mod vfx_paint;
 
 pub use animation::{CubicBezier, Interpolation, Keyframe, evaluate_track, evaluate_velocity};
@@ -103,6 +105,11 @@ pub use kinetic_sub::{
 pub use lipsync::{
     CharacterSpriteConfig, LipSyncMode, MouthShape, PhonemeSegment, PsdCharacterConfig,
     evaluate_vowel_mouth, phoneme_to_mouth, resolve_mouth_png, rms_to_mouth,
+};
+pub use motion_foundry::{
+    SvgMorphConfig, SvgShapePreset, TextOnPathConfig, WarpDisplaceConfig, WarpPreset,
+    extract_svg_path_data, flatten_bezier_vertices, morph_paths_equal_arclength,
+    parse_svg_path_to_vertices, resample_polyline_equal_arclength, sample_polyline_at_fraction,
 };
 pub use multi_deliver::{
     DeliverableTarget, DeliveryBundleArtifact, DeliveryBundleConfig, DeliveryBundleManifest,
@@ -188,5 +195,10 @@ pub use timeline_ops::{
     build_motion_preset_commands, build_replace_text_commands, build_ripple_delete_commands,
     build_snap_to_beats_commands, detect_speech_intervals_from_rms, format_youtube_chapters,
     search_text_items, select_items_from_time, select_layer_items, wrap_subtitle_japanese,
+};
+pub use v80_vfx::{
+    AdrCountdownState, AdrCue, AdrSessionConfig, AdrTake, OpticalVfxConfig, OpticalVfxPreset,
+    PlanarTrackConfig, PlanarTrackFrame, PlanarTrackResult, PseudoDepthMode, RotoBrushConfig,
+    RotoKeyframe, SpatialAudioBusMode, SpatialBusConfig, build_planar_track_corner_pin_command,
 };
 pub use vfx_paint::{PaintStroke, PaintToolKind, VfxPaintConfig};

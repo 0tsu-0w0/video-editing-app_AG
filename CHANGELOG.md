@@ -1,5 +1,26 @@
 # Changelog
 
+## [8.0.0] - 2026-11-25
+
+Pro Cinema VFX, Motion Foundry & Audio Restoration マイルストーン v8.0（#49〜#52）をすべて実装し、全 52 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **86 MCP ツール** / 8 ドメイン）。
+
+### #49 4 点平面トラッカー（Planar Homography Tracker）＆ エッジ吸着キーフレームロトブラシ
+* `ve-core` / `ve-render`: `v80_vfx` / `v80_render` モジュール — 8×8 ガウス消去法による一般四辺形 $3\times 3$ 射影ホモグラフィソルバー `solve_quad_to_quad_homography`、4×4 グリッドパッチ ZNCC＋サブピクセル放物線補間＋RANSAC 外れ値除去による `estimate_homography_ransac` / `track_planar_quad_in_scene`、および `pin_tl_x`〜`pin_bl_y` キーフレームを 1-Undo `EditCommand::Batch` へ焼き込む `build_planar_track_corner_pin_command`（`TimelineItem::eval_corner_pin` で `RenderGraph` 毎フレーム評価）を実装
+* `ve-core` / `ve-render`: Sobel 勾配強度マップ `compute_sobel_edge_magnitude`・輪郭頂点エッジ吸着 `snap_roto_vertices_to_edges`・オプティカルフロー時間軸伝播 `propagate_roto_brush_in_scene`・非破壊キーフレームロト `RotoBrushConfig`（`EditCommand::SetRotoBrush`）を `RenderGraph` マスクパスへ統合
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🎯 4 点平面トラッカー＆ロトブラシ (#49)」タブ（4 隅直接ドラッグ可能キャンバス付）および MCP `planar_track_and_roto_brush` ツールを追加
+
+### #50 SVG `<path>` インポート＆パスモーフィング・Text-on-Path・ディスプレイスメント/グリッドワープ
+* `ve-core` / `ve-render`: `motion_foundry` / `v80_render` モジュール — `M/m/L/l/H/h/V/v/C/c/S/s/Q/q/T/t/A/a/Z/z` 全コマンドおよび SVG F.6 楕円弧→3 次ベジェ厳密変換に対応する Pure-Rust SVG `<path>` パーサ `parse_svg_path_to_vertices`（6 標準プリセット `SvgShapePreset`）、等弧長リサンプリング＆頂点数正規化モーフィング `morph_paths_equal_arclength`（`ItemKind::SvgMorph` / `EditCommand::SetSvgMorph` / `render_svg_morph`）、3 次曲線接線回転追従タイポグラフィ `TextOnPathConfig`（`EditCommand::SetTextOnPath` / `render_text_on_path`）、および Catmull-Rom 4×4 双三次グリッドワープ＋5 プリセット＋自己輝度ディスプレイスメント `WarpDisplaceConfig`（`EditCommand::SetWarpDisplace` / `apply_warp_and_displacement`）を `RenderGraph` へ統合
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「✒ SVG モーフィング＆Text-on-Path＆ワープ (#50)」タブおよび MCP `svg_morph_text_path_and_warp` ツールを追加
+
+### #51 シネマ光学 VFX（擬似深度ボケ Rack Focus・ゴッドレイ・Brown-Conrady レンズ歪み補正＆物理色収差）
+* `ve-core` / `ve-render`: `v80_vfx` / `v80_render` モジュール — 3 種擬似深度モード（チルトシフト／中央放射／輝度顕著性）＋Fibonacci 多角形絞り羽根（0=真円 / 5〜9 角）玉ボケの Rack Focus、放射状オクルージョンサンプリングによる体積光ゴッドレイ、および Brown-Conrady 放射/接線歪みモデル（$k_1, k_2, p_1, p_2$・自動ズーム補償）＆RGB 波長分散色収差を統合した `OpticalVfxConfig`（4 プリセット `OpticalVfxPreset` / `EditCommand::SetOpticalVfx` / `apply_cinema_optical_vfx`）を `RenderGraph` ポストプロセス段へ統合（A/B Bypass 連動対応）
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🎥 シネマ光学 VFX (#51)」タブおよび MCP `cinema_optical_vfx` ツールを追加
+
+### #52 オーディオ修復（ハム除去/デクリック/適応 De-Reverb）＆ ADR カウント収録 ＆ 5.1 / FOA Ambisonics バス
+* `ve-audio` / `ve-core` / `ve-render`: `restoration` / `v80_vfx` / `v80_render` モジュール — 2 段縦続 RBJ ノッチ IIR 50/60Hz 高調波電源ハム除去 `apply_hum_removal`（`hum_remove`・20dB 超減衰検証済）・2 次差分 MAD 外れ値検出＋3 次エルミート補間デクリック `apply_declick`（`declick`）・2 バンド適応後期残響エンベロープ減算 `apply_adaptive_dereverb`（`dereverb`）を `apply_audio_effect` へ統合。さらに 3-2-1 1kHz 同期ビープ合成 `synthesize_adr_preroll_beeps`・タイムラインキュー配置 `build_adr_cue_timeline_commands`・プレビュー 3-2-1 映像ストリーマ HUD `draw_adr_countdown_streamer`（`AdrSessionConfig` / `EditCommand::SetAdrSession`）、および ITU-R BS.775 5.1ch サラウンド（`encode_stereo_to_51_surround` / `downmix_51_to_stereo_itu`）＆1 次 Ambisonics FOA B-Format AmbiX（`W,Y,Z,X` SN3D/ACN 回転＆バイノーラル復号 `encode_stereo_to_foa_ambix` / `rotate_foa_ambix` / `decode_foa_ambix_to_binaural_stereo`）＋マルチチャンネル PCM16 WAV 出力 `write_multichannel_wav_file`（`SpatialBusConfig` / `EditCommand::SetSpatialBus`）を実装
+* `ve-app` / `ve-mcp`: Audio Hub 内「🎙 オーディオ修復・ADR・5.1/FOA 空間バス (#52)」タブ（360° 空間音場レーダー付）、MCP `audio_restoration_adr_spatial_bus`（`v80_cinema_audio` ドメイン追加・全 **86 MCP ツール**）、およびゴールデン視覚回帰テストを追加
+
 ## [7.0.0] - 2026-11-25
 
 Unified Studio UX & Core Architecture vNext マイルストーン v7.0（#45〜#48）をすべて実装し、全 48 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **82 MCP ツール**）。また、`docs/future_features.md` を次世代ロードマップ **v8.0〜v10.0（#49〜#60・全 60 項目）** へ拡張しました。

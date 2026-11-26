@@ -632,3 +632,92 @@ fn golden_v70_frame_pool_reuse_interval_tree_and_ab_split_determinism() {
         "A/B split must differ from full graded-only frame"
     );
 }
+
+#[test]
+fn golden_v80_planar_roto_svg_morph_optical_vfx_and_adr_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        let mut svg_item = TimelineItem::new(
+            "SvgMorphLogo",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::SvgMorph {
+                config: Box::new(ve_core::SvgMorphConfig {
+                    width: 110.0,
+                    height: 110.0,
+                    path_a_d: ve_core::SvgShapePreset::LightningBolt
+                        .svg_path_d()
+                        .to_string(),
+                    path_b_d: ve_core::SvgShapePreset::Heart.svg_path_d().to_string(),
+                    morph_progress: 0.4,
+                    auto_morph_hz: 0.5,
+                    ..ve_core::SvgMorphConfig::default()
+                }),
+            },
+        );
+        svg_item.transform.x = 24.0;
+        svg_item.transform.y = 8.0;
+        svg_item.warp_displace = ve_core::WarpDisplaceConfig {
+            enabled: true,
+            preset: ve_core::WarpPreset::FlagWave,
+            amount: 0.35,
+            ..ve_core::WarpDisplaceConfig::default()
+        };
+        svg_item.roto_brush = ve_core::RotoBrushConfig {
+            enabled: true,
+            keyframes: vec![ve_core::RotoKeyframe {
+                time: RationalTime::ZERO,
+                vertices: ve_core::RotoBrushConfig::default_ellipse_vertices(
+                    0.5, 0.5, 0.42, 0.42, 8,
+                ),
+                feather_px: 2.0,
+                expansion_px: 0.0,
+            }],
+            ..ve_core::RotoBrushConfig::default()
+        };
+        scene.layers[1].items.push(svg_item);
+
+        scene.optical_vfx =
+            ve_core::OpticalVfxConfig::from_preset(ve_core::OpticalVfxPreset::VintagePrismLens);
+        scene.adr_session.enabled = true;
+        scene.adr_session.cues.push(ve_core::AdrCue::new(
+            1,
+            "Hero",
+            "ここだ！",
+            RationalTime::from_seconds(3.0),
+            RationalTime::from_seconds(1.5),
+        ));
+    }
+
+    let t0 = RationalTime::from_seconds(0.5);
+    let t1 = RationalTime::from_seconds(1.2);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let f1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let f2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t0, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    assert_eq!(
+        f1, f2,
+        "v8.0 SvgMorph + Warp + RotoBrush + OpticalVFX + ADR must be bit-for-bit deterministic"
+    );
+
+    let f_later = g1
+        .render_project_scene(&proj, proj.active_scene_id, t1, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let diff = f1
+        .iter()
+        .zip(f_later.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        diff > 200,
+        "v8.0 SVG morph + flag warp + ADR streamer must animate over time: diff={diff}"
+    );
+}
