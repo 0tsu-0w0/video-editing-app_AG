@@ -18,6 +18,7 @@ pub mod text;
 pub mod v09_fx;
 pub mod v60_render;
 pub mod v80_render;
+pub mod v90_render;
 pub mod vfx_track;
 
 pub use ai_vision::{
@@ -81,6 +82,7 @@ pub use v80_render::{
     propagate_roto_brush_in_scene, render_svg_morph, render_text_on_path,
     snap_roto_vertices_to_edges, solve_quad_to_quad_homography, track_planar_quad_in_scene,
 };
+pub use v90_render::{draw_live_tally_hud, render_live_stinger_transition, render_vtuber_avatar};
 pub use vfx_track::{
     CameraMotionSample, StabilizeConfig, analyze_camera_shake, apply_corner_pin,
     build_stabilize_commands, compute_shake_compensation, estimate_global_frame_motion, invert_3x3,

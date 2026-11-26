@@ -1054,6 +1054,10 @@ pub enum ItemKind {
     SvgMorph {
         config: Box<crate::motion_foundry::SvgMorphConfig>,
     },
+    /// v9.0 #54: VTuber 2D 三角メッシュ変形（ブレンドシェイプ）・Verlet 物理揺れ・VMC 連携
+    VtuberAvatar {
+        config: Box<crate::vtuber_rig::VtuberMeshConfig>,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -1925,6 +1929,9 @@ pub struct Scene {
     /// v8.0 #52: 5.1ch サラウンド / FOA Ambisonics (AmbiX) 空間音声バス設定
     #[serde(default)]
     pub spatial_bus: crate::v80_vfx::SpatialBusConfig,
+    /// v9.0 #53: プログラム／プレビュー 2 バスライブスイッチャー＆NLE 同時収録設定
+    #[serde(default)]
+    pub live_switcher: crate::live_switcher::LiveSwitcherConfig,
     pub layers: Vec<Layer>,
 }
 
@@ -1951,6 +1958,7 @@ impl Scene {
             optical_vfx: crate::v80_vfx::OpticalVfxConfig::default(),
             adr_session: crate::v80_vfx::AdrSessionConfig::default(),
             spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
+            live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),
@@ -2062,6 +2070,12 @@ pub struct Project {
     /// お気に入りフォント一覧（フォント視覚化ピッカーでピン留め表示）
     #[serde(default)]
     pub favorite_fonts: Vec<String>,
+    /// v9.0 #55: OSC / MIDI-over-UDP / Stream Deck WebSocket ハードウェアコントローラー設定
+    #[serde(default)]
+    pub hardware_ctrl: crate::hardware_ctrl::HardwareControllerConfig,
+    /// v9.0 #56: ローカル スマート DAM 索引データベース（代表色/BPM/LUFS/SHA-256 指紋）
+    #[serde(default)]
+    pub smart_dam: crate::smart_dam::SmartDamIndex,
 }
 
 impl Project {
@@ -2080,6 +2094,8 @@ impl Project {
             active_scene_id,
             color_palette: ColorPalette::default(),
             favorite_fonts: Vec::new(),
+            hardware_ctrl: crate::hardware_ctrl::HardwareControllerConfig::default(),
+            smart_dam: crate::smart_dam::SmartDamIndex::default(),
         }
     }
 

@@ -1153,11 +1153,186 @@ impl Drop for VideoStreamDecoder {
     }
 }
 
+/// v9.0 #53: ライブ配信（RTMP / RTMPS / SRT）および同時ローカル ISO 収録用の
+/// 安全な FFmpeg サイドカー CLI 引数列を組み立てる。
+///
+/// - プロトコル別の厳格なスキーム検証を行い、不正な URL / 制御文字を拒否する。
+/// - `raw_stream_key` が空でない場合のみ RTMP/RTMPS 末尾へ結合する（ログへ出力しない）。
+pub fn build_live_stream_ffmpeg_args(
+    target: &ve_core::StreamTargetConfig,
+    raw_stream_key: &str,
+    local_iso_path: Option<&Path>,
+) -> Result<Vec<String>, MediaError> {
+    let w = target.width.clamp(320, 3840);
+    let h = target.height.clamp(180, 2160);
+    let fps = target.fps.clamp(15, 60);
+    let v_kbps = target.video_bitrate_kbps.clamp(500, 50_000);
+    let a_kbps = target.audio_bitrate_kbps.clamp(64, 512);
+    let gop = fps * 2;
+
+    let mut args = vec![
+        "-y".to_string(),
+        "-re".to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgba".to_string(),
+        "-s".to_string(),
+        format!("{w}x{h}"),
+        "-r".to_string(),
+        fps.to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-f".to_string(),
+        "lavfi".to_string(),
+        "-i".to_string(),
+        "anullsrc=channel_layout=stereo:sample_rate=48000".to_string(),
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "veryfast".to_string(),
+        "-tune".to_string(),
+        "zerolatency".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-b:v".to_string(),
+        format!("{v_kbps}k"),
+        "-maxrate".to_string(),
+        format!("{v_kbps}k"),
+        "-bufsize".to_string(),
+        format!("{}k", v_kbps * 2),
+        "-g".to_string(),
+        gop.to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        format!("{a_kbps}k"),
+        "-ar".to_string(),
+        "48000".to_string(),
+    ];
+
+    let ep = target.endpoint_url.trim();
+    if ep.chars().any(|c| c.is_control() || c == '|')
+        || raw_stream_key.chars().any(|c| c.is_control() || c == '|')
+    {
+        return Err(MediaError::InvalidArgument(
+            "stream URL or key contains illegal control characters".into(),
+        ));
+    }
+
+    match target.protocol {
+        ve_core::StreamProtocol::LocalRecordOnly => {
+            let out = local_iso_path
+                .map(|p| sanitize_ffmpeg_path(p).to_string_lossy().to_string())
+                .unwrap_or_else(|| "live_iso_master.mkv".to_string());
+            args.extend(["-f".to_string(), "matroska".to_string(), out]);
+        }
+        ve_core::StreamProtocol::Rtmp | ve_core::StreamProtocol::Rtmps => {
+            let expected = if target.protocol == ve_core::StreamProtocol::Rtmps {
+                "rtmps://"
+            } else {
+                "rtmp://"
+            };
+            if !ep.starts_with(expected) {
+                return Err(MediaError::InvalidArgument(format!(
+                    "endpoint_url must start with '{expected}'"
+                )));
+            }
+            let full_url = if raw_stream_key.trim().is_empty() {
+                ep.to_string()
+            } else if ep.ends_with('/') {
+                format!("{ep}{}", raw_stream_key.trim())
+            } else {
+                format!("{ep}/{}", raw_stream_key.trim())
+            };
+            if let Some(iso) = local_iso_path {
+                let iso_s = sanitize_ffmpeg_path(iso).to_string_lossy().to_string();
+                args.extend([
+                    "-map".to_string(),
+                    "0:v".to_string(),
+                    "-map".to_string(),
+                    "1:a".to_string(),
+                    "-f".to_string(),
+                    "tee".to_string(),
+                    format!("[f=flv:onfail=ignore]{full_url}|[f=matroska]{iso_s}"),
+                ]);
+            } else {
+                args.extend(["-f".to_string(), "flv".to_string(), full_url]);
+            }
+        }
+        ve_core::StreamProtocol::Srt => {
+            if !ep.starts_with("srt://") {
+                return Err(MediaError::InvalidArgument(
+                    "SRT endpoint_url must start with 'srt://'".into(),
+                ));
+            }
+            let lat_us = u64::from(target.srt_latency_ms.clamp(20, 4000)) * 1000;
+            let srt_url = if ep.contains('?') {
+                format!("{ep}&mode=caller&latency={lat_us}")
+            } else {
+                format!("{ep}?mode=caller&latency={lat_us}")
+            };
+            if let Some(iso) = local_iso_path {
+                let iso_s = sanitize_ffmpeg_path(iso).to_string_lossy().to_string();
+                args.extend([
+                    "-map".to_string(),
+                    "0:v".to_string(),
+                    "-map".to_string(),
+                    "1:a".to_string(),
+                    "-f".to_string(),
+                    "tee".to_string(),
+                    format!("[f=mpegts:onfail=ignore]{srt_url}|[f=matroska]{iso_s}"),
+                ]);
+            } else {
+                args.extend(["-f".to_string(), "mpegts".to_string(), srt_url]);
+            }
+        }
+    }
+
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio_decode::write_wav_pcm16;
     use tempfile::tempdir;
+
+    #[test]
+    fn live_stream_ffmpeg_args_support_rtmp_srt_iso_tee_and_reject_bad_scheme() {
+        let mut target = ve_core::StreamTargetConfig {
+            protocol: ve_core::StreamProtocol::Rtmp,
+            endpoint_url: "rtmp://127.0.0.1:1935/live".into(),
+            ..ve_core::StreamTargetConfig::default()
+        };
+        let rtmp_args = build_live_stream_ffmpeg_args(
+            &target,
+            "secret_key_123",
+            Some(Path::new("show_iso.mkv")),
+        )
+        .unwrap();
+        assert!(rtmp_args.iter().any(|a| a == "tee"));
+        assert!(
+            rtmp_args
+                .iter()
+                .any(|a| a.contains("rtmp://127.0.0.1:1935/live/secret_key_123")
+                    && a.contains("show_iso.mkv"))
+        );
+
+        target.protocol = ve_core::StreamProtocol::Srt;
+        target.endpoint_url = "srt://127.0.0.1:9000".into();
+        target.srt_latency_ms = 150;
+        let srt_args = build_live_stream_ffmpeg_args(&target, "", None).unwrap();
+        assert!(srt_args.iter().any(|a| a == "mpegts"));
+        assert!(
+            srt_args
+                .iter()
+                .any(|a| a.contains("srt://127.0.0.1:9000?mode=caller&latency=150000"))
+        );
+
+        target.endpoint_url = "http://evil.invalid/inject".into();
+        assert!(build_live_stream_ffmpeg_args(&target, "", None).is_err());
+    }
 
     #[test]
     fn ffmpeg_roundtrip_export_probe_and_decode() {

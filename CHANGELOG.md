@@ -1,5 +1,25 @@
 # Changelog
 
+## [9.0.0] - 2026-11-25
+
+Live Broadcast, VTuber & Hardware Ecosystem マイルストーン v9.0（#53〜#56）をすべて実装し、全 56 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **90 MCP ツール** / 9 ドメイン）。
+
+### #53 ライブスイッチャー ＆ NLE 同時収録（RTMP / SRT / スティンガー遷移 / `.veproj` 同時生成）
+* `ve-core` / `ve-media` / `ve-render`: `live_switcher` / `ffmpeg` / `v90_render` モジュール — PGM/PVW 2 バス放送ライブスイッチャー `LiveSwitcherConfig`（`EditCommand::SetLiveSwitcher`）、6 種アルファ付きスティンガー遷移コンポジタ `render_live_stinger_transition`＆放送タリー HUD `draw_live_tally_hud`、URL スキーム厳格検証付き FFmpeg サイドカー RTMP/RTMPS/SRT＋ローカル MKV ISO tee 引数ビルダー `build_live_stream_ffmpeg_args`、およびスイッチング履歴を 1-Undo NLE タイムライン＆編集用 `.veproj` JSON へ同時生成する `build_live_switcher_veproj_commands` / `export_live_session_veproj_json` を実装
+* `ve-app` / `ve-mcp`: Deliver Hub 内「📡 ライブスイッチャー＆NLE 同時収録 (#53)」タブおよび MCP `live_switcher_and_broadcast` ツールを追加
+
+### #54 VTuber 2D 三角メッシュ変形（ブレンドシェイプ）・Verlet 物理揺れ・UDP OSC / VMC 顔トラッキング連携
+* `ve-core` / `ve-render`: `vtuber_rig` / `v90_render` モジュール — Pure-Rust OSC 1.0 バイナリコーデック `encode_osc_message` / `decode_osc_packet`（`#bundle` 対応）、VMC プロトコル変換 `apply_vmc_osc_message_to_blendshapes`（クォータニオン→オイラー角）、非ブロッキングローカル UDP 受信機 `VmcUdpReceiver`、2D 三角グリッドメッシュ生成＆擬似 3D ブレンドシェイプ変形 `deform_vtuber_mesh`、距離拘束付き 60Hz 決定論 Verlet 物理チェイン `simulate_verlet_hair_chain`、重心座標アフィンテクスチャラスタライザ `render_vtuber_avatar`（`ItemKind::VtuberAvatar` / `EditCommand::SetVtuberAvatar`・4 内蔵プリセット＋カスタム PNG 対応・`vt_yaw`〜`vt_blink_r` 1-Undo キーフレームベイク `build_vtuber_vmc_bake_command`）を `RenderGraph` へ統合
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🦊 VTuber 2D メッシュ＆Verlet＆VMC (#54)」タブおよび MCP `vtuber_mesh_physics_and_vmc` ツールを追加
+
+### #55 OSC / MIDI-over-UDP / Stream Deck WebSocket ハードウェアコントローラー連携
+* `ve-core`: `hardware_ctrl` モジュール — Pure-Rust FIPS 180-4 SHA-1 `sha1_digest` ＆ RFC 6455 WebSocket ハンドシェイク／マスク付きテキストフレームコーデック（公式テストベクター検証済）、生 MIDI / RTP-MIDI-over-UDP パーサ `parse_midi_udp_packet`、3 プロトコル統合非ブロッキングローカルサーバー `HardwareBridgeServer`（OSC UDP + MIDI UDP + Stream Deck WebSocket）、4 種プリセット `HardwareControllerPreset`、および `CommandBus` 統合ディスパッチャ `map_hardware_event_to_outcome`（`EditCommand::SetHardwareController`）を実装
+* `ve-app` / `ve-mcp`: AI & Collab Hub 内「🎛 OSC / MIDI / Stream Deck ハードウェア連携 (#55)」タブおよび MCP `hardware_controller_osc_midi_deck` ツールを追加
+
+### #56 ローカル スマート DAM（代表色/BPM/LUFS 索引・類似ショット検索・スマートビン・一括自動再リンク）
+* `ve-core`: `smart_dam` モジュール — 先頭 64KiB＋サイズによる FIPS 180-4 SHA-256 指紋算出 `compute_file_head_fingerprint`、5 色ドミナントパレット・暖色度・Sobel エッジ密度・16 次元 L2 正規化特徴ベクトル抽出 `extract_visual_features_from_rgba8`、コサイン類似度検索 `find_similar_shots`、条件式スマートビン `evaluate_smart_bin`（4 標準スマートビン内蔵）、およびドライブ移動・リネーム後の行方不明素材を SHA-256 指紋優先で 1-Undo 一括自動再リンクする `relink_missing_assets_from_dir` / `build_relink_assets_command`（`EditCommand::SetSmartDamIndex` / `RelinkAssets`）を実装
+* `ve-app` / `ve-mcp`: Edit Hub 内「🗂 ローカル スマート DAM (#56)」タブ（5 色スウォッチ表示付）、MCP `smart_dam_search_and_relink`（`v90_broadcast_ecosystem` ドメイン追加・全 **90 MCP ツール**）、およびゴールデン視覚回帰テストを追加
+
 ## [8.0.0] - 2026-11-25
 
 Pro Cinema VFX, Motion Foundry & Audio Restoration マイルストーン v8.0（#49〜#52）をすべて実装し、全 52 ロードマップ項目を完全達成しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・全 **86 MCP ツール** / 8 ドメイン）。

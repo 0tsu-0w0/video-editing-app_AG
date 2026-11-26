@@ -816,6 +816,7 @@ fn estimate_item_base_size(item: &TimelineItem, scene: &Scene) -> Option<(f32, f
         | ItemKind::AudioSpectrum { width, height, .. } => Some((*width, *height)),
         ItemKind::VectorShape { config } => Some((config.width, config.height)),
         ItemKind::SvgMorph { config } => Some((config.width, config.height)),
+        ItemKind::VtuberAvatar { config } => Some((config.width, config.height)),
         ItemKind::Mesh3D { config } => Some((config.width, config.height)),
         ItemKind::GenerativeBg { config } => Some((config.width, config.height)),
         ItemKind::RiggedPuppet { config } => Some((config.width, config.height)),

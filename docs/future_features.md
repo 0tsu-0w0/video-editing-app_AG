@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-25  
-> **v0.1〜v8.0 全 52 項目完全達成済み ＆ v9.0〜v10.0 次世代ロードマップ（#53〜#60・全 60 項目）策定済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **86 MCP ツール**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・**4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ体積光・Brown-Conrady レンズ歪み補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチハム除去・MAD+Hermite デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆ITU-R BS.775 5.1ch / FOA Ambisonics (AmbiX) 空間音声バス**。  
-> 以下に **v0.8〜v8.0（✅ 全 52 項目実装済み）** および **v9.0〜v10.0（🔲 次期計画 #53〜#60）** をマイルストーン順に整理しています。
+> **v0.1〜v9.0 全 56 項目完全達成済み ＆ v10.0 最終マイルストーン（#57〜#60・全 60 項目）計画中**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **90 MCP ツール**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ・Brown-Conrady レンズ補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチ・MAD デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆5.1ch/FOA Ambisonics バス・**2 バスライブスイッチャー＆RTMP/SRT/スティンガー/`.veproj` 同時生成・VTuber 2D 三角メッシュ変形＆Verlet 物理揺れ＆UDP OSC/VMC 顔トラッキング・OSC/MIDI-over-UDP/Stream Deck RFC 6455 WebSocket ハードウェア連携・ローカル スマート DAM（代表色/BPM/LUFS 索引・16D 類似検索・スマートビン・SHA-256 一括自動再リンク）**。  
+> 以下に **v0.8〜v9.0（✅ 全 56 項目実装済み）** および **v10.0（🔲 次期計画 #57〜#60）** をマイルストーン順に整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -19,8 +19,8 @@ flowchart LR
   V50["✅ v5.0 プロフィニッシング\n2Dボーン＆IK・自動BGM作曲\n速度曲線/カット検出・35mm仕上げ/EDL/FCPXML"]
   V60["✅ v6.0 クリエイターPro\nデータ可視化チャート・VFXペイント/ワイヤー消し\nポッドキャスト自動編集・マルチプラットフォーム納品"]
   V70["✅ v7.0 統合UX＆コアvNext\n6スタジオHub＆Ctrl+Kパレット・MCP分割\nGPUフレームプール・10k区間木/TCコンフォーム/AB比較"]
-  V80["✅ v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics(86)"]
-  V90["🔲 v9.0 ライブ配信＆VTuber＆HW\nRTMP/SRTスイッチャー・VTuber 2Dメッシュ/VMC\nOSC/MIDI/StreamDeck・スマートDAM索引"]
+  V80["✅ v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics"]
+  V90["✅ v9.0 ライブ配信＆VTuber＆HW\nRTMP/SRTスイッチャー・VTuber 2Dメッシュ/VMC\nOSC/MIDI/StreamDeck・スマートDAM索引(90)"]
   V100["🔲 v10.0 空間映像＆流体＆自律AI\n360°全天球＆空間3D・2D流体/クロス＆HDRI\nBVHリターゲット・分散レンダー＆100 MCP"]
 
   V07 --> V08 --> V09 --> V10 --> V20 --> V21 --> V30 --> V40 --> V50 --> V60 --> V70 --> V80 --> V90 --> V100
@@ -43,7 +43,7 @@ flowchart LR
 | **v6.0** | クリエイター Pro スタジオ（データチャート・VFX ペイント/消し・ポッドキャスト・マルチ納品） | **#41〜#44** | ✅ 完了 |
 | **v7.0** | Unified Studio UX & Core Architecture vNext（6 スタジオ Hub・`Ctrl+K`・MCP 分割・GPU プール・区間木/TC コンフォーム/AB 比較） | **#45〜#48** | ✅ 完了 |
 | **v8.0** | Pro Cinema VFX, Motion Foundry & Audio Restoration（平面追跡/ロト・SVG ワープ・光学 VFX・音響修復/ADR/Ambisonics） | **#49〜#52** | ✅ 完了 |
-| **v9.0** | Live Broadcast, VTuber & Hardware Ecosystem（RTMP/SRT スイッチャー・VTuber メッシュ/VMC・OSC/MIDI/StreamDeck・スマート DAM） | **#53〜#56** | 🔲 計画中 |
+| **v9.0** | Live Broadcast, VTuber & Hardware Ecosystem（RTMP/SRT スイッチャー・VTuber メッシュ/VMC・OSC/MIDI/StreamDeck・スマート DAM） | **#53〜#56** | ✅ 完了 |
 | **v10.0** | Spatial Computing, Physics Fluids & Autonomous Cinema OS（360°/空間 3D・流体/クロス＆HDRI・BVH リターゲット・分散レンダー＆100 MCP） | **#57〜#60** | 🔲 計画中 |
 
 ---
@@ -360,23 +360,31 @@ flowchart LR
 
 ---
 
-## 🔲 v9.0（Live Broadcast, VTuber & Hardware Ecosystem）：ライブスイッチャー・VTuber 2D メッシュ/VMC・ハードウェア連携・スマート DAM
+## ✅ v9.0（実装済み・Live Broadcast, VTuber & Hardware Ecosystem）：ライブスイッチャー・VTuber 2D メッシュ/VMC・ハードウェア連携・スマート DAM
 
-### 53. ライブスイッチャー ＆ NLE 同時収録（RTMP / SRT / スティンガー遷移 / `.veproj` 同時生成）
+### 53. ~~ライブスイッチャー ＆ NLE 同時収録（RTMP / SRT / スティンガー遷移 / `.veproj` 同時生成）~~ ✅ 実装済み（v9.0）
 - **目的**: ライブ配信・イベントスイッチングを行いながら、全スイッチング履歴と個別カメラアイソ収録をそのまま `.veproj` タイムラインとして即座に後編集へ引き継げるようにする。
-- **設計計画**: プログラム/プレビュー 2 バスライブスイッチャー、アルファ付きスティンガートランジション、FFmpeg サイドカー RTMP / SRT 出力ラッパー、およびライブカットイベントのリアルタイム `.veproj` ジャーナル同時生成。
+- **実装内容**:
+  - `ve-core` / `ve-media` / `ve-render`: `live_switcher` / `ffmpeg` / `v90_render` モジュール — PGM/PVW 2 バスライブスイッチャー `LiveSwitcherConfig`（`EditCommand::SetLiveSwitcher`）、6 種アルファ付きスティンガー遷移コンポジタ `render_live_stinger_transition`＆放送タリー HUD `draw_live_tally_hud`、URL スキーム検証付き FFmpeg サイドカー RTMP/RTMPS/SRT＋ローカル MKV ISO tee 引数ビルダー `build_live_stream_ffmpeg_args`、およびスイッチング履歴をマーカー・遷移・カメラ Hold キーフレームへ 1-Undo 変換＆自己完結 `.veproj` 出力する `build_live_switcher_veproj_commands` / `export_live_session_veproj_json`
+  - `ve-app` / `ve-mcp`: Deliver Hub 内「📡 ライブスイッチャー＆NLE 同時収録 (#53)」タブ（PGM 赤／PVW 緑タリーバンク付）および MCP `live_switcher_and_broadcast` ツール
 
-### 54. VTuber 2D 三角メッシュ変形（ブレンドシェイプ）・Verlet 物理揺れ・UDP OSC / VMC 顔トラッキング連携
+### 54. ~~VTuber 2D 三角メッシュ変形（ブレンドシェイプ）・Verlet 物理揺れ・UDP OSC / VMC 顔トラッキング連携~~ ✅ 実装済み（v9.0）
 - **目的**: Live2D ライクな 2D イラストの自由メッシュ変形（目パチ・口変形・顔の傾き XY）と髪・衣装の物理揺れを外部トラッカー（OSC / VMC プロトコル）やタイムラインキーフレームで駆動できるようにする。
-- **設計計画**: Pure-Rust Delaunay / グリッド三角メッシュ＆アフィンテクスチャラスタライザ、パラメータブレンドシェイプ補間、距離拘束付き Verlet 物理チェイン、およびローカル UDP OSC バイナリパケットパーサによる顔トラッキング受信＆キーフレーム記録。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `vtuber_rig` / `v90_render` モジュール — Pure-Rust OSC 1.0 バイナリコーデック `encode_osc_message` / `decode_osc_packet`（`#bundle` 対応）、VMC プロトコル変換 `apply_vmc_osc_message_to_blendshapes`（`/VMC/Ext/Blend/Val`, `/VMC/Ext/Bone/Pos` クォータニオン→オイラー角）、ローカル非ブロッキング UDP 受信機 `VmcUdpReceiver`、2D 三角グリッドメッシュ生成＆擬似 3D ブレンドシェイプ変形 `deform_vtuber_mesh`、距離拘束付き 60Hz 決定論 Verlet 物理チェイン `simulate_verlet_hair_chain`、重み付きアフィンテクスチャラスタライザ `render_vtuber_avatar`（`ItemKind::VtuberAvatar` / `EditCommand::SetVtuberAvatar`・4 内蔵プリセット＋カスタム PNG 対応・`vt_yaw`〜`vt_blink_r` 1-Undo キーフレームベイク `build_vtuber_vmc_bake_command`）
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🦊 VTuber 2D メッシュ＆Verlet＆VMC (#54)」タブおよび MCP `vtuber_mesh_physics_and_vmc` ツール
 
-### 55. OSC / MIDI-over-UDP / Stream Deck WebSocket ハードウェアコントローラー連携
+### 55. ~~OSC / MIDI-over-UDP / Stream Deck WebSocket ハードウェアコントローラー連携~~ ✅ 実装済み（v9.0）
 - **目的**: カラーグレーディングホイール・オーディオフェーダー・マルチカム切替・マクロ実行を物理コントローラーやタブレット・Stream Deck からゼロ遅延で操作できるようにする。
-- **設計計画**: ローカル UDP OSC サーフェス双方向バインディング、ネットワーク MIDI パケットマッピング、およびローカルループバック WebSocket / JSON アクションブリッジ（`CommandBus` 統合・カスタムプロファイル保存）。
+- **実装内容**:
+  - `ve-core`: `hardware_ctrl` モジュール — Pure-Rust FIPS 180-4 SHA-1 `sha1_digest` ＆ RFC 6455 WebSocket ハンドシェイク／マスク付きテキストフレームコーデック（`compute_websocket_accept` / `encode_ws_text_frame` / `decode_ws_text_frame`）、生 MIDI / RTP-MIDI-over-UDP パーサ `parse_midi_udp_packet`、3 プロトコル統合非ブロッキングローカルサーバー `HardwareBridgeServer`（OSC UDP + MIDI UDP + Stream Deck WebSocket）、4 種プリセット `HardwareControllerPreset`、および `CommandBus` 統合ディスパッチャ `map_hardware_event_to_outcome`（`EditCommand::SetHardwareController`）
+  - `ve-app` / `ve-mcp`: AI & Collab Hub 内「🎛 OSC / MIDI / Stream Deck ハードウェア連携 (#55)」タブおよび MCP `hardware_controller_osc_midi_deck` ツール
 
-### 56. ローカル スマート DAM（代表色/BPM/LUFS 索引・類似ショット検索・スマートビン・一括自動再リンク）
+### 56. ~~ローカル スマート DAM（代表色/BPM/LUFS 索引・類似ショット検索・スマートビン・一括自動再リンク）~~ ✅ 実装済み（v9.0）
 - **目的**: 数千本の素材フォルダから「夕景の暖色ショット」「BPM 120 前後の曲」「特定話者のクリップ」を瞬時に検索し、ドライブ移動時もハッシュ＆ファイルサイズで全自動再リンクする。
-- **設計計画**: 完全オフライン JSON/バイナリ索引データベース（5 色ドミナントパレット・輝度/エッジ特徴ベクトル・BPM・統合 LUFS・SHA-256 先頭チャンク指紋）、コサイン距離による類似ショット検索、条件式スマートビン、およびフォルダ再帰スキャン一括自動再リンク。
+- **実装内容**:
+  - `ve-core`: `smart_dam` モジュール — 先頭 64KiB＋サイズによる FIPS 180-4 SHA-256 指紋算出 `compute_file_head_fingerprint`、5 色ドミナントパレット・暖色度・Sobel エッジ密度・16 次元 L2 正規化視覚特徴ベクトル抽出 `extract_visual_features_from_rgba8`、コサイン類似度検索 `find_similar_shots`、条件式スマートビン `evaluate_smart_bin`（4 標準スマートビン内蔵）、およびリネーム・ドライブ移動後のリンク切れ素材を SHA-256 指紋優先で 1-Undo 一括自動再リンクする `relink_missing_assets_from_dir` / `build_relink_assets_command`（`EditCommand::SetSmartDamIndex` / `RelinkAssets`）
+  - `ve-app` / `ve-mcp`: Edit Hub 内「🗂 ローカル スマート DAM (#56)」タブ（5 色スウォッチ表示・類似度ランキング・自動再リンク付）、MCP `smart_dam_search_and_relink`（`v90_broadcast_ecosystem` ドメイン追加・全 **90 MCP ツール**）、およびゴールデン視覚回帰テスト
 
 ---
 

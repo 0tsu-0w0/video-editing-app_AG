@@ -22,6 +22,7 @@ mod v50_panels;
 mod v60_panels;
 mod v70_studio_hub;
 mod v80_panels;
+mod v90_panels;
 mod watch_folder;
 
 use asset_browser::AssetBrowserPanel;
@@ -52,6 +53,7 @@ use v50_panels::V50PanelsState;
 use v60_panels::V60PanelsState;
 use v70_studio_hub::{StudioHubFrameOutcome, V70StudioHubState};
 use v80_panels::V80PanelsState;
+use v90_panels::V90PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AbCompareConfig, AbCompareMode, AbReferenceSource, AssetResolution, BlendMode, CommandBus,
@@ -158,6 +160,7 @@ struct EditorApp {
     v60_panels: V60PanelsState,
     v70_hub: V70StudioHubState,
     v80_panels: V80PanelsState,
+    v90_panels: V90PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -392,6 +395,7 @@ impl EditorApp {
             v60_panels: V60PanelsState::default(),
             v70_hub: V70StudioHubState::default(),
             v80_panels: V80PanelsState::default(),
+            v90_panels: V90PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -2622,6 +2626,7 @@ impl eframe::App for EditorApp {
             &mut self.v50_panels,
             &mut self.v60_panels,
             &mut self.v80_panels,
+            &mut self.v90_panels,
             &mut hub_outcome,
         );
         self.v70_hub.show_command_palette_modal(
@@ -2752,7 +2757,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 900.0])
-            .with_title("Next-Gen Hybrid Video Editor v8.0.0 (OSS Edition)"),
+            .with_title("Next-Gen Hybrid Video Editor v9.0.0 (OSS Edition)"),
         wgpu_options: egui_wgpu::WgpuConfiguration::default(),
         ..Default::default()
     };
