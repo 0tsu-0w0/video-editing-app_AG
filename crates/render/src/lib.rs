@@ -17,6 +17,7 @@ pub mod sprite;
 pub mod text;
 pub mod v09_fx;
 pub mod v60_render;
+pub mod v80_render;
 pub mod vfx_track;
 
 pub use ai_vision::{
@@ -74,6 +75,12 @@ pub use v09_fx::{
     apply_3d_lighting_tint, build_drop_shadow_image, render_particle_emitter, render_vector_shape,
 };
 pub use v60_render::{apply_vfx_paint, render_data_chart};
+pub use v80_render::{
+    apply_cinema_optical_vfx, apply_warp_and_displacement, compute_sobel_edge_magnitude,
+    draw_adr_countdown_streamer, estimate_homography_ransac, project_homography,
+    propagate_roto_brush_in_scene, render_svg_morph, render_text_on_path,
+    snap_roto_vertices_to_edges, solve_quad_to_quad_homography, track_planar_quad_in_scene,
+};
 pub use vfx_track::{
     CameraMotionSample, StabilizeConfig, analyze_camera_shake, apply_corner_pin,
     build_stabilize_commands, compute_shake_compensation, estimate_global_frame_motion, invert_3x3,

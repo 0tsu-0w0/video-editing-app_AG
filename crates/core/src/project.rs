@@ -292,6 +292,21 @@ impl AudioEffectNode {
                 params.insert("ceiling_dbtp".into(), -1.0);
                 params.insert("release_ms".into(), 60.0);
             }
+            "hum_remove" => {
+                params.insert("base_hz".into(), 50.0);
+                params.insert("harmonics".into(), 5.0);
+                params.insert("q".into(), 28.0);
+                params.insert("mix".into(), 1.0);
+            }
+            "declick" => {
+                params.insert("sensitivity".into(), 4.5);
+                params.insert("max_click_samples".into(), 8.0);
+            }
+            "dereverb" => {
+                params.insert("strength".into(), 0.55);
+                params.insert("decay_ms".into(), 160.0);
+                params.insert("floor_db".into(), -24.0);
+            }
             _ => {}
         }
         Self {
@@ -1035,6 +1050,10 @@ pub enum ItemKind {
     DataChart {
         config: Box<crate::data_viz::DataChartConfig>,
     },
+    /// v8.0 #50: SVG `<path>` インポート＆等弧長パスモーフィング
+    SvgMorph {
+        config: Box<crate::motion_foundry::SvgMorphConfig>,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -1363,6 +1382,15 @@ pub struct TimelineItem {
     /// v6.0 #42: 非破壊 VFX ペイント / クローンスタンプ / ワイヤー消し / 秘匿ぼかし設定
     #[serde(default)]
     pub vfx_paint: crate::vfx_paint::VfxPaintConfig,
+    /// v8.0 #49: エッジ吸着キーフレームロトブラシ設定
+    #[serde(default)]
+    pub roto_brush: crate::v80_vfx::RotoBrushConfig,
+    /// v8.0 #50: テキスト曲線配置（Text-on-Path）設定
+    #[serde(default)]
+    pub text_on_path: crate::motion_foundry::TextOnPathConfig,
+    /// v8.0 #50: ディスプレイスメント／4×4 グリッドワープ設定
+    #[serde(default)]
+    pub warp_displace: crate::motion_foundry::WarpDisplaceConfig,
     pub kind: ItemKind,
 }
 
@@ -1447,6 +1475,9 @@ impl TimelineItem {
             kinetic_subtitle: crate::kinetic_sub::KineticSubtitleConfig::default(),
             speed_ramp: crate::speed_ramp::SpeedRampConfig::default(),
             vfx_paint: crate::vfx_paint::VfxPaintConfig::default(),
+            roto_brush: crate::v80_vfx::RotoBrushConfig::default(),
+            text_on_path: crate::motion_foundry::TextOnPathConfig::default(),
+            warp_displace: crate::motion_foundry::WarpDisplaceConfig::default(),
             kind,
         }
     }
@@ -1524,6 +1555,27 @@ impl TimelineItem {
             rotation_deg: eval("rotation_deg", self.transform.rotation_deg),
             opacity: eval("opacity", self.transform.opacity).clamp(0.0, 1.0),
         }
+    }
+
+    /// v8.0 #49: 4 点平面トラッキングでベイクされた `pin_tl_x`〜`pin_bl_y` キーフレームを考慮して
+    /// 指定時刻の `CornerPinConfig` を評価する
+    pub fn eval_corner_pin(&self, global_time: RationalTime) -> CornerPinConfig {
+        let mut pin = self.corner_pin;
+        if !pin.enabled {
+            return pin;
+        }
+        let local = global_time - self.start;
+        let eval = |prop: &str, base: f32| -> f32 {
+            self.keyframes
+                .get(prop)
+                .map(|kfs| evaluate_track(base, kfs, local))
+                .unwrap_or(base)
+        };
+        pin.tl = [eval("pin_tl_x", pin.tl[0]), eval("pin_tl_y", pin.tl[1])];
+        pin.tr = [eval("pin_tr_x", pin.tr[0]), eval("pin_tr_y", pin.tr[1])];
+        pin.br = [eval("pin_br_x", pin.br[0]), eval("pin_br_y", pin.br[1])];
+        pin.bl = [eval("pin_bl_x", pin.bl[0]), eval("pin_bl_y", pin.bl[1])];
+        pin
     }
 
     /// 指定グローバル時刻でのアニメーション済み Transform3D を評価する
@@ -1864,6 +1916,15 @@ pub struct Scene {
     /// v7.0 #48: A/B スプリット比較ビュー設定（垂直/水平/斜めワイプ・差分強調・基準ソース）
     #[serde(default)]
     pub ab_compare: crate::studio_hub::AbCompareConfig,
+    /// v8.0 #51: シネマ光学 VFX（擬似深度ボケ Rack Focus・ゴッドレイ・Brown-Conrady レンズ歪み＆色収差）
+    #[serde(default)]
+    pub optical_vfx: crate::v80_vfx::OpticalVfxConfig,
+    /// v8.0 #52: ADR カウント収録セッション（3-2-1 映像ストリーマ＆テイク管理）
+    #[serde(default)]
+    pub adr_session: crate::v80_vfx::AdrSessionConfig,
+    /// v8.0 #52: 5.1ch サラウンド / FOA Ambisonics (AmbiX) 空間音声バス設定
+    #[serde(default)]
+    pub spatial_bus: crate::v80_vfx::SpatialBusConfig,
     pub layers: Vec<Layer>,
 }
 
@@ -1887,6 +1948,9 @@ impl Scene {
             node_graph: crate::node_graph::NodeCompositeGraph::default(),
             review_comments: Vec::new(),
             ab_compare: crate::studio_hub::AbCompareConfig::default(),
+            optical_vfx: crate::v80_vfx::OpticalVfxConfig::default(),
+            adr_session: crate::v80_vfx::AdrSessionConfig::default(),
+            spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),

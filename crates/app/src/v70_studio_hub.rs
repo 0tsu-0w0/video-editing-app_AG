@@ -1,6 +1,6 @@
-//! v7.0 #45〜#48: 役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` ファジー検索コマンドパレット
+//! v7.0 #45〜#48 / v8.0 #49〜#52: 役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` ファジー検索コマンドパレット
 //! ＋ GPU 4K/8K フレームプールパネル ＋ 10,000+ 区間木＆プロキシ⇔原本 TC コンフォームパネル
-//! ＋ A/B スプリット比較ビューパネル ＋ MCP モジュールカタログ (82 ツール) インスペクタ
+//! ＋ A/B スプリット比較ビューパネル ＋ MCP モジュールカタログ (86 ツール) インスペクタ
 
 use crate::color_scopes::ColorScopesState;
 use crate::render_queue::RenderQueueState;
@@ -12,6 +12,7 @@ use crate::v30_panels::V30PanelsState;
 use crate::v40_panels::V40PanelsState;
 use crate::v50_panels::V50PanelsState;
 use crate::v60_panels::V60PanelsState;
+use crate::v80_panels::V80PanelsState;
 use egui::{Color32, Context, RichText, Ui};
 use std::collections::BTreeMap;
 use ve_core::{
@@ -391,7 +392,7 @@ impl V70StudioHubState {
         }
     }
 
-    /// 役割別 6 スタジオ Hub 統合ウィンドウを描画する（v0.9〜v7.0 全機能を 1 箇所からゼロ欠落アクセス）
+    /// 役割別 6 スタジオ Hub 統合ウィンドウを描画する（v0.9〜v8.0 全機能を 1 箇所からゼロ欠落アクセス）
     #[allow(clippy::too_many_arguments)]
     pub fn show_studio_hub_window(
         &mut self,
@@ -411,6 +412,7 @@ impl V70StudioHubState {
         v40_panels: &mut V40PanelsState,
         v50_panels: &mut V50PanelsState,
         v60_panels: &mut V60PanelsState,
+        v80_panels: &mut V80PanelsState,
         outcome: &mut StudioHubFrameOutcome,
     ) {
         if !self.show_hub_window {
@@ -419,7 +421,7 @@ impl V70StudioHubState {
 
         let mut open = self.show_hub_window;
         let title = format!(
-            "🎛 Unified Studio Hub — {} (v7.0)",
+            "🎛 Unified Studio Hub — {} (v8.0)",
             self.active_hub.button_label(lang)
         );
         egui::Window::new(title)
@@ -578,6 +580,29 @@ impl V70StudioHubState {
                                 },
                             );
                         }
+                        "hub.vfx.planar_roto" => {
+                            if v80_panels.ui_planar_roto_tab(
+                                ui,
+                                session,
+                                selected_item,
+                                render_graph,
+                            ) {
+                                outcome.preview_dirty = true;
+                                outcome.clear_ram_preview = true;
+                            }
+                        }
+                        "hub.vfx.motion_foundry" => {
+                            if v80_panels.ui_motion_foundry_tab(ui, session, selected_item) {
+                                outcome.preview_dirty = true;
+                                outcome.clear_ram_preview = true;
+                            }
+                        }
+                        "hub.vfx.optical_vfx" => {
+                            if v80_panels.ui_optical_vfx_tab(ui, session) {
+                                outcome.preview_dirty = true;
+                                outcome.clear_ram_preview = true;
+                            }
+                        }
 
                         // ===== Color Hub =====
                         "hub.color.primary_lut" => {
@@ -646,6 +671,12 @@ impl V70StudioHubState {
                         }
                         "hub.audio.podcast_director" => {
                             if v60_panels.ui_podcast_tab(ui, session) {
+                                outcome.preview_dirty = true;
+                                outcome.clear_ram_preview = true;
+                            }
+                        }
+                        "hub.audio.restoration_adr" => {
+                            if v80_panels.ui_audio_restoration_adr_tab(ui, session, selected_item) {
                                 outcome.preview_dirty = true;
                                 outcome.clear_ram_preview = true;
                             }
@@ -1312,11 +1343,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn studio_hub_state_maps_all_six_hubs_and_82_mcp_tools() {
+    fn studio_hub_state_maps_all_six_hubs_and_86_mcp_tools() {
         let mut hub = V70StudioHubState::default();
         assert_eq!(hub.hub_active_tool.len(), 6);
         let total_mcp: usize = hub.mcp_catalog_cache.iter().map(|d| d.tool_count).sum();
-        assert_eq!(total_mcp, 82);
+        assert_eq!(total_mcp, 86);
 
         hub.open_hub(StudioHubId::Color);
         assert!(hub.show_hub_window);

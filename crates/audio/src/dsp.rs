@@ -562,6 +562,51 @@ fn apply_audio_effect(
                 release,
             );
         }
+        "hum_remove" => {
+            let base_hz = node.params.get("base_hz").copied().unwrap_or(50.0);
+            let harmonics = node
+                .params
+                .get("harmonics")
+                .copied()
+                .unwrap_or(5.0)
+                .round()
+                .clamp(1.0, 12.0) as usize;
+            let q = node.params.get("q").copied().unwrap_or(28.0);
+            let mix = node.params.get("mix").copied().unwrap_or(1.0);
+            crate::restoration::apply_hum_removal(
+                samples,
+                channels,
+                sample_rate,
+                base_hz,
+                harmonics,
+                q,
+                mix,
+            );
+        }
+        "declick" => {
+            let sens = node.params.get("sensitivity").copied().unwrap_or(4.5);
+            let max_s = node
+                .params
+                .get("max_click_samples")
+                .copied()
+                .unwrap_or(8.0)
+                .round()
+                .clamp(1.0, 32.0) as usize;
+            let _ = crate::restoration::apply_declick(samples, channels, sens, max_s);
+        }
+        "dereverb" => {
+            let strength = node.params.get("strength").copied().unwrap_or(0.55);
+            let decay_ms = node.params.get("decay_ms").copied().unwrap_or(160.0);
+            let floor_db = node.params.get("floor_db").copied().unwrap_or(-24.0);
+            crate::restoration::apply_adaptive_dereverb(
+                samples,
+                channels,
+                sample_rate,
+                strength,
+                decay_ms,
+                floor_db,
+            );
+        }
         _ => {}
     }
 }

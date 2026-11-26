@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-25  
-> **v0.1〜v7.0 全 48 項目完全達成済み ＆ v8.0〜v10.0 次世代ロードマップ（#49〜#60・全 60 項目）策定済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・**役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 82 MCP ツール）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー**。  
-> 以下に **v0.8〜v7.0（✅ 全 48 項目実装済み）** および **v8.0〜v10.0（🔲 次期計画 #49〜#60）** をマイルストーン順に整理しています。
+> **v0.1〜v8.0 全 52 項目完全達成済み ＆ v9.0〜v10.0 次世代ロードマップ（#53〜#60・全 60 項目）策定済み**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **86 MCP ツール**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・**4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ体積光・Brown-Conrady レンズ歪み補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチハム除去・MAD+Hermite デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆ITU-R BS.775 5.1ch / FOA Ambisonics (AmbiX) 空間音声バス**。  
+> 以下に **v0.8〜v8.0（✅ 全 52 項目実装済み）** および **v9.0〜v10.0（🔲 次期計画 #53〜#60）** をマイルストーン順に整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -18,8 +18,8 @@ flowchart LR
   V40["✅ v4.0 マスタースタジオ\nACEScg/OCIO・2D物理演算\n生成背景＆Foley SFX・放送QC＆HTML5レビュー"]
   V50["✅ v5.0 プロフィニッシング\n2Dボーン＆IK・自動BGM作曲\n速度曲線/カット検出・35mm仕上げ/EDL/FCPXML"]
   V60["✅ v6.0 クリエイターPro\nデータ可視化チャート・VFXペイント/ワイヤー消し\nポッドキャスト自動編集・マルチプラットフォーム納品"]
-  V70["✅ v7.0 統合UX＆コアvNext\n6スタジオHub＆Ctrl+Kパレット・MCP分割(82)\nGPUフレームプール・10k区間木/TCコンフォーム/AB比較"]
-  V80["🔲 v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics"]
+  V70["✅ v7.0 統合UX＆コアvNext\n6スタジオHub＆Ctrl+Kパレット・MCP分割\nGPUフレームプール・10k区間木/TCコンフォーム/AB比較"]
+  V80["✅ v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics(86)"]
   V90["🔲 v9.0 ライブ配信＆VTuber＆HW\nRTMP/SRTスイッチャー・VTuber 2Dメッシュ/VMC\nOSC/MIDI/StreamDeck・スマートDAM索引"]
   V100["🔲 v10.0 空間映像＆流体＆自律AI\n360°全天球＆空間3D・2D流体/クロス＆HDRI\nBVHリターゲット・分散レンダー＆100 MCP"]
 
@@ -42,7 +42,7 @@ flowchart LR
 | **v5.0** | プロフィニッシング＆リギング（2D IK・自動 BGM・速度曲線/カット検出・EDL/FCPXML） | **#37〜#40** | ✅ 完了 |
 | **v6.0** | クリエイター Pro スタジオ（データチャート・VFX ペイント/消し・ポッドキャスト・マルチ納品） | **#41〜#44** | ✅ 完了 |
 | **v7.0** | Unified Studio UX & Core Architecture vNext（6 スタジオ Hub・`Ctrl+K`・MCP 分割・GPU プール・区間木/TC コンフォーム/AB 比較） | **#45〜#48** | ✅ 完了 |
-| **v8.0** | Pro Cinema VFX, Motion Foundry & Audio Restoration（平面追跡/ロト・SVG ワープ・光学 VFX・音響修復/ADR/Ambisonics） | **#49〜#52** | 🔲 計画中 |
+| **v8.0** | Pro Cinema VFX, Motion Foundry & Audio Restoration（平面追跡/ロト・SVG ワープ・光学 VFX・音響修復/ADR/Ambisonics） | **#49〜#52** | ✅ 完了 |
 | **v9.0** | Live Broadcast, VTuber & Hardware Ecosystem（RTMP/SRT スイッチャー・VTuber メッシュ/VMC・OSC/MIDI/StreamDeck・スマート DAM） | **#53〜#56** | 🔲 計画中 |
 | **v10.0** | Spatial Computing, Physics Fluids & Autonomous Cinema OS（360°/空間 3D・流体/クロス＆HDRI・BVH リターゲット・分散レンダー＆100 MCP） | **#57〜#60** | 🔲 計画中 |
 
@@ -331,23 +331,32 @@ flowchart LR
 
 ---
 
-## 🔲 v8.0（Pro Cinema VFX, Motion Foundry & Audio Restoration）：平面追跡/ロト・SVG ワープ・シネマ光学・音響修復/Ambisonics
+## ✅ v8.0（実装済み・Pro Cinema VFX, Motion Foundry & Audio Restoration）：平面追跡/ロト・SVG ワープ・シネマ光学・音響修復/Ambisonics
 
-### 49. 4 点平面トラッカー（Planar Homography Tracker）＆ エッジ吸着キーフレームロトブラシ
+### 49. ~~4 点平面トラッカー（Planar Homography Tracker）＆ エッジ吸着キーフレームロトブラシ~~ ✅ 実装済み（v8.0）
 - **目的**: 1 点追尾を超え、カメラ移動やパース変化を伴う看板・スマホ画面への高精度な平面射影追従と、被写体輪郭へ吸い付く半自動ロトスコープ切り抜きを実現する。
-- **設計計画**: マルチパッチ Lucas-Kanade / ZNCC 相関＋RANSAC 外れ値除去によるフレーム間 $3\times 3$ ホモグラフィ推定＆`CornerPin` 自動ベイク、および画像勾配（Sobel エッジコスト）吸着＋フレーム間オプティカルフロー伝播ロトマスク。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `v80_vfx` / `v80_render` モジュール — 8×8 ガウス消去法による一般四辺形 $3\times 3$ 射影ホモグラフィソルバー `solve_quad_to_quad_homography`、4×4 グリッドパッチ ZNCC＋サブピクセル放物線ピーク＋RANSAC 外れ値除去によるフレーム間平面追跡 `estimate_homography_ransac` / `track_planar_quad_in_scene`、および `pin_tl_x`〜`pin_bl_y` キーフレームを 1-Undo `EditCommand::Batch` へ自動焼き込みする `build_planar_track_corner_pin_command`（`TimelineItem::eval_corner_pin` で `RenderGraph` 毎フレーム評価）
+  - `ve-core` / `ve-render`: Sobel エッジ勾配強度マップ `compute_sobel_edge_magnitude`・輪郭頂点エッジ吸着 `snap_roto_vertices_to_edges`・オプティカルフロー時間軸伝播 `propagate_roto_brush_in_scene`・非破壊キーフレームロトマスク `RotoBrushConfig`（`EditCommand::SetRotoBrush`）を `RenderGraph` へ統合
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🎯 4 点平面トラッカー＆ロトブラシ (#49)」タブ（4 隅直接ドラッグ可能キャンバス付）および MCP `planar_track_and_roto_brush` ツール
 
-### 50. SVG `<path>` インポート＆パスモーフィング・Text-on-Path・ディスプレイスメント/グリッドワープ
+### 50. ~~SVG `<path>` インポート＆パスモーフィング・Text-on-Path・ディスプレイスメント/グリッドワープ~~ ✅ 実装済み（v8.0）
 - **目的**: Illustrator / Inkscape 等のベクターロゴ資産をそのまま取り込み、シェイプ間モーフィング・曲線に沿うタイポグラフィ・流体/旗揺れメッシュワープを Pure Rust で完結させる。
-- **設計計画**: Pure-Rust SVG `<path d="...">`（`M`/`L`/`C`/`Q`/`A`/`Z`）パーサ、等弧長リサンプリングによる頂点数正規化パスモーフィング、3 次ベジェ接線角度追従 Text-on-Path、および双三次ベジェパッチワープ＆輝度マップディスプレイスメントエフェクト。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `motion_foundry` / `v80_render` モジュール — `M/m/L/l/H/h/V/v/C/c/S/s/Q/q/T/t/A/a/Z/z` 全コマンド＆SVG F.6 楕円弧→3 次ベジェ厳密変換に対応する Pure-Rust SVG `<path>` パーサ `parse_svg_path_to_vertices`（6 標準プリセット `SvgShapePreset`）、等弧長リサンプリング＆頂点数正規化パスモーフィング `morph_paths_equal_arclength`（`ItemKind::SvgMorph` / `EditCommand::SetSvgMorph` / `render_svg_morph`）、3 次曲線接線回転追従タイポグラフィ `TextOnPathConfig`（`EditCommand::SetTextOnPath` / `render_text_on_path`）、および Catmull-Rom 4×4 双三次グリッドワープ＋5 プロシージャルプリセット＋自己輝度ディスプレイスメント `WarpDisplaceConfig`（`EditCommand::SetWarpDisplace` / `apply_warp_and_displacement`）を `RenderGraph` へ統合
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「✒ SVG モーフィング＆Text-on-Path＆ワープ (#50)」タブおよび MCP `svg_morph_text_path_and_warp` ツール
 
-### 51. シネマ光学 VFX（擬似深度ボケ Rack Focus・ゴッドレイ・Brown-Conrady レンズ歪み補正＆物理色収差）
+### 51. ~~シネマ光学 VFX（擬似深度ボケ Rack Focus・ゴッドレイ・Brown-Conrady レンズ歪み補正＆物理色収差）~~ ✅ 実装済み（v8.0）
 - **目的**: 実写シネマレンズ特有のボケ味（玉ボケ・フォーカス送り）、体積光（God Rays）、広角アクションカム等の樽型/糸巻き歪み補正およびスペクトル分散色収差を再現する。
-- **設計計画**: 3D レイヤー深度＆輝度/顕著性擬似深度マップに基づく可変半径ディスクカーネル Rack Focus、放射状オクルージョンサンプリング God Rays、および Brown-Conrady 放射/接線歪みモデル $k_1, k_2, p_1, p_2$ 正逆変換＋RGB 波長別スケール色収差。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `v80_vfx` / `v80_render` モジュール — 3 種擬似深度モード（チルトシフト／中央放射／輝度顕著性）＋Fibonacci 多角形絞り羽根（0=真円 / 5〜9 角）玉ボケの Rack Focus、放射状オクルージョンサンプリングによる体積光ゴッドレイ、および Brown-Conrady 放射/接線歪みモデル（$k_1, k_2, p_1, p_2$・自動ズーム補償）＆RGB 波長分散色収差を統合した `OpticalVfxConfig`（4 プリセット `OpticalVfxPreset` / `EditCommand::SetOpticalVfx` / `apply_cinema_optical_vfx`）を `RenderGraph` ポストプロセス段へ統合（A/B Bypass 連動対応）
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🎥 シネマ光学 VFX (#51)」タブおよび MCP `cinema_optical_vfx` ツール
 
-### 52. オーディオ修復（ハム除去/デクリック/適応 De-Reverb）＆ ADR カウント収録 ＆ 5.1 / FOA Ambisonics バス
+### 52. ~~オーディオ修復（ハム除去/デクリック/適応 De-Reverb）＆ ADR カウント収録 ＆ 5.1 / FOA Ambisonics バス~~ ✅ 実装済み（v8.0）
 - **目的**: ロケ収録音の電源ハム（50/60Hz 高調波）・リップノイズ・室内残響のクリーンアップと、映像同期ビジュアルカウントダウン付き ADR アフレコ、さらに劇場 5.1ch / VR 空間音声バスを整備する。
-- **設計計画**: 縦続ノッチ IIR ハム除去・中央値予測インパルス補間デクリック・後期残響エンベロープ減算 De-Reverb、プレビュー 3-2-1 ストリーマ付き ADR テイク管理、および ITU-R BS.775 5.1ch サラウンド＆1 次 Ambisonics (FOA B-Format AmbiX `W,Y,Z,X` ⇔ バイノーラルデコード) バス。
+- **実装内容**:
+  - `ve-audio` / `ve-core` / `ve-render`: `restoration` / `v80_vfx` / `v80_render` モジュール — 2 段縦続 RBJ ノッチ IIR 50/60Hz 高調波電源ハム除去 `apply_hum_removal`（`hum_remove`）・2 次差分 MAD 外れ値検出＋3 次エルミート補間デクリック `apply_declick`（`declick`）・2 バンド適応後期残響減算 `apply_adaptive_dereverb`（`dereverb`）を `apply_audio_effect` へ統合。さらに 3-2-1 1kHz 同期ビープ合成 `synthesize_adr_preroll_beeps`・タイムラインキュー配置 `build_adr_cue_timeline_commands`・プレビュー 3-2-1 映像ストリーマ HUD `draw_adr_countdown_streamer`（`AdrSessionConfig` / `EditCommand::SetAdrSession`）、および ITU-R BS.775 5.1ch サラウンド（`encode_stereo_to_51_surround` / `downmix_51_to_stereo_itu`）＆1 次 Ambisonics FOA B-Format AmbiX（`W,Y,Z,X` SN3D/ACN 回転＆バイノーラル復号 `encode_stereo_to_foa_ambix` / `rotate_foa_ambix` / `decode_foa_ambix_to_binaural_stereo`）＋マルチチャンネル PCM16 WAV 出力 `write_multichannel_wav_file`（`SpatialBusConfig` / `EditCommand::SetSpatialBus`）
+  - `ve-app` / `ve-mcp`: Audio Hub 内「🎙 オーディオ修復・ADR・5.1/FOA 空間バス (#52)」タブ（360° 空間音場レーダー付）、MCP `audio_restoration_adr_spatial_bus`（`v80_cinema_audio` ドメイン・全 **86 MCP ツール**）、およびゴールデン視覚回帰テスト
 
 ---
 

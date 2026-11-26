@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 PackageIdentifier: 0tsu-0w0.VideoEditingApp
-PackageVersion: 7.0.0
+PackageVersion: 8.0.0
 PackageLocale: ja-JP
 Publisher: 0tsu-0w0
 PublisherUrl: https://github.com/0tsu-0w0/video-editing-app_AG
@@ -9,7 +9,7 @@ PackageName: Next-Gen Hybrid Video Editor
 PackageUrl: https://github.com/0tsu-0w0/video-editing-app_AG
 License: MIT OR Apache-2.0
 LicenseUrl: https://github.com/0tsu-0w0/video-editing-app_AG/blob/main/LICENSE-MIT
-ShortDescription: Pure-Rust tri-workspace NLE with 6 Studio Hubs + Ctrl+K palette, GPU 4K/8K frame pool, 10k interval tree, SMPTE TC conform, A/B compare, ACEScg/OCIO & 82 MCP tools.
+ShortDescription: Pure-Rust tri-workspace NLE with 6 Studio Hubs + Ctrl+K, Planar Tracker/Roto Brush, SVG Morph/Warp, Cinema Optical VFX, Audio Restoration/ADR/5.1 & FOA Ambisonics, GPU 4K/8K pool & 86 MCP tools.
 Tags:
   - video-editor
   - nle
@@ -25,7 +25,7 @@ NestedInstallerFiles:
     PortableCommandAlias: ve-app
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/0tsu-0w0/video-editing-app_AG/releases/download/v7.0.0/ve-app-windows-x64.zip
+    InstallerUrl: https://github.com/0tsu-0w0/video-editing-app_AG/releases/download/v8.0.0/ve-app-windows-x64.zip
     InstallerSha256: REPLACE_WITH_RELEASE_SHA256
 ManifestType: singleton
 ManifestVersion: 1.6.0

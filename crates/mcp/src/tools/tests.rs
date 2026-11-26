@@ -1,4 +1,4 @@
-//! 内蔵 MCP 統合テストスイート（v0.3〜v7.0 全 82 ツール）
+//! 内蔵 MCP 統合テストスイート（v0.3〜v8.0 全 86 ツール）
 
 use super::*;
 use crate::session::EditorSession;
@@ -606,7 +606,7 @@ fn v09_mcp_tools_expressions_templates_and_fx() {
 
     // Verify exact MCP tool count = 58 (v2.0)
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -801,7 +801,7 @@ fn v10_mcp_tools_multicam_nle_delivery_and_ecosystem() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1078,7 +1078,7 @@ fn v20_mcp_tools_node_graph_ai_vision_director_and_collab() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1294,7 +1294,7 @@ fn v21_mcp_tools_color_vfx_spatial_and_kinetic() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
 }
 
 #[test]
@@ -1487,7 +1487,7 @@ fn v30_mcp_tools_gpu_3d_dubbing_and_crdt() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1695,7 +1695,7 @@ fn v40_mcp_tools_aces_physics_generative_and_qc() {
     assert!(html_body.contains("data:image/png;base64,"));
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1916,7 +1916,7 @@ fn v50_mcp_tools_rig2d_bgm_speed_ramp_and_finishing() {
     assert!(xml_path.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2096,7 +2096,7 @@ fn v60_mcp_tools_dataviz_vfxpaint_podcast_and_packager() {
     assert!(bundle_dir.join("subtitles/shorts_reels_9x16.srt").exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2183,8 +2183,8 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     .unwrap();
     let cat_json: Value =
         serde_json::from_str(cat_res["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(cat_json["domain_count"], 7);
-    assert_eq!(cat_json["total_tools"], 82);
+    assert_eq!(cat_json["domain_count"], 8);
+    assert_eq!(cat_json["total_tools"], 86);
 
     let verify_res = call_tool(
         &session,
@@ -2195,7 +2195,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     let verify_json: Value =
         serde_json::from_str(verify_res["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(verify_json["valid"], true);
-    assert_eq!(verify_json["unique_tool_count"], 82);
+    assert_eq!(verify_json["unique_tool_count"], 86);
 
     // 3. #47 gpu_v70_frame_pool: status, benchmark (custom lightweight), run_fast_blend_aces
     let gpu_st_res = call_tool(
@@ -2312,5 +2312,333 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     assert!(!ab_png["content"][0]["data"].as_str().unwrap().is_empty());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 82);
+    assert_eq!(defs.as_array().unwrap().len(), 86);
+}
+
+#[test]
+fn v80_mcp_tools_planar_roto_svg_morph_optical_and_audio_restoration() {
+    let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v80_{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let mut proj = Project::new("V80CinemaFoundryAudioTest", ProjectSettings::default());
+    let mut shp = TimelineItem::new(
+        "TrackPlate",
+        RationalTime::ZERO,
+        RationalTime::from_seconds(2.0),
+        ItemKind::Shape {
+            shape: ShapeKind::Rectangle,
+            width: 360.0,
+            height: 220.0,
+            color: RgbaColor {
+                r: 0.9,
+                g: 0.4,
+                b: 0.2,
+                a: 1.0,
+            },
+        },
+    );
+    shp.transform.x = 640.0;
+    shp.transform.y = 360.0;
+    let shp_id = shp.id;
+
+    let mut txt = TimelineItem::new(
+        "PathTitle",
+        RationalTime::ZERO,
+        RationalTime::from_seconds(2.0),
+        ItemKind::Text {
+            content: "V8 CINEMA".into(),
+            font_family: "sans-serif".into(),
+            font_size: 42.0,
+            color: RgbaColor::WHITE,
+            animator: TextAnimator::default(),
+        },
+    );
+    txt.transform.x = 640.0;
+    txt.transform.y = 360.0;
+    let txt_id = txt.id;
+
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        scene.layers[0].items.push(shp);
+        scene.layers[1].items.push(txt);
+    }
+    let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+    // 1. #49 planar_track_and_roto_brush: track_and_bake_corner_pin + roto_propagate + Undo
+    let pt_res = call_tool(
+        &session,
+        "planar_track_and_roto_brush",
+        &json!({
+            "action": "track_and_bake_corner_pin",
+            "item_id": shp_id.to_string(),
+            "start_sec": 0.0,
+            "end_sec": 0.2,
+            "step_frames": 3,
+            "feather_px": 1.5
+        }),
+    )
+    .unwrap();
+    let pt_json: Value =
+        serde_json::from_str(pt_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(pt_json["frame_count"].as_u64().unwrap() >= 2);
+    assert_eq!(pt_json["baked_corner_pin"], true);
+    {
+        let g = session.lock().unwrap();
+        let item = &g.project.active_scene().unwrap().layers[0].items[0];
+        assert!(item.corner_pin.enabled);
+        assert!(item.keyframes.contains_key("pin_tl_x"));
+    }
+
+    let roto_res = call_tool(
+        &session,
+        "planar_track_and_roto_brush",
+        &json!({
+            "action": "roto_propagate",
+            "item_id": shp_id.to_string(),
+            "start_sec": 0.0,
+            "end_sec": 0.2,
+            "step_frames": 3,
+            "vertex_count": 8,
+            "snap_radius_px": 12
+        }),
+    )
+    .unwrap();
+    let roto_json: Value =
+        serde_json::from_str(roto_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(roto_json["keyframe_count"].as_u64().unwrap() >= 2);
+    {
+        let g = session.lock().unwrap();
+        let item = &g.project.active_scene().unwrap().layers[0].items[0];
+        assert!(item.roto_brush.enabled);
+        assert!(item.roto_brush.keyframes.len() >= 2);
+    }
+
+    // 2. #50 svg_morph_text_path_and_warp: list_presets, add_svg_morph, update_svg_morph, set_text_on_path, set_warp_displace
+    let presets_res = call_tool(
+        &session,
+        "svg_morph_text_path_and_warp",
+        &json!({ "action": "list_presets" }),
+    )
+    .unwrap();
+    let presets_json: Value =
+        serde_json::from_str(presets_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(presets_json["svg_presets"].as_array().unwrap().len() >= 6);
+
+    let add_svg = call_tool(
+        &session,
+        "svg_morph_text_path_and_warp",
+        &json!({
+            "action": "add_svg_morph",
+            "layer_index": 2,
+            "name": "MorphHero",
+            "preset_a": "lightning_bolt",
+            "preset_b": "heart",
+            "morph_progress": 0.5,
+            "width": 320.0,
+            "height": 320.0
+        }),
+    )
+    .unwrap();
+    let add_svg_json: Value =
+        serde_json::from_str(add_svg["content"][0]["text"].as_str().unwrap()).unwrap();
+    let svg_id = add_svg_json["item_id"].as_str().unwrap().to_string();
+    assert!(add_svg_json["vertices_a"].as_u64().unwrap() >= 3);
+
+    call_tool(
+        &session,
+        "svg_morph_text_path_and_warp",
+        &json!({
+            "action": "update_svg_morph",
+            "item_id": svg_id,
+            "morph_progress": 0.75,
+            "auto_morph_hz": 0.5
+        }),
+    )
+    .unwrap();
+
+    call_tool(
+        &session,
+        "svg_morph_text_path_and_warp",
+        &json!({
+            "action": "set_text_on_path",
+            "item_id": txt_id.to_string(),
+            "enabled": true,
+            "preset": "arch_curve",
+            "follow_tangent": true,
+            "show_guide": true
+        }),
+    )
+    .unwrap();
+
+    call_tool(
+        &session,
+        "svg_morph_text_path_and_warp",
+        &json!({
+            "action": "set_warp_displace",
+            "item_id": shp_id.to_string(),
+            "enabled": true,
+            "warp_preset": "wave",
+            "amount": 0.25,
+            "luma_displace_px": 6.0
+        }),
+    )
+    .unwrap();
+    {
+        let g = session.lock().unwrap();
+        let sc = g.project.active_scene().unwrap();
+        assert!(sc.layers[1].items[0].text_on_path.enabled);
+        assert!(sc.layers[0].items[0].warp_displace.enabled);
+    }
+
+    // 3. #51 cinema_optical_vfx: apply_preset -> set -> Undo restores preset -> disable
+    call_tool(
+        &session,
+        "cinema_optical_vfx",
+        &json!({ "action": "apply_preset", "preset": "anamorphic_rack_focus" }),
+    )
+    .unwrap();
+    call_tool(
+        &session,
+        "cinema_optical_vfx",
+        &json!({
+            "action": "set",
+            "god_rays_enabled": true,
+            "god_rays_intensity": 0.55,
+            "lens_enabled": true,
+            "k1": -0.18,
+            "chromatic_aberration": 0.012
+        }),
+    )
+    .unwrap();
+    {
+        let g = session.lock().unwrap();
+        let opt = &g.project.active_scene().unwrap().optical_vfx;
+        assert!(opt.enabled);
+        assert!(opt.bokeh_enabled);
+        assert!(opt.god_rays_enabled);
+        assert!(opt.lens_enabled);
+        assert!((opt.k1 - (-0.18)).abs() < 1e-4);
+    }
+    {
+        let mut g = session.lock().unwrap();
+        let s = &mut *g;
+        assert!(s.bus.undo(&mut s.project));
+        assert!(
+            !s.project
+                .active_scene()
+                .unwrap()
+                .optical_vfx
+                .god_rays_enabled
+        );
+    }
+
+    // 4. #52 audio_restoration_adr_spatial_bus: add_restoration_fx, test_restoration_dsp, ADR cues + WAV, 5.1 & FOA AmbiX WAV
+    for fx in ["hum_remove", "declick", "dereverb"] {
+        call_tool(
+            &session,
+            "audio_restoration_adr_spatial_bus",
+            &json!({ "action": "add_restoration_fx", "fx_kind": fx }),
+        )
+        .unwrap();
+    }
+    let dsp_res = call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({ "action": "test_restoration_dsp", "base_hz": 50.0, "harmonics": 5 }),
+    )
+    .unwrap();
+    let dsp_json: Value =
+        serde_json::from_str(dsp_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        dsp_json["hum_after_db"].as_f64().unwrap() < dsp_json["hum_before_db"].as_f64().unwrap()
+    );
+    assert!(dsp_json["clicks_repaired"].as_u64().unwrap() >= 2);
+
+    call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({
+            "action": "add_adr_cue",
+            "character": "Hero",
+            "line_text": "ここがシネマ光学の決めカットだ！",
+            "start_sec": 3.0,
+            "duration_sec": 2.0,
+            "preroll_sec": 3.0
+        }),
+    )
+    .unwrap();
+    call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({ "action": "place_adr_timeline", "subtitle_layer": 3 }),
+    )
+    .unwrap();
+    let beep_wav = tmp_dir.join("adr_beeps.wav");
+    call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({
+            "action": "export_adr_beeps_wav",
+            "output_path": beep_wav.display().to_string()
+        }),
+    )
+    .unwrap();
+    assert!(beep_wav.exists());
+
+    let wav_51 = tmp_dir.join("master_51.wav");
+    call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({
+            "action": "set_spatial_bus",
+            "mode": "surround51",
+            "azimuth_deg": 30.0,
+            "lfe_crossover_hz": 100.0
+        }),
+    )
+    .unwrap();
+    let exp_51 = call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({
+            "action": "export_spatial_bus_wav",
+            "output_path": wav_51.display().to_string()
+        }),
+    )
+    .unwrap();
+    let exp_51_json: Value =
+        serde_json::from_str(exp_51["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(exp_51_json["channels"], 6);
+    assert!(wav_51.exists());
+
+    let wav_foa = tmp_dir.join("master_foa.wav");
+    call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({
+            "action": "set_spatial_bus",
+            "mode": "ambisonics_foa_ambi_x",
+            "azimuth_deg": -45.0,
+            "elevation_deg": 15.0,
+            "head_yaw_deg": 20.0
+        }),
+    )
+    .unwrap();
+    let exp_foa = call_tool(
+        &session,
+        "audio_restoration_adr_spatial_bus",
+        &json!({
+            "action": "export_spatial_bus_wav",
+            "output_path": wav_foa.display().to_string()
+        }),
+    )
+    .unwrap();
+    let exp_foa_json: Value =
+        serde_json::from_str(exp_foa["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(exp_foa_json["channels"], 4);
+    assert!(wav_foa.exists());
+
+    let defs = tool_definitions();
+    assert_eq!(defs.as_array().unwrap().len(), 86);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
