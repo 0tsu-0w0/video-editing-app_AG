@@ -1,4 +1,4 @@
-//! v7.0 #46 / v8.0 #49〜#52 / v9.0 #53〜#56: ドメイン別に分割整理された内蔵 MCP ツール群（全 90 ツール）
+//! v7.0 #46 / v8.0 #49〜#52 / v9.0 #53〜#56 / v10.0 #57〜#60: ドメイン別に分割整理された内蔵 MCP ツール群（全 100 ツール / 10 ドメイン）
 //!
 //! - `edit_nle`: タイムライン基本操作・マルチカム・テキスト編集・キネティック字幕・スピードランプ＆カット検出
 //! - `vfx_motion`: エフェクト・マスク・エクスプレッション・テンプレート・ノード合成・3D/glTF・物理・2D IK・チャート・VFX ペイント
@@ -9,12 +9,14 @@
 //! - `v70_unified`: 6 スタジオ Hub＆`Ctrl+K` パレット・MCP カタログ自己診断・GPU 4K/8K フレームプール・10k 区間木＆TC コンフォーム＆A/B 比較
 //! - `v80_cinema_audio`: 4 点平面トラッカー＆ロトブラシ・SVG モーフィング＆Text-on-Path＆ワープ・シネマ光学 VFX・オーディオ修復＆ADR＆5.1/FOA 空間バス
 //! - `v90_broadcast_ecosystem`: ライブスイッチャー＆RTMP/SRT/.veproj・VTuber 2D メッシュ＆Verlet＆VMC・OSC/MIDI/StreamDeck・スマート DAM
+//! - `v100_spatial_cinema_os`: 360° 全天球＆空間 3D・2D 流体/クロス物理＆3D シャドウ/HDRI IBL・BVH/シルエットモキャップ・LAN レンダーファーム＆自律 AI プロデューサー
 
 mod ai_collab;
 mod audio_voice;
 mod color_finishing;
 mod deliver_system;
 mod edit_nle;
+mod v100_spatial_cinema_os;
 mod v70_unified;
 mod v80_cinema_audio;
 mod v90_broadcast_ecosystem;
@@ -168,6 +170,11 @@ pub fn tool_domain_catalog() -> Vec<McpDomainSummary> {
             v90_broadcast_ecosystem::DOMAIN_LABEL,
             v90_broadcast_ecosystem::definitions(),
         ),
+        (
+            v100_spatial_cinema_os::DOMAIN_ID,
+            v100_spatial_cinema_os::DOMAIN_LABEL,
+            v100_spatial_cinema_os::definitions(),
+        ),
     ];
 
     groups
@@ -184,9 +191,9 @@ pub fn tool_domain_catalog() -> Vec<McpDomainSummary> {
         .collect()
 }
 
-/// 全ドメインの MCP ツール定義（全 90 ツール）を JSON 配列として返す
+/// 全ドメインの MCP ツール定義（全 100 ツール / 10 ドメイン）を JSON 配列として返す
 pub fn tool_definitions() -> Value {
-    let mut tools = Vec::with_capacity(90);
+    let mut tools = Vec::with_capacity(100);
     tools.extend(edit_nle::definitions());
     tools.extend(vfx_motion::definitions());
     tools.extend(color_finishing::definitions());
@@ -196,6 +203,7 @@ pub fn tool_definitions() -> Value {
     tools.extend(v70_unified::definitions());
     tools.extend(v80_cinema_audio::definitions());
     tools.extend(v90_broadcast_ecosystem::definitions());
+    tools.extend(v100_spatial_cinema_os::definitions());
     Value::Array(tools)
 }
 
@@ -235,6 +243,9 @@ pub fn call_tool(session: &SharedEditorSession, name: &str, args: &Value) -> Res
         return res;
     }
     if let Some(res) = v90_broadcast_ecosystem::try_call(&mut guard, fps, name, args) {
+        return res;
+    }
+    if let Some(res) = v100_spatial_cinema_os::try_call(&mut guard, fps, name, args) {
         return res;
     }
 

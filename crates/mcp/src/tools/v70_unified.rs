@@ -32,7 +32,7 @@ pub(super) fn definitions() -> Vec<Value> {
         },
         {
             "name": "mcp_catalog_introspect",
-            "description": "v7.0 #46: ドメイン別分割された内蔵 MCP ツール群（全 90 ツール）のドメイン統計・キーワード横断検索・JSON Schema 整合性検証を実行する",
+            "description": "v7.0 #46: ドメイン別分割された内蔵 MCP ツール群（全 100 ツール / 10 ドメイン）のドメイン統計・キーワード横断検索・JSON Schema 整合性検証を実行する",
             "inputSchema": {
                 "type": "object",
                 "properties": {

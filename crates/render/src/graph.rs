@@ -473,6 +473,14 @@ impl RenderGraph {
                         config.width = (config.width * sx).max(32.0);
                         config.height = (config.height * sy).max(32.0);
                     }
+                    ItemKind::FluidSim { config } => {
+                        config.width = (config.width * sx).max(32.0);
+                        config.height = (config.height * sy).max(32.0);
+                    }
+                    ItemKind::ClothSim { config } => {
+                        config.width = (config.width * sx).max(32.0);
+                        config.height = (config.height * sy).max(32.0);
+                    }
                     ItemKind::Text { font_size, .. } => {
                         *font_size = (*font_size * uniform).max(4.0);
                         item.text_style.outline_width *= uniform;
@@ -620,6 +628,15 @@ impl RenderGraph {
         // v9.0 #53: ライブスイッチャー PGM/PVW タリー＆REC HUD
         if depth == 0 && scene.live_switcher.enabled && scene.live_switcher.show_tally_hud {
             crate::v90_render::draw_live_tally_hud(&mut canvas, &scene.live_switcher);
+        }
+
+        // v10.0 #57: 360° 全天球投影（OverCapture / Tiny Planet / 水平ロック）＆ ステレオスコピック空間 3D パス
+        if depth == 0 && scene.spatial_video.enabled {
+            canvas = crate::v100_render::render_spatial_360_and_stereo_pass(
+                &canvas,
+                &scene.spatial_video,
+                time.as_seconds() as f32,
+            );
         }
 
         canvas
@@ -1434,10 +1451,11 @@ impl RenderGraph {
                 let sw = (config.width * tf.scale_x).round().clamp(16.0, 2048.0) as u32;
                 let sh = (config.height * tf.scale_y).round().clamp(16.0, 2048.0) as u32;
                 let base_dir = self.project_folder.as_ref().map(|f| f.root());
-                Some(crate::mesh3d_render::render_mesh3d_item(
+                Some(crate::mesh3d_render::render_mesh3d_item_with_adv(
                     config,
                     base_dir,
                     &scene.camera.light,
+                    &scene.lighting_3d_adv,
                     local_time.as_seconds() as f32,
                     sw,
                     sh,
@@ -1560,6 +1578,26 @@ impl RenderGraph {
                     custom_tex.as_ref(),
                     t_sec,
                     &shapes,
+                ))
+            }
+            ItemKind::FluidSim { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(32.0, 2048.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(32.0, 2048.0) as u32;
+                Some(crate::v100_render::render_fluid_sim_item(
+                    config,
+                    local_time.as_seconds() as f32,
+                    sw,
+                    sh,
+                ))
+            }
+            ItemKind::ClothSim { config } => {
+                let sw = (config.width * tf.scale_x).round().clamp(32.0, 2048.0) as u32;
+                let sh = (config.height * tf.scale_y).round().clamp(32.0, 2048.0) as u32;
+                Some(crate::v100_render::render_cloth_sim_item(
+                    config,
+                    local_time.as_seconds() as f32,
+                    sw,
+                    sh,
                 ))
             }
             ItemKind::Audio { .. }

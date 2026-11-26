@@ -492,6 +492,28 @@ pub enum EditCommand {
     RelinkAssets {
         relinks: Vec<(crate::project::AssetId, String)>,
     },
+    /// v10.0 #57: アクティブシーンの 360° 全天球＆ステレオスコピック空間 3D 設定を更新する
+    SetSpatialVideo {
+        spatial_video: crate::spatial_video::SpatialVideoConfig,
+    },
+    /// v10.0 #58: アクティブシーンの 3D シャドウマップ＆HDRI IBL 環境照明設定を更新する
+    SetLighting3DAdv {
+        lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig,
+    },
+    /// v10.0 #58: 決定論 2D Navier-Stokes 流体アイテム設定を更新する
+    SetFluidSim {
+        item_id: ItemId,
+        config: Box<crate::fluid_cloth::FluidSimConfig>,
+    },
+    /// v10.0 #58: 決定論 PBD クロス物理アイテム設定を更新する
+    SetClothSim {
+        item_id: ItemId,
+        config: Box<crate::fluid_cloth::ClothSimConfig>,
+    },
+    /// v10.0 #60: プロジェクトの LAN 分散レンダーファーム設定を更新する
+    SetRenderFarm {
+        render_farm: crate::cinema_os::RenderFarmConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -590,6 +612,11 @@ impl EditCommand {
             Self::SetHardwareController { .. } => "set_hardware_controller",
             Self::SetSmartDamIndex { .. } => "set_smart_dam_index",
             Self::RelinkAssets { .. } => "relink_assets",
+            Self::SetSpatialVideo { .. } => "set_spatial_video",
+            Self::SetLighting3DAdv { .. } => "set_lighting_3d_adv",
+            Self::SetFluidSim { .. } => "set_fluid_sim",
+            Self::SetClothSim { .. } => "set_cloth_sim",
+            Self::SetRenderFarm { .. } => "set_render_farm",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -1080,6 +1107,8 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 adr_session: crate::v80_vfx::AdrSessionConfig::default(),
                 spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
                 live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
+                spatial_video: crate::spatial_video::SpatialVideoConfig::default(),
+                lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig::default(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -2146,6 +2175,64 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                     rec.file_path = new_path.clone();
                 }
             }
+            Ok(())
+        }
+        EditCommand::SetSpatialVideo { spatial_video } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = spatial_video.clone();
+            next.yaw_deg = next.yaw_deg.clamp(-180.0, 180.0);
+            next.pitch_deg = next.pitch_deg.clamp(-90.0, 90.0);
+            next.roll_deg = next.roll_deg.clamp(-180.0, 180.0);
+            next.fov_deg = next.fov_deg.clamp(25.0, 155.0);
+            next.tiny_planet_zoom = next.tiny_planet_zoom.clamp(0.25, 4.0);
+            next.horizon_lock_smoothing = next.horizon_lock_smoothing.clamp(0.0, 0.98);
+            next.ipd_parallax_px = next.ipd_parallax_px.clamp(0.0, 64.0);
+            next.convergence_offset_px = next.convergence_offset_px.clamp(-48.0, 48.0);
+            scene.spatial_video = next;
+            Ok(())
+        }
+        EditCommand::SetLighting3DAdv { lighting_3d_adv } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = lighting_3d_adv.clone();
+            next.shadow_map_size = next.shadow_map_size.clamp(64, 512);
+            next.shadow_bias = next.shadow_bias.clamp(0.001, 0.25);
+            next.shadow_softness_pcf = next.shadow_softness_pcf.clamp(1, 3);
+            next.shadow_strength = next.shadow_strength.clamp(0.0, 1.0);
+            next.hdri_rotation_deg = next.hdri_rotation_deg.rem_euclid(360.0);
+            next.hdri_exposure = next.hdri_exposure.clamp(0.05, 5.0);
+            scene.lighting_3d_adv = next;
+            Ok(())
+        }
+        EditCommand::SetFluidSim { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = (**config).clone();
+            next.grid_w = next.grid_w.clamp(16, 96);
+            next.grid_h = next.grid_h.clamp(16, 96);
+            next.width = next.width.clamp(64.0, 2048.0);
+            next.height = next.height.clamp(64.0, 2048.0);
+            item.kind = ItemKind::FluidSim {
+                config: Box::new(next),
+            };
+            Ok(())
+        }
+        EditCommand::SetClothSim { item_id, config } => {
+            let item = find_item_mut(project, *item_id)?;
+            let mut next = (**config).clone();
+            next.cols = next.cols.clamp(4, 28);
+            next.rows = next.rows.clamp(4, 28);
+            next.width = next.width.clamp(64.0, 2048.0);
+            next.height = next.height.clamp(64.0, 2048.0);
+            item.kind = ItemKind::ClothSim {
+                config: Box::new(next),
+            };
+            Ok(())
+        }
+        EditCommand::SetRenderFarm { render_farm } => {
+            project.render_farm = render_farm.clone();
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

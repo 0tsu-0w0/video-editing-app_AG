@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-25  
-> **v0.1〜v9.0 全 56 項目完全達成済み ＆ v10.0 最終マイルストーン（#57〜#60・全 60 項目）計画中**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **90 MCP ツール**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ・Brown-Conrady レンズ補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチ・MAD デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆5.1ch/FOA Ambisonics バス・**2 バスライブスイッチャー＆RTMP/SRT/スティンガー/`.veproj` 同時生成・VTuber 2D 三角メッシュ変形＆Verlet 物理揺れ＆UDP OSC/VMC 顔トラッキング・OSC/MIDI-over-UDP/Stream Deck RFC 6455 WebSocket ハードウェア連携・ローカル スマート DAM（代表色/BPM/LUFS 索引・16D 類似検索・スマートビン・SHA-256 一括自動再リンク）**。  
-> 以下に **v0.8〜v9.0（✅ 全 56 項目実装済み）** および **v10.0（🔲 次期計画 #57〜#60）** をマイルストーン順に整理しています。
+> **v0.1〜v10.0 全 60 項目完全達成済み（全 100 MCP ツール / 10 ドメイン・Pure Rust / ゼロ `unsafe` / ゼロ追加依存）**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **100 MCP ツール / 10 ドメイン**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ・Brown-Conrady レンズ補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチ・MAD デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆5.1ch/FOA Ambisonics バス・2 バスライブスイッチャー＆RTMP/SRT/スティンガー/`.veproj` 同時生成・VTuber 2D 三角メッシュ変形＆Verlet 物理揺れ＆UDP OSC/VMC 顔トラッキング・OSC/MIDI-over-UDP/Stream Deck RFC 6455 WebSocket ハードウェア連携・ローカル スマート DAM（代表色/BPM/LUFS 索引・16D 類似検索・スマートビン・SHA-256 一括自動再リンク）・**360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ステレオスコピック空間 3D 編集・決定論 2D Navier-Stokes 流体（煙・炎・インク・プラズマ）＆PBD クロス物理＋3D PCF シャドウマップ＆Equirectangular HDRI IBL・Pure-Rust `.bvh`＆動画シルエットモーションキャプチャ→2D/3D 足接地ロックリターゲット・LAN 分散レンダーファーム（RFC 2104 HMAC-SHA256）＆自律 AI シネマプロデューサー（台本→絵コンテ・視聴維持率予測・A/B 自動編集・全 100 MCP ツール）**。  
+> 以下に **v0.8〜v10.0（✅ 全 60 項目完全実装済み）** のマイルストーン詳細を整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -21,7 +21,7 @@ flowchart LR
   V70["✅ v7.0 統合UX＆コアvNext\n6スタジオHub＆Ctrl+Kパレット・MCP分割\nGPUフレームプール・10k区間木/TCコンフォーム/AB比較"]
   V80["✅ v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics"]
   V90["✅ v9.0 ライブ配信＆VTuber＆HW\nRTMP/SRTスイッチャー・VTuber 2Dメッシュ/VMC\nOSC/MIDI/StreamDeck・スマートDAM索引(90)"]
-  V100["🔲 v10.0 空間映像＆流体＆自律AI\n360°全天球＆空間3D・2D流体/クロス＆HDRI\nBVHリターゲット・分散レンダー＆100 MCP"]
+  V100["✅ v10.0 空間映像＆流体＆自律AI\n360°全天球＆空間3D・2D流体/クロス＆HDRI\nBVHリターゲット・分散レンダー＆100 MCP"]
 
   V07 --> V08 --> V09 --> V10 --> V20 --> V21 --> V30 --> V40 --> V50 --> V60 --> V70 --> V80 --> V90 --> V100
 ```
@@ -44,7 +44,7 @@ flowchart LR
 | **v7.0** | Unified Studio UX & Core Architecture vNext（6 スタジオ Hub・`Ctrl+K`・MCP 分割・GPU プール・区間木/TC コンフォーム/AB 比較） | **#45〜#48** | ✅ 完了 |
 | **v8.0** | Pro Cinema VFX, Motion Foundry & Audio Restoration（平面追跡/ロト・SVG ワープ・光学 VFX・音響修復/ADR/Ambisonics） | **#49〜#52** | ✅ 完了 |
 | **v9.0** | Live Broadcast, VTuber & Hardware Ecosystem（RTMP/SRT スイッチャー・VTuber メッシュ/VMC・OSC/MIDI/StreamDeck・スマート DAM） | **#53〜#56** | ✅ 完了 |
-| **v10.0** | Spatial Computing, Physics Fluids & Autonomous Cinema OS（360°/空間 3D・流体/クロス＆HDRI・BVH リターゲット・分散レンダー＆100 MCP） | **#57〜#60** | 🔲 計画中 |
+| **v10.0** | Spatial Computing, Physics Fluids & Autonomous Cinema OS（360°/空間 3D・流体/クロス＆HDRI・BVH リターゲット・分散レンダー＆100 MCP） | **#57〜#60** | ✅ 完了 |
 
 ---
 
@@ -388,23 +388,31 @@ flowchart LR
 
 ---
 
-## 🔲 v10.0（Spatial Computing, Physics Fluids & Autonomous Cinema OS）：360°/空間 3D・流体/クロス物理・BVH リターゲット・分散レンダー＆100 MCP
+## ✅ v10.0（実装済み・Spatial Computing, Physics Fluids & Autonomous Cinema OS）：360°/空間 3D・流体/クロス物理・BVH リターゲット・分散レンダー＆全 100 MCP
 
-### 57. 360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ ステレオスコピック空間 3D ビデオ編集
+### 57. ~~360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ ステレオスコピック空間 3D ビデオ編集~~ ✅ 実装済み（v10.0）
 - **目的**: アクションカム等の Equirectangular 360° 映像からの自由なカメラワーク切り出し（OverCapture）や Tiny Planet 演出、VR ヘッドセット向けの左右視差空間 3D 映像編集を実現する。
-- **設計計画**: Equirectangular ⇔ 透視投影 / ステレオ投影（Tiny Planet）逆射影シェーダー＆ジャイロ/特徴点水平ロック、Side-by-Side / Top-and-Bottom ステレオスコピック合成・視差コンバージェンス調整・アナグリフプレビュー。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `spatial_video` / `v100_render` モジュール — Equirectangular ⇔ 透視投影（`OverCapture`）/ 逆ステレオ投影（`TinyPlanet`）/ 全天球レビュー（`EquirectangularReview`）逆射影 `project_screen_to_equirect_uv`、ジャイロ時系列サンプルからの指数平滑化水平ロック `evaluate_horizon_locked_euler`、および Side-by-Side / Top-and-Bottom / Red-Cyan アナグリフ / 単眼 L・R 出力対応 `render_spatial_360_and_stereo_pass`（`Scene::spatial_video` / `EditCommand::SetSpatialVideo`）
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🌐 360° 全天球動画＆空間 3D (#57)」タブ、MCP `configure_360_overcapture_and_horizon_lock` / `configure_stereoscopic_spatial_3d`
 
-### 58. 決定論 2D Navier-Stokes 流体（煙・炎・インク）＆クロス物理 ＋ 3D シャドウマップ / HDRI IBL
+### 58. ~~決定論 2D Navier-Stokes 流体（煙・炎・インク）＆クロス物理 ＋ 3D シャドウマップ / HDRI IBL~~ ✅ 実装済み（v10.0）
 - **目的**: 外部連番素材なしでリアルな煙・炎・インク拡散や布はためきをシード決定論でシミュレーションし、3D シーンにソフトシャドウと HDRI 環境照明を導入する。
-- **設計計画**: Jos Stam 安定法ベースの固定タイムステップ 2D オイラー格子流体ソルバー（移流・拡散・渦度閉じ込め・圧力ポアソン反復）、Position-Based Dynamics 2D/3D クロスシミュレーション、およびデプスシャドウマップ＋Equirectangular HDRI 拡散/鏡面 IBL 統合。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `fluid_cloth` / `v100_render` / `mesh3d_render` モジュール — Jos Stam 安定法ベースの固定タイムステップ 2D オイラー格子流体ソルバー `simulate_fluid_2d_at_time`（移流・暗黙拡散・渦度閉じ込め・圧力ポアソン反復・`ItemKind::FluidSim` / `EditCommand::SetFluidSim`）、構造・せん断・曲げ距離拘束付き PBD クロス物理 `simulate_cloth_pbd_at_time`（`ItemKind::ClothSim` / `EditCommand::SetClothSim`）、および 2 パス直交デプスシャドウマップ（PCF ソフトシャドウ＋地面シャドウキャッチャー）＆ Equirectangular プロシージャル HDRI 拡散/鏡面 IBL `sample_hdri_ibl` / `render_mesh_data_pbr_with_adv`（`Scene::lighting_3d_adv` / `EditCommand::SetLighting3DAdv`）
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🔥 2D 流体・クロス物理＆3D シャドウ/HDRI IBL (#58)」タブ、MCP `add_or_update_fluid_simulation` / `add_or_update_cloth_simulation` / `configure_3d_shadows_and_hdri_ibl`
 
-### 59. BVH / 動画シルエット モーションキャプチャ → 2D / 3D リグ自動リターゲット（足接地ロック付）
+### 59. ~~BVH / 動画シルエット モーションキャプチャ → 2D / 3D リグ自動リターゲット（足接地ロック付）~~ ✅ 実装済み（v10.0）
 - **目的**: オープンな `.bvh` モーションキャプチャ資産や実写全身動画の姿勢推定から、2D パペットリグ（#37）および 3D メッシュボーンへ自然な全身アニメーションを自動転写する。
-- **設計計画**: Pure-Rust `.bvh`（HIERARCHY / MOTION）パーサ、動画シルエット＆関節ヒートマップからの 2D 骨格トラッキング、体格差吸収ボーン長比率スケーリング＋足滑り防止 Foot Skate Locking IK リターゲット。
+- **実装内容**:
+  - `ve-core`: `mocap_retarget` モジュール — Pure-Rust `.bvh`（`HIERARCHY` / `MOTION`）パーサ `parse_bvh`＆3D 順運動学 `evaluate_bvh_world_joints`、動画シルエット RGBA8 からの 7 関節 2D 骨格推定 `extract_silhouette_pose_from_rgba8`、ボーン長比率スケーリング＋足滑り防止 Foot Skate Locking IK リターゲット `retarget_bvh_to_rig2d` / `retarget_silhouette_sequence_to_rig2d`、および 1-Undo キーフレームベイク `build_mocap_retarget_bake_commands`
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「🏃 BVH / シルエットモキャップ＆足接地リターゲット (#59)」タブ、MCP `import_bvh_mocap_and_retarget` / `extract_silhouette_mocap_pose`
 
-### 60. LAN 分散レンダーファーム ＆ 自律 AI シネマプロデューサー（台本→絵コンテ・A/B 自動編集・視聴維持率予測・全 100 MCP ツール）
+### 60. ~~LAN 分散レンダーファーム ＆ 自律 AI シネマプロデューサー（台本→絵コンテ・A/B 自動編集・視聴維持率予測・全 100 MCP ツール）~~ ✅ 実装済み（v10.0）
 - **目的**: 複数 PC へのフレーム区間分割レンダリングで長尺 4K/8K 書き出しを線形スケールさせ、台本から絵コンテ・複数バリエーション自動編集・視聴維持率ヒートマップ診断までを **全 100 MCP ツール** で完結させる。
-- **設計計画**: ベアラートークン＋HMAC 認証付きローカル LAN コーディネータ／ワーカー分割フレーム並列レンダラー＆自動結合、台本構造解析→プロシージャル絵コンテアニマティック生成、テンポ/情報密度/視覚変化率に基づく視聴維持率スコア予測＆A/B バリアント自動生成、および v10.0 到達記念の **全 100 MCP ツール完全体系化**。
+- **実装内容**:
+  - `ve-core`: `cinema_os` モジュール — Pure-Rust RFC 2104 `hmac_sha256_hex`（RFC 4231 検証済）、重み比例チャンク分割＆署名検証 `plan_render_farm_chunks` / `verify_chunk_hmac`、非ブロッキングローカル HTTP/1.1 コーディネータ `RenderFarmCoordinatorServer`、FFmpeg 無劣化 concat マニフェスト `build_farm_concat_manifest`（`Project::render_farm` / `EditCommand::SetRenderFarm`）、台本→絵コンテ構造解析＆プレイアブルアニマティック 1-Undo 自動構築 `parse_script_to_storyboard` / `build_storyboard_animatic_commands`、秒別視聴維持率カーブ予測＆離脱リスク診断 `analyze_viewer_retention`、および A/B 自動編集バリアント生成 `build_ab_edit_variant_command`
+  - `ve-app` / `ve-mcp`: AI & Collab Hub 内「🎬 自律 AI シネマプロデューサー (#60)」タブ・Deliver Hub 内「🖥 LAN 分散レンダーファーム (#60)」タブ、MCP `manage_lan_render_farm` / `produce_storyboard_animatic_from_script` / `predict_retention_and_generate_ab_variants`（第 10 ドメイン `v100_spatial_cinema_os` 追加・**全 100 MCP ツール完全達成**）、およびゴールデン視覚回帰テスト `golden_v100_spatial_360_fluid_cloth_ibl_and_mocap_determinism`
 
 ---
 

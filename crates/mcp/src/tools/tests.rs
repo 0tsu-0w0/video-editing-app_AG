@@ -1,4 +1,4 @@
-//! 内蔵 MCP 統合テストスイート（v0.3〜v9.0 全 90 ツール）
+//! 内蔵 MCP 統合テストスイート（v0.3〜v10.0 全 100 ツール / 10 ドメイン）
 
 use super::*;
 use crate::session::EditorSession;
@@ -606,7 +606,7 @@ fn v09_mcp_tools_expressions_templates_and_fx() {
 
     // Verify exact MCP tool count = 58 (v2.0)
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -801,7 +801,7 @@ fn v10_mcp_tools_multicam_nle_delivery_and_ecosystem() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1078,7 +1078,7 @@ fn v20_mcp_tools_node_graph_ai_vision_director_and_collab() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1294,7 +1294,7 @@ fn v21_mcp_tools_color_vfx_spatial_and_kinetic() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
 }
 
 #[test]
@@ -1487,7 +1487,7 @@ fn v30_mcp_tools_gpu_3d_dubbing_and_crdt() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1695,7 +1695,7 @@ fn v40_mcp_tools_aces_physics_generative_and_qc() {
     assert!(html_body.contains("data:image/png;base64,"));
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1916,7 +1916,7 @@ fn v50_mcp_tools_rig2d_bgm_speed_ramp_and_finishing() {
     assert!(xml_path.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2096,7 +2096,7 @@ fn v60_mcp_tools_dataviz_vfxpaint_podcast_and_packager() {
     assert!(bundle_dir.join("subtitles/shorts_reels_9x16.srt").exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2183,8 +2183,8 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     .unwrap();
     let cat_json: Value =
         serde_json::from_str(cat_res["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(cat_json["domain_count"], 9);
-    assert_eq!(cat_json["total_tools"], 90);
+    assert_eq!(cat_json["domain_count"], 10);
+    assert_eq!(cat_json["total_tools"], 100);
 
     let verify_res = call_tool(
         &session,
@@ -2195,7 +2195,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     let verify_json: Value =
         serde_json::from_str(verify_res["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(verify_json["valid"], true);
-    assert_eq!(verify_json["unique_tool_count"], 90);
+    assert_eq!(verify_json["unique_tool_count"], 100);
 
     // 3. #47 gpu_v70_frame_pool: status, benchmark (custom lightweight), run_fast_blend_aces
     let gpu_st_res = call_tool(
@@ -2312,7 +2312,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     assert!(!ab_png["content"][0]["data"].as_str().unwrap().is_empty());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
 }
 
 #[test]
@@ -2639,7 +2639,7 @@ fn v80_mcp_tools_planar_roto_svg_morph_optical_and_audio_restoration() {
     assert!(wav_foa.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2893,6 +2893,188 @@ fn v90_mcp_tools_live_switcher_vtuber_hardware_and_smart_dam() {
     assert_eq!(relink_json["applied"], true);
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 90);
+    assert_eq!(defs.as_array().unwrap().len(), 100);
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn v100_mcp_tools_spatial_fluids_mocap_farm_and_cinema_os_100_tools() {
+    let proj = Project::new("V100CinemaOsTest", ProjectSettings::default());
+    let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+
+    // 1. #57 360° OverCapture + Horizon Lock
+    let sp_res = call_tool(
+        &session,
+        "configure_360_overcapture_and_horizon_lock",
+        &json!({ "action": "apply_preset", "preset": "action_horizon_lock", "sample_time_sec": 1.0 }),
+    )
+    .unwrap();
+    assert!(
+        sp_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("over_capture")
+    );
+
+    // 2. #57 Stereoscopic Spatial 3D
+    let st_res = call_tool(
+        &session,
+        "configure_stereoscopic_spatial_3d",
+        &json!({ "enabled": true, "stereo_layout": "anaglyph_red_cyan", "ipd_parallax_px": 16.0 }),
+    )
+    .unwrap();
+    assert!(
+        st_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("anaglyph_red_cyan")
+    );
+
+    // 3. #58 2D Navier-Stokes Fluid
+    let fl_res = call_tool(
+        &session,
+        "add_or_update_fluid_simulation",
+        &json!({ "action": "add", "preset": "bonfire_flame", "grid_w": 28, "grid_h": 28 }),
+    )
+    .unwrap();
+    let fl_json: Value =
+        serde_json::from_str(fl_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(fl_json["item_id"].as_str().is_some());
+    assert!(fl_json["total_density"].as_f64().unwrap() > 1.0);
+
+    // 4. #58 PBD Cloth
+    let cl_res = call_tool(
+        &session,
+        "add_or_update_cloth_simulation",
+        &json!({ "action": "add", "preset": "cyber_flag", "wind_strength": 2.8 }),
+    )
+    .unwrap();
+    let cl_json: Value =
+        serde_json::from_str(cl_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    let cloth_id = cl_json["item_id"].as_str().unwrap().to_string();
+    assert!(cl_json["max_billow_z"].as_f64().unwrap() > 0.01);
+
+    // 5. #58 3D Shadow Map + HDRI IBL
+    let ibl_res = call_tool(
+        &session,
+        "configure_3d_shadows_and_hdri_ibl",
+        &json!({
+            "shadow_map_enabled": true,
+            "shadow_map_size": 128,
+            "hdri_ibl_enabled": true,
+            "hdri_preset": "golden_sunset"
+        }),
+    )
+    .unwrap();
+    assert!(
+        ibl_res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("golden_sunset")
+    );
+
+    // 6. #59 BVH Mocap + Foot Skate Lock Retarget & Bake
+    let bvh_res = call_tool(
+        &session,
+        "import_bvh_mocap_and_retarget",
+        &json!({
+            "preset": "walk_cycle",
+            "target_item_id": cloth_id,
+            "foot_lock_enabled": true,
+            "bake_keyframes": true
+        }),
+    )
+    .unwrap();
+    let bvh_json: Value =
+        serde_json::from_str(bvh_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(bvh_json["frames"], 30);
+    assert!(bvh_json["foot_locked_frames"].as_u64().unwrap() >= 10);
+    assert!(bvh_json["baked_keyframe_commands"].as_u64().unwrap() >= 30);
+
+    // 7. #59 Video Silhouette Mocap Extraction
+    let sil_res = call_tool(
+        &session,
+        "extract_silhouette_mocap_pose",
+        &json!({ "frame_count": 2, "step_sec": 0.2 }),
+    )
+    .unwrap();
+    let sil_json: Value =
+        serde_json::from_str(sil_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(sil_json["extracted_frames"], 2);
+
+    // 8. #60 LAN Distributed Render Farm (plan + concat manifest + loopback coordinator test)
+    let farm_res = call_tool(
+        &session,
+        "manage_lan_render_farm",
+        &json!({ "action": "plan_chunks", "total_frames": 240 }),
+    )
+    .unwrap();
+    let farm_json: Value =
+        serde_json::from_str(farm_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(farm_json["hmac_all_valid"], true);
+    assert!(farm_json["chunk_count"].as_u64().unwrap() >= 3);
+
+    let lb_res = call_tool(
+        &session,
+        "manage_lan_render_farm",
+        &json!({ "action": "test_loopback_farm" }),
+    )
+    .unwrap();
+    let lb_json: Value =
+        serde_json::from_str(lb_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(lb_json["worker_response_ok"], true);
+    assert_eq!(lb_json["hmac_all_valid"], true);
+
+    // 9. #60 Autonomous AI Producer: Script -> Storyboard -> Playable Animatic
+    let sb_res = call_tool(
+        &session,
+        "produce_storyboard_animatic_from_script",
+        &json!({
+            "script_text": "# v10.0 Cinema OS\n## Hook\n[Close Up] 全100 MCP ツール完全達成！\n## Body\n[Wide] 360度空間編集から分散レンダーまでオフライン完結。\n",
+            "build_animatic": true
+        }),
+    )
+    .unwrap();
+    let sb_json: Value =
+        serde_json::from_str(sb_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(sb_json["beat_count"], 3);
+    assert!(sb_json["created_commands"].as_u64().unwrap() >= 9);
+
+    // 10. #60 Retention Prediction + A/B Auto-Edit Variant + 100 MCP Milestone Summary
+    let ret_res = call_tool(
+        &session,
+        "predict_retention_and_generate_ab_variants",
+        &json!({ "action": "predict_retention" }),
+    )
+    .unwrap();
+    let ret_json: Value =
+        serde_json::from_str(ret_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(ret_json["predicted_avg_retention_pct"].as_f64().unwrap() > 30.0);
+
+    let ab_res = call_tool(
+        &session,
+        "predict_retention_and_generate_ab_variants",
+        &json!({ "action": "generate_ab_variant", "style": "retention_boost_hook" }),
+    )
+    .unwrap();
+    let ab_json: Value =
+        serde_json::from_str(ab_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        ab_json["new_scene_name"]
+            .as_str()
+            .unwrap()
+            .contains("AB_HookBoost")
+    );
+
+    let sum_res = call_tool(
+        &session,
+        "predict_retention_and_generate_ab_variants",
+        &json!({ "action": "cinema_os_summary" }),
+    )
+    .unwrap();
+    let sum_json: Value =
+        serde_json::from_str(sum_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(sum_json["mcp_domains"], 10);
+    assert_eq!(sum_json["mcp_total_tools"], 100);
+    assert_eq!(sum_json["roadmap_completed"], "60/60");
 }

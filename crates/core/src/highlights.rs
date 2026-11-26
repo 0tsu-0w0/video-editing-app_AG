@@ -364,6 +364,8 @@ pub fn build_shorts_clip_scene_command(
         adr_session: crate::v80_vfx::AdrSessionConfig::default(),
         spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
         live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
+        spatial_video: crate::spatial_video::SpatialVideoConfig::default(),
+        lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig::default(),
         layers: new_layers,
     };
 

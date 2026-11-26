@@ -7,13 +7,22 @@ use crate::graph::RenderGraph;
 use crate::vfx_track::estimate_global_frame_motion;
 use std::path::Path;
 use ve_core::{
-    Camera3D, EditCommand, Light3D, Mesh3DConfig, Mesh3DData, Project, RationalTime, SceneId,
-    resolve_mesh_data,
+    Camera3D, EditCommand, Light3D, Lighting3DAdvConfig, Mesh3DConfig, Mesh3DData, Project,
+    RationalTime, SceneId, resolve_mesh_data, sample_hdri_ibl,
 };
 
 #[inline]
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 #[inline]
@@ -69,10 +78,31 @@ pub fn render_mesh3d_item(
     out_w: u32,
     out_h: u32,
 ) -> LinearImage {
+    render_mesh3d_item_with_adv(
+        cfg,
+        base_dir,
+        light,
+        &Lighting3DAdvConfig::default(),
+        local_time_sec,
+        out_w,
+        out_h,
+    )
+}
+
+/// v10.0 #58: 3D シャドウマップ（PCF ソフトシャドウ＋地面影受け）＆ Equirectangular HDRI IBL 対応 3D PBR 描画
+pub fn render_mesh3d_item_with_adv(
+    cfg: &Mesh3DConfig,
+    base_dir: Option<&Path>,
+    light: &Light3D,
+    adv: &Lighting3DAdvConfig,
+    local_time_sec: f32,
+    out_w: u32,
+    out_h: u32,
+) -> LinearImage {
     let w = out_w.clamp(16, 2048);
     let h = out_h.clamp(16, 2048);
     let mesh = resolve_mesh_data(cfg, base_dir);
-    render_mesh_data_pbr(&mesh, cfg, light, local_time_sec, w, h)
+    render_mesh_data_pbr_with_adv(&mesh, cfg, light, adv, local_time_sec, w, h)
 }
 
 /// 解析済み `Mesh3DData` を PBR（拡散＋GGX 鏡面＋Schlick Fresnel＋スタジオ環境反射）でラスタライズする
@@ -80,6 +110,27 @@ pub fn render_mesh_data_pbr(
     mesh: &Mesh3DData,
     cfg: &Mesh3DConfig,
     light: &Light3D,
+    local_time_sec: f32,
+    w: u32,
+    h: u32,
+) -> LinearImage {
+    render_mesh_data_pbr_with_adv(
+        mesh,
+        cfg,
+        light,
+        &Lighting3DAdvConfig::default(),
+        local_time_sec,
+        w,
+        h,
+    )
+}
+
+/// v10.0 #58: 2 パス直交デプスシャドウマップ（PCF ソフトシャドウ）＋ HDRI 拡散/鏡面 IBL 付き PBR ラスタライザ
+pub fn render_mesh_data_pbr_with_adv(
+    mesh: &Mesh3DData,
+    cfg: &Mesh3DConfig,
+    light: &Light3D,
+    adv: &Lighting3DAdvConfig,
     local_time_sec: f32,
     w: u32,
     h: u32,
@@ -121,8 +172,8 @@ pub fn render_mesh_data_pbr(
     let cx = w as f32 * 0.5;
     let cy = h as f32 * 0.5;
 
-    // 変換済み頂点キャッシュ: (screen_x, screen_y, view_z, world_normal)
-    let transformed: Vec<([f32; 3], [f32; 3])> = mesh
+    // 変換済み頂点キャッシュ: (screen_xyz, world_pos, world_normal)
+    let transformed: Vec<([f32; 3], [f32; 3], [f32; 3])> = mesh
         .vertices
         .iter()
         .map(|v| {
@@ -131,23 +182,123 @@ pub fn render_mesh_data_pbr(
             let vz = (cam_dist - p[2]).max(0.35);
             let sx = cx + (p[0] / vz) * focal;
             let sy = cy - (p[1] / vz) * focal;
-            ([sx, sy, vz], n)
+            ([sx, sy, vz], p, n)
         })
         .collect();
+
+    // v10.0 #58 パス 1: ライト空間直交デプスシャドウマップ構築
+    let shadow_size = adv.shadow_map_size.clamp(64, 512) as usize;
+    let up_ref = if light_dir[1].abs() > 0.92 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let l_right = norm3(cross3(up_ref, light_dir));
+    let l_up = norm3(cross3(light_dir, l_right));
+    let shadow_extent = 1.85f32;
+    let world_to_light = |wp: [f32; 3]| -> [f32; 3] {
+        let u = (dot3(wp, l_right) / shadow_extent * 0.5 + 0.5) * (shadow_size as f32 - 1.0);
+        let v = (0.5 - dot3(wp, l_up) / shadow_extent * 0.5) * (shadow_size as f32 - 1.0);
+        // 光源に近いほど小さい深度値
+        let z = 3.0 - dot3(wp, light_dir);
+        [u, v, z]
+    };
+
+    let shadow_map: Option<Vec<f32>> = if adv.shadow_map_enabled {
+        let mut sm = vec![f32::INFINITY; shadow_size * shadow_size];
+        let s_lim = shadow_size as i32 - 1;
+        for tri in mesh.indices.as_chunks::<3>().0 {
+            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            if i0 >= transformed.len() || i1 >= transformed.len() || i2 >= transformed.len() {
+                continue;
+            }
+            let lp0 = world_to_light(transformed[i0].1);
+            let lp1 = world_to_light(transformed[i1].1);
+            let lp2 = world_to_light(transformed[i2].1);
+            let area =
+                (lp1[0] - lp0[0]) * (lp2[1] - lp0[1]) - (lp2[0] - lp0[0]) * (lp1[1] - lp0[1]);
+            if area.abs() < 1e-4 {
+                continue;
+            }
+            let inv_area = 1.0 / area;
+            let min_x = (lp0[0].min(lp1[0]).min(lp2[0]).floor() as i32).clamp(0, s_lim);
+            let max_x = (lp0[0].max(lp1[0]).max(lp2[0]).ceil() as i32).clamp(0, s_lim);
+            let min_y = (lp0[1].min(lp1[1]).min(lp2[1]).floor() as i32).clamp(0, s_lim);
+            let max_y = (lp0[1].max(lp1[1]).max(lp2[1]).ceil() as i32).clamp(0, s_lim);
+            for py in min_y..=max_y {
+                let fy = py as f32 + 0.5;
+                let row = py as usize * shadow_size;
+                for px in min_x..=max_x {
+                    let fx = px as f32 + 0.5;
+                    let w0 =
+                        ((lp1[0] - fx) * (lp2[1] - fy) - (lp2[0] - fx) * (lp1[1] - fy)) * inv_area;
+                    let w1 =
+                        ((lp2[0] - fx) * (lp0[1] - fy) - (lp0[0] - fx) * (lp2[1] - fy)) * inv_area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4 {
+                        continue;
+                    }
+                    let lz = w0 * lp0[2] + w1 * lp1[2] + w2 * lp2[2];
+                    let sid = row + px as usize;
+                    if lz < sm[sid] {
+                        sm[sid] = lz;
+                    }
+                }
+            }
+        }
+        Some(sm)
+    } else {
+        None
+    };
+
+    let sample_shadow_pcf = |wp: [f32; 3]| -> f32 {
+        let Some(ref sm) = shadow_map else {
+            return 0.0;
+        };
+        let lp = world_to_light(wp);
+        let rad = adv.shadow_softness_pcf.clamp(1, 3) as i32;
+        let bias = adv.shadow_bias.clamp(0.002, 0.25);
+        let cx_i = lp[0].round() as i32;
+        let cy_i = lp[1].round() as i32;
+        let mut occ = 0u32;
+        let mut tot = 0u32;
+        for dy in -rad..=rad {
+            let sy = cy_i + dy;
+            if sy < 0 || sy >= shadow_size as i32 {
+                continue;
+            }
+            let row = sy as usize * shadow_size;
+            for dx in -rad..=rad {
+                let sx = cx_i + dx;
+                if sx < 0 || sx >= shadow_size as i32 {
+                    continue;
+                }
+                tot += 1;
+                if lp[2] - bias > sm[row + sx as usize] {
+                    occ += 1;
+                }
+            }
+        }
+        if tot == 0 {
+            0.0
+        } else {
+            (occ as f32 / tot as f32) * adv.shadow_strength.clamp(0.0, 1.0)
+        }
+    };
 
     let fw = w as i32;
     let fh = h as i32;
 
+    // パス 2A: メッシュ本体 PBR + シャドウ + HDRI IBL ラスタライズ
     for tri in mesh.indices.as_chunks::<3>().0 {
         let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
         if i0 >= transformed.len() || i1 >= transformed.len() || i2 >= transformed.len() {
             continue;
         }
-        let (p0, n0) = transformed[i0];
-        let (p1, n1) = transformed[i1];
-        let (p2, n2) = transformed[i2];
+        let (p0, wp0, n0) = transformed[i0];
+        let (p1, wp1, n1) = transformed[i1];
+        let (p2, wp2, n2) = transformed[i2];
 
-        // 2D 符号付き面積（裏面カリング）
         let area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);
         if area.abs() < 1e-4 {
             continue;
@@ -178,7 +329,11 @@ pub fn render_mesh_data_pbr(
                 }
                 zbuf[idx] = depth;
 
-                // 補間法線（両面対応: 視線と逆向きなら反転）
+                let wp = [
+                    w0 * wp0[0] + w1 * wp1[0] + w2 * wp2[0],
+                    w0 * wp0[1] + w1 * wp1[1] + w2 * wp2[1],
+                    w0 * wp0[2] + w1 * wp1[2] + w2 * wp2[2],
+                ];
                 let mut n = norm3([
                     w0 * n0[0] + w1 * n1[0] + w2 * n2[0],
                     w0 * n0[1] + w1 * n1[1] + w2 * n2[1],
@@ -197,7 +352,6 @@ pub fn render_mesh_data_pbr(
                 let n_dot_h = dot3(n, half_v).max(0.0);
                 let n_dot_v = dot3(n, view_dir).clamp(0.0, 1.0);
 
-                // Schlick Fresnel F0（誘電体 0.04 ↔ 金属 albedo）
                 let fres_pow = (1.0 - n_dot_v).powi(5);
                 let f0 = [
                     0.04 * (1.0 - metallic) + albedo[0] * metallic,
@@ -211,24 +365,50 @@ pub fn render_mesh_data_pbr(
                 ];
                 let spec_term = n_dot_h.powf(shininess) * (1.0 - roughness * 0.65);
 
-                // 環境反射ベクトル R = 2(N·V)N - V
                 let refl = norm3([
                     2.0 * n_dot_v * n[0] - view_dir[0],
                     2.0 * n_dot_v * n[1] - view_dir[1],
                     2.0 * n_dot_v * n[2] - view_dir[2],
                 ]);
-                let env = sample_studio_env(refl);
+                let (env_spec, env_diff) = if adv.hdri_ibl_enabled {
+                    (
+                        sample_hdri_ibl(
+                            adv.hdri_preset,
+                            refl,
+                            roughness,
+                            adv.hdri_rotation_deg,
+                            adv.hdri_exposure,
+                        ),
+                        sample_hdri_ibl(
+                            adv.hdri_preset,
+                            n,
+                            0.94,
+                            adv.hdri_rotation_deg,
+                            adv.hdri_exposure,
+                        ),
+                    )
+                } else {
+                    (sample_studio_env(refl), [ambient, ambient, ambient])
+                };
 
-                let diff_scale = (1.0 - metallic) * (ambient + n_dot_l * 0.85);
-                let mut r = albedo[0] * diff_scale * light_col[0]
-                    + fres[0] * spec_term * light_col[0]
-                    + env[0] * fres[0] * env_strength;
-                let mut g = albedo[1] * diff_scale * light_col[1]
-                    + fres[1] * spec_term * light_col[1]
-                    + env[1] * fres[1] * env_strength;
-                let mut b = albedo[2] * diff_scale * light_col[2]
-                    + fres[2] * spec_term * light_col[2]
-                    + env[2] * fres[2] * env_strength;
+                let shadow = sample_shadow_pcf(wp);
+                let lit = 1.0 - shadow;
+
+                let mut r = albedo[0]
+                    * (1.0 - metallic)
+                    * (env_diff[0] + n_dot_l * 0.85 * light_col[0] * lit)
+                    + fres[0] * spec_term * light_col[0] * lit
+                    + env_spec[0] * fres[0] * env_strength;
+                let mut g = albedo[1]
+                    * (1.0 - metallic)
+                    * (env_diff[1] + n_dot_l * 0.85 * light_col[1] * lit)
+                    + fres[1] * spec_term * light_col[1] * lit
+                    + env_spec[1] * fres[1] * env_strength;
+                let mut b = albedo[2]
+                    * (1.0 - metallic)
+                    * (env_diff[2] + n_dot_l * 0.85 * light_col[2] * lit)
+                    + fres[2] * spec_term * light_col[2] * lit
+                    + env_spec[2] * fres[2] * env_strength;
 
                 if cfg.wireframe && (w0 < 0.04 || w1 < 0.04 || w2 < 0.04) {
                     r = (r + 0.55).min(1.0);
@@ -243,6 +423,73 @@ pub fn render_mesh_data_pbr(
                     b: b.clamp(0.0, 1.0) * a,
                     a,
                 };
+            }
+        }
+    }
+
+    // パス 2B: シャドウキャッチャー床プレーン（メッシュ下部にソフトシャドウを落とす）
+    if adv.shadow_map_enabled && adv.ground_catcher_enabled {
+        let floor_y = -0.92f32;
+        let floor_pts = [
+            [-1.45, floor_y, -1.45],
+            [1.45, floor_y, -1.45],
+            [1.45, floor_y, 1.45],
+            [-1.45, floor_y, 1.45],
+        ];
+        let floor_proj: Vec<([f32; 3], [f32; 3])> = floor_pts
+            .iter()
+            .map(|&p| {
+                let vz = (cam_dist - p[2]).max(0.35);
+                ([cx + (p[0] / vz) * focal, cy - (p[1] / vz) * focal, vz], p)
+            })
+            .collect();
+        for &(i0, i1, i2) in &[(0usize, 1usize, 2usize), (0, 2, 3)] {
+            let (p0, wp0) = floor_proj[i0];
+            let (p1, wp1) = floor_proj[i1];
+            let (p2, wp2) = floor_proj[i2];
+            let area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);
+            if area.abs() < 1e-4 {
+                continue;
+            }
+            let inv_area = 1.0 / area;
+            let min_x = (p0[0].min(p1[0]).min(p2[0]).floor() as i32).clamp(0, fw - 1);
+            let max_x = (p0[0].max(p1[0]).max(p2[0]).ceil() as i32).clamp(0, fw - 1);
+            let min_y = (p0[1].min(p1[1]).min(p2[1]).floor() as i32).clamp(0, fh - 1);
+            let max_y = (p0[1].max(p1[1]).max(p2[1]).ceil() as i32).clamp(0, fh - 1);
+            for py in min_y..=max_y {
+                let fy = py as f32 + 0.5;
+                let row = (py as u32 * w) as usize;
+                for px in min_x..=max_x {
+                    let fx = px as f32 + 0.5;
+                    let w0 = ((p1[0] - fx) * (p2[1] - fy) - (p2[0] - fx) * (p1[1] - fy)) * inv_area;
+                    let w1 = ((p2[0] - fx) * (p0[1] - fy) - (p0[0] - fx) * (p2[1] - fy)) * inv_area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4 {
+                        continue;
+                    }
+                    let depth = w0 * p0[2] + w1 * p1[2] + w2 * p2[2];
+                    let idx = row + px as usize;
+                    if depth >= zbuf[idx] {
+                        continue;
+                    }
+                    let wp = [
+                        w0 * wp0[0] + w1 * wp1[0] + w2 * wp2[0],
+                        w0 * wp0[1] + w1 * wp1[1] + w2 * wp2[1],
+                        w0 * wp0[2] + w1 * wp1[2] + w2 * wp2[2],
+                    ];
+                    let sh = sample_shadow_pcf(wp);
+                    if sh > 0.02 {
+                        zbuf[idx] = depth;
+                        let rad_fade = (1.0 - (wp[0].hypot(wp[2]) / 1.45)).clamp(0.0, 1.0);
+                        let a = (sh * 0.72 * rad_fade).clamp(0.0, 0.85);
+                        img.pixels[idx] = LinearPremul {
+                            r: 0.01 * a,
+                            g: 0.012 * a,
+                            b: 0.02 * a,
+                            a,
+                        };
+                    }
+                }
             }
         }
     }

@@ -1058,6 +1058,14 @@ pub enum ItemKind {
     VtuberAvatar {
         config: Box<crate::vtuber_rig::VtuberMeshConfig>,
     },
+    /// v10.0 #58: 決定論 2D Navier-Stokes 流体シミュレーション（煙・炎・インク・プラズマ）
+    FluidSim {
+        config: Box<crate::fluid_cloth::FluidSimConfig>,
+    },
+    /// v10.0 #58: 決定論 PBD クロス物理シミュレーション（バナー・マント・カーテン・旗）
+    ClothSim {
+        config: Box<crate::fluid_cloth::ClothSimConfig>,
+    },
     Precomp {
         scene_id: SceneId,
     },
@@ -1932,6 +1940,12 @@ pub struct Scene {
     /// v9.0 #53: プログラム／プレビュー 2 バスライブスイッチャー＆NLE 同時収録設定
     #[serde(default)]
     pub live_switcher: crate::live_switcher::LiveSwitcherConfig,
+    /// v10.0 #57: 360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ ステレオスコピック空間 3D 設定
+    #[serde(default)]
+    pub spatial_video: crate::spatial_video::SpatialVideoConfig,
+    /// v10.0 #58: 3D シャドウマップ（PCF ソフトシャドウ）＆ Equirectangular HDRI IBL 環境照明設定
+    #[serde(default)]
+    pub lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig,
     pub layers: Vec<Layer>,
 }
 
@@ -1959,6 +1973,8 @@ impl Scene {
             adr_session: crate::v80_vfx::AdrSessionConfig::default(),
             spatial_bus: crate::v80_vfx::SpatialBusConfig::default(),
             live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
+            spatial_video: crate::spatial_video::SpatialVideoConfig::default(),
+            lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig::default(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),
@@ -2076,6 +2092,9 @@ pub struct Project {
     /// v9.0 #56: ローカル スマート DAM 索引データベース（代表色/BPM/LUFS/SHA-256 指紋）
     #[serde(default)]
     pub smart_dam: crate::smart_dam::SmartDamIndex,
+    /// v10.0 #60: LAN 分散レンダーファーム設定（HMAC-SHA256 チャンク分散＆並列結合）
+    #[serde(default)]
+    pub render_farm: crate::cinema_os::RenderFarmConfig,
 }
 
 impl Project {
@@ -2096,6 +2115,7 @@ impl Project {
             favorite_fonts: Vec::new(),
             hardware_ctrl: crate::hardware_ctrl::HardwareControllerConfig::default(),
             smart_dam: crate::smart_dam::SmartDamIndex::default(),
+            render_farm: crate::cinema_os::RenderFarmConfig::default(),
         }
     }
 

@@ -2,6 +2,7 @@ pub mod animation;
 pub mod broadcast_qc;
 pub mod cache;
 pub mod camera;
+pub mod cinema_os;
 pub mod collab;
 pub mod color_mgmt;
 pub mod command;
@@ -12,6 +13,7 @@ pub mod delivery;
 pub mod encoding;
 pub mod expression;
 pub mod finishing;
+pub mod fluid_cloth;
 pub mod folder;
 pub mod generative;
 pub mod hardware_ctrl;
@@ -20,6 +22,7 @@ pub mod interop;
 pub mod kinetic_sub;
 pub mod lipsync;
 pub mod live_switcher;
+pub mod mocap_retarget;
 pub mod motion_foundry;
 pub mod multi_deliver;
 pub mod multicam;
@@ -34,6 +37,7 @@ pub mod scene3d;
 pub mod script_import;
 pub mod settings;
 pub mod smart_dam;
+pub mod spatial_video;
 pub mod speed_ramp;
 pub mod studio_hub;
 pub mod template;
@@ -52,6 +56,13 @@ pub use broadcast_qc::{
 };
 pub use cache::{CacheError, PersistentFrameCache, PrecompCacheManager, content_hash_hex};
 pub use camera::{Camera3D, Light3D, Light3DType, Projected3D, Transform3D};
+pub use cinema_os::{
+    AbVariantSummary, EditVariantStyle, FarmChunkStatus, RenderFarmChunk, RenderFarmConfig,
+    RenderFarmCoordinatorServer, RenderFarmWorkerNode, RetentionDiagnostics, RetentionPoint,
+    ShotFraming, StoryboardBeat, StoryboardPlan, analyze_viewer_retention,
+    build_ab_edit_variant_command, build_farm_concat_manifest, build_storyboard_animatic_commands,
+    hmac_sha256_hex, parse_script_to_storyboard, plan_render_farm_chunks, verify_chunk_hmac,
+};
 pub use collab::{
     ConflictKind, ConflictResolution, DiffChangeKind, ItemDiff, LayerDiff, MarkerDiff,
     MergeConflict, ProjectDiff, ReviewComment, ReviewReply, ReviewSource, ReviewStatus, SceneDiff,
@@ -89,6 +100,11 @@ pub use expression::{
 pub use finishing::{
     CinemaFinishingConfig, LetterboxAspect, export_cmx3600_edl, export_fcpxml_v10,
 };
+pub use fluid_cloth::{
+    ClothMeshState, ClothPreset, ClothSimConfig, FluidField2D, FluidPreset, FluidSimConfig,
+    HdriEnvPreset, Lighting3DAdvConfig, sample_hdri_ibl, simulate_cloth_pbd_at_time,
+    simulate_fluid_2d_at_time,
+};
 pub use folder::{AssetResolution, FolderError, HistoryEntry, ProjectFolder};
 pub use generative::{GenerativeBgConfig, GenerativeBgPreset};
 pub use hardware_ctrl::{
@@ -120,6 +136,12 @@ pub use live_switcher::{
     LiveSourceChannel, LiveSwitchEvent, LiveSwitcherConfig, StingerConfig, StingerKind,
     StreamProtocol, StreamTargetConfig, build_live_switcher_veproj_commands,
     export_live_session_veproj_json,
+};
+pub use mocap_retarget::{
+    BvhChannel, BvhClip, BvhJoint, MocapPreset, RetargetConfig, RetargetedPoseFrame,
+    SilhouettePoseFrame, build_mocap_retarget_bake_commands, builtin_sample_bvh,
+    evaluate_bvh_world_joints, extract_silhouette_pose_from_rgba8, parse_bvh,
+    retarget_bvh_to_rig2d, retarget_silhouette_sequence_to_rig2d,
 };
 pub use motion_foundry::{
     SvgMorphConfig, SvgShapePreset, TextOnPathConfig, WarpDisplaceConfig, WarpPreset,
@@ -183,6 +205,11 @@ pub use smart_dam::{
     SmartDamIndex, build_relink_assets_command, compute_file_head_fingerprint,
     cosine_similarity_16, evaluate_smart_bin, extract_visual_features_from_rgba8,
     find_similar_shots, relink_missing_assets_from_dir,
+};
+pub use spatial_video::{
+    GyroOrientationSample, Projection360Mode, Spatial360Preset, SpatialVideoConfig, StereoLayout,
+    build_spatial_preset_command, compass_heading_label, equirect_uv_for_ray,
+    evaluate_horizon_locked_euler, project_screen_to_equirect_uv, rotate_ray_ypr,
 };
 pub use speed_ramp::{
     DetectedSceneCut, SpeedRampConfig, SpeedRampKnot, SpeedRampPreset, build_scene_cut_commands,

@@ -786,3 +786,102 @@ fn golden_v90_vtuber_mesh_verlet_and_live_stinger_determinism() {
         "Live stinger diagonal wipe must visibly transform frame at progress=0.5"
     );
 }
+
+#[test]
+fn golden_v100_spatial_360_fluid_cloth_ibl_and_mocap_determinism() {
+    let mut proj = Project::new(
+        "GoldenV100",
+        ProjectSettings {
+            width: 160,
+            height: 96,
+            fps: ve_core::FrameRate::FPS_30,
+            ..ProjectSettings::default()
+        },
+    );
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        scene.lighting_3d_adv = ve_core::Lighting3DAdvConfig {
+            shadow_map_enabled: true,
+            shadow_map_size: 96,
+            hdri_ibl_enabled: true,
+            hdri_preset: ve_core::HdriEnvPreset::GoldenSunset,
+            ground_catcher_enabled: true,
+            ..ve_core::Lighting3DAdvConfig::default()
+        };
+
+        let mut fluid = TimelineItem::new(
+            "FluidFlame",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::FluidSim {
+                config: Box::new(ve_core::FluidSimConfig {
+                    width: 84.0,
+                    height: 84.0,
+                    grid_w: 28,
+                    grid_h: 28,
+                    ..ve_core::FluidSimConfig::from_preset(ve_core::FluidPreset::BonfireFlame)
+                }),
+            },
+        );
+        fluid.transform.x = 42.0;
+        fluid.transform.y = 48.0;
+        scene.layers[0].items.push(fluid);
+
+        let mut cloth = TimelineItem::new(
+            "ClothBanner",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::ClothSim {
+                config: Box::new(ve_core::ClothSimConfig {
+                    width: 80.0,
+                    height: 60.0,
+                    cols: 8,
+                    rows: 6,
+                    ..ve_core::ClothSimConfig::from_preset(ve_core::ClothPreset::CyberFlag)
+                }),
+            },
+        );
+        cloth.transform.x = 118.0;
+        cloth.transform.y = 48.0;
+        scene.layers[1].items.push(cloth);
+
+        let mut mesh = TimelineItem::new(
+            "CubeShadowIBL",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(3.0),
+            ItemKind::Mesh3D {
+                config: ve_core::Mesh3DConfig {
+                    width: 64.0,
+                    height: 64.0,
+                    ..ve_core::Mesh3DConfig::default()
+                },
+            },
+        );
+        mesh.transform.x = 80.0;
+        mesh.transform.y = 48.0;
+        scene.layers[2].items.push(mesh);
+
+        scene.spatial_video =
+            ve_core::SpatialVideoConfig::from_preset(ve_core::Spatial360Preset::Anaglyph3DReview);
+    }
+
+    let t = RationalTime::from_seconds(0.8);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let f1 = g1
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap();
+    let f2 = g2
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap();
+    let rgba1 = f1.to_rgba8_srgb();
+    assert_eq!(
+        rgba1,
+        f2.to_rgba8_srgb(),
+        "v10.0 fluid + cloth + 3D shadow/IBL + spatial 3D must be bit-for-bit deterministic"
+    );
+
+    // レンダリング結果からシルエット 2D 姿勢抽出も決定論的に動作する
+    let pose = ve_core::extract_silhouette_pose_from_rgba8(&rgba1, f1.width, f1.height, 0.08, 0.8);
+    assert!(pose.confidence > 0.1);
+}

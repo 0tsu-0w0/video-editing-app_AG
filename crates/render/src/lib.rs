@@ -16,6 +16,7 @@ pub mod rig_render;
 pub mod sprite;
 pub mod text;
 pub mod v09_fx;
+pub mod v100_render;
 pub mod v60_render;
 pub mod v80_render;
 pub mod v90_render;
@@ -59,7 +60,8 @@ pub use hot_shader::{
 pub use mask_tracker::{apply_bezier_masks, track_point_across_frames, track_point_in_scene};
 pub use mesh3d_render::{
     CameraTrack3DSample, analyze_3d_camera_track, build_3d_camera_track_command,
-    render_mesh_data_pbr, render_mesh3d_item,
+    render_mesh_data_pbr, render_mesh_data_pbr_with_adv, render_mesh3d_item,
+    render_mesh3d_item_with_adv,
 };
 pub use node_eval::{LayerRenderPacket, evaluate_node_composite_graph};
 pub use pipeline::{
@@ -83,6 +85,9 @@ pub use v80_render::{
     snap_roto_vertices_to_edges, solve_quad_to_quad_homography, track_planar_quad_in_scene,
 };
 pub use v90_render::{draw_live_tally_hud, render_live_stinger_transition, render_vtuber_avatar};
+pub use v100_render::{
+    render_cloth_sim_item, render_fluid_sim_item, render_spatial_360_and_stereo_pass,
+};
 pub use vfx_track::{
     CameraMotionSample, StabilizeConfig, analyze_camera_shake, apply_corner_pin,
     build_stabilize_commands, compute_shake_compensation, estimate_global_frame_motion, invert_3x3,
