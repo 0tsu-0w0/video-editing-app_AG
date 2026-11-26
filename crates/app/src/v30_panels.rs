@@ -97,6 +97,7 @@ impl Default for V30PanelsState {
 }
 
 impl V30PanelsState {
+    #[allow(dead_code)]
     pub fn show_v30_window(
         &mut self,
         ctx: &egui::Context,
@@ -157,7 +158,7 @@ impl V30PanelsState {
     // Tab 1: #29 Full GPU Compute Pipeline & 4K Benchmark
     // =========================================================================
 
-    fn show_gpu_tab(&mut self, ui: &mut egui::Ui) {
+    pub fn show_gpu_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("⚡ フル GPU コンピュートパイプライン（Vulkan / Metal / DX12 WGSL）");
         let caps = self
             .gpu_caps
@@ -260,7 +261,7 @@ impl V30PanelsState {
     // Tab 2: #30 3D Mesh / glTF 2.0 Scene Composition & 3D Camera Tracker
     // =========================================================================
 
-    fn show_scene3d_tab(
+    pub fn show_scene3d_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -581,7 +582,7 @@ impl V30PanelsState {
     // Tab 3: #31 Offline Multi-Language AI Dubbing & Phoneme Lip-Sync
     // =========================================================================
 
-    fn show_dubbing_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn show_dubbing_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut changed = false;
         ui.heading("🎙 オフライン多言語 AI 吹替 ＆ 音声リップシンク自動生成");
         ui.colored_label(
@@ -721,7 +722,7 @@ impl V30PanelsState {
     // Tab 4: #32 Real-Time P2P / LAN CRDT Multi-User Collab
     // =========================================================================
 
-    fn show_crdt_tab(
+    pub fn show_crdt_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,

@@ -135,6 +135,7 @@ impl Default for V21PanelsState {
 impl V21PanelsState {
     /// v2.1 シネマ＆クリエイタースタジオウィンドウを描画する。
     /// プロジェクト状態が更新された場合は `true` を返す（プレビュー再描画用）。
+    #[allow(dead_code)]
     pub fn show_cinema_creator_window(
         &mut self,
         ctx: &egui::Context,
@@ -197,7 +198,7 @@ impl V21PanelsState {
     // Tab 1: #25 Pro Color (RGB Tone Curves + HSL Qualifier + Auto Color Match)
     // =========================================================================
 
-    fn show_pro_color_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn show_pro_color_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut changed = false;
         let mut grade = {
             let g = session.lock().unwrap();
@@ -629,7 +630,7 @@ impl V21PanelsState {
     // Tab 2: #26 Auto Video Stabilizer + Planar 4-Point Corner Pin
     // =========================================================================
 
-    fn show_vfx_tab(
+    pub fn show_vfx_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -971,7 +972,7 @@ impl V21PanelsState {
     // Tab 3: #27 3D Spatial Audio Radar + Mastering Suite (Multiband + True-Peak)
     // =========================================================================
 
-    fn show_spatial_master_tab(
+    pub fn show_spatial_master_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -1249,7 +1250,7 @@ impl V21PanelsState {
     // Tab 4: #28 Dynamic Kinetic Subtitles + Multi-Language Localization CSV
     // =========================================================================
 
-    fn show_kinetic_localize_tab(
+    pub fn show_kinetic_localize_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,

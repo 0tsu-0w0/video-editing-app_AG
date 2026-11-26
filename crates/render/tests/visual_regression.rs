@@ -540,3 +540,95 @@ fn golden_v60_data_chart_and_vfx_paint_determinism() {
         "v6.0 DataChart bar growth + Write-On VFX paint must progress over time: diff={diff}"
     );
 }
+
+#[test]
+fn golden_v70_frame_pool_reuse_interval_tree_and_ab_split_determinism() {
+    let mut proj = build_golden_test_project();
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        // 120 クリップ追加して RenderGraph の $O(\log N)$ 区間木パス (>= 64 items) を発火させる
+        for i in 0..120 {
+            let mut bar = TimelineItem::new(
+                format!("IdxClip_{i}"),
+                RationalTime::from_seconds(i as f64 * 0.2),
+                RationalTime::from_seconds(0.35),
+                ItemKind::Shape {
+                    shape: ShapeKind::Rectangle,
+                    width: 24.0,
+                    height: 16.0,
+                    color: RgbaColor {
+                        r: 0.25,
+                        g: 0.85,
+                        b: 0.65,
+                        a: 0.9,
+                    },
+                },
+            );
+            bar.transform.x = ((i * 11) % 120) as f32;
+            bar.transform.y = ((i * 7) % 60) as f32;
+            scene.layers[1].items.push(bar);
+        }
+        scene.ab_compare = ve_core::AbCompareConfig {
+            mode: ve_core::AbCompareMode::VerticalSplit,
+            reference: ve_core::AbReferenceSource::UngradedBypass,
+            split_ratio: 0.5,
+            show_divider: true,
+            ..ve_core::AbCompareConfig::default()
+        };
+    }
+
+    let t = RationalTime::from_seconds(1.1);
+    let mut g_linear = RenderGraph::new(); // active_revision == 0 -> 線形走査
+    let mut g_indexed = RenderGraph::new();
+    g_indexed.active_revision = 42; // active_revision > 0 -> 区間木 $O(\log N)$ パス
+
+    let out_lin = g_linear
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let out_idx1 = g_indexed
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap()
+        .to_rgba8_srgb();
+    let out_idx2 = g_indexed
+        .render_project_scene(&proj, proj.active_scene_id, t, false)
+        .unwrap()
+        .to_rgba8_srgb();
+
+    // 1. 区間木パスと線形走査パス、および 2 回目のフレームプール再利用描画が 1 バイトの誤差もなく完全一致すること
+    assert_eq!(out_lin, out_idx1);
+    assert_eq!(out_idx1, out_idx2);
+    assert!(
+        g_indexed.frame_pool.metrics(0).pool_reuses >= 4,
+        "2nd render pass must reuse pooled layer canvases"
+    );
+
+    // 2. A/B スプリット比較ビュー (Before Ungraded vs After Graded) が決定論的かつ左右でグレーディング差を可視化すること
+    let ab1 = ve_render::render_ab_compare_scene(
+        &mut g_indexed,
+        &proj,
+        proj.active_scene_id,
+        t,
+        160,
+        90,
+        None,
+    )
+    .unwrap()
+    .to_rgba8_srgb();
+    let ab2 = ve_render::render_ab_compare_scene(
+        &mut g_linear,
+        &proj,
+        proj.active_scene_id,
+        t,
+        160,
+        90,
+        None,
+    )
+    .unwrap()
+    .to_rgba8_srgb();
+    assert_eq!(ab1, ab2);
+    assert_ne!(
+        ab1, out_idx1,
+        "A/B split must differ from full graded-only frame"
+    );
+}

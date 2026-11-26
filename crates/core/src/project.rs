@@ -1861,6 +1861,9 @@ pub struct Scene {
     /// v2.0 #24: タイムコード付きレビューコメント（Frame.io / YouTube 互換）
     #[serde(default)]
     pub review_comments: Vec<crate::collab::ReviewComment>,
+    /// v7.0 #48: A/B スプリット比較ビュー設定（垂直/水平/斜めワイプ・差分強調・基準ソース）
+    #[serde(default)]
+    pub ab_compare: crate::studio_hub::AbCompareConfig,
     pub layers: Vec<Layer>,
 }
 
@@ -1883,6 +1886,7 @@ impl Scene {
             markers: Vec::new(),
             node_graph: crate::node_graph::NodeCompositeGraph::default(),
             review_comments: Vec::new(),
+            ab_compare: crate::studio_hub::AbCompareConfig::default(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),
@@ -1983,6 +1987,9 @@ pub struct Project {
     pub name: String,
     pub settings: ProjectSettings,
     pub assets: Vec<AssetRef>,
+    /// v7.0 #48: アセット別のリール名・SMPTE 開始タイムコード・プロキシ連携メタデータ
+    #[serde(default)]
+    pub conform_meta: BTreeMap<AssetId, crate::conform::AssetConformMeta>,
     pub scenes: Vec<Scene>,
     pub active_scene_id: SceneId,
     /// AviUtl2 名前付きカラーパレット
@@ -2004,6 +2011,7 @@ impl Project {
             name: name.into(),
             settings,
             assets: Vec::new(),
+            conform_meta: BTreeMap::new(),
             scenes: vec![main_scene],
             active_scene_id,
             color_palette: ColorPalette::default(),

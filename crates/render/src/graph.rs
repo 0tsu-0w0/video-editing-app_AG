@@ -69,6 +69,12 @@ pub struct RenderGraph {
     pub plugins: PluginRegistry,
     /// Phase 4: カスタム WGSL シェーダーのホットリロード管理
     pub hot_shaders: ShaderHotReloader,
+    /// v7.0 #47: 4K / 8K レイヤー合成キャンバスのゼロ再確保プール（LRU Eviction 対応）
+    pub frame_pool: crate::gpu_v70::ResidentFramePool,
+    /// v7.0 #48: 10,000+ クリップシーン向け $O(\log N)$ 区間木キャッシュ
+    pub interval_index: ve_core::CachedSceneIntervalIndex,
+    /// `CommandBus::revision()` を同期すると 10,000+ クリップでも毎フレーム再構築ゼロで区間木を再利用する
+    pub active_revision: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
 }
@@ -103,6 +109,9 @@ impl RenderGraph {
             asset_waveforms: HashMap::new(),
             plugins: PluginRegistry::with_builtins(),
             hot_shaders: ShaderHotReloader::new(),
+            frame_pool: crate::gpu_v70::ResidentFramePool::default(),
+            interval_index: ve_core::CachedSceneIntervalIndex::default(),
+            active_revision: 0,
             cache_hits: 0,
             cache_misses: 0,
         }
@@ -183,6 +192,8 @@ impl RenderGraph {
         self.psd_cache.clear();
         self.lut_cache.clear();
         self.proxy_paths.clear();
+        self.frame_pool.clear();
+        self.interval_index.invalidate();
     }
 
     /// `.cube` 3D LUT を組み込みプリセット / プロジェクト `luts/` / 絶対パスから解決してキャッシュする
@@ -589,6 +600,22 @@ impl RenderGraph {
             Vec::new();
         let mut group_passes: Vec<(usize, usize, Transform2D)> = Vec::new();
 
+        // v7.0 #48: 大規模タイムライン（64+ クリップ）では $O(\log N)$ 区間木で現在時刻のアクティブクリップのみを抽出
+        let total_scene_items: usize = scene.layers.iter().map(|l| l.items.len()).sum();
+        let prefiltered_active_per_layer: Option<Vec<Vec<usize>>> =
+            if depth == 0 && total_scene_items >= 64 && self.active_revision > 0 {
+                let idx = self
+                    .interval_index
+                    .get_or_build(scene, self.active_revision);
+                Some(
+                    (0..scene.layers.len())
+                        .map(|l_i| idx.query_layer_indices_at(l_i, time))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
         // Step 1: 各レイヤーのアクティブオブジェクトを描画し、個別エフェクト・3Dカメラ透視投影/DoFを適用
         for (layer_idx, layer) in scene.layers.iter().enumerate() {
             if !layer.visible {
@@ -598,10 +625,18 @@ impl RenderGraph {
             let mut layer_blend = BlendMode::Normal;
             let mut layer_depth = 1000.0_f32;
 
-            for item in &layer.items {
-                if !item.contains(time) {
-                    continue;
-                }
+            let active_indices: Vec<usize> = match prefiltered_active_per_layer.as_ref() {
+                Some(per_layer) => per_layer[layer_idx].clone(),
+                None => layer
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, it)| it.contains(time).then_some(idx))
+                    .collect(),
+            };
+
+            for item_idx in active_indices {
+                let item = &layer.items[item_idx];
                 let expr_audio_bands = if item_expressions_use_audio(item) {
                     let audio_layer = if item.audio_reactive.enabled {
                         item.audio_reactive.linked_audio_layer
@@ -791,7 +826,11 @@ impl RenderGraph {
                             }
 
                             let dst = layer_buf.get_or_insert_with(|| {
-                                LinearImage::new(w, h, LinearPremul::TRANSPARENT)
+                                self.frame_pool.acquire_linear_canvas(
+                                    w,
+                                    h,
+                                    LinearPremul::TRANSPARENT,
+                                )
                             });
                             if let Some((shadow_img, sx_pos, sy_pos)) = shadow_to_draw {
                                 dst.blend_with_mode(
@@ -841,6 +880,9 @@ impl RenderGraph {
                 &self.plugins,
                 transparent_bg,
             ) {
+                for (buf, _, _) in layer_outputs.into_iter().flatten() {
+                    self.frame_pool.release_linear_canvas(buf);
+                }
                 return node_canvas;
             }
         }
@@ -902,24 +944,23 @@ impl RenderGraph {
             }
         }
 
-        // 最終レイヤー合成（3Dカメラ有効時は奥から手前へ Z ソート）
+        // 最終レイヤー合成（3Dカメラ有効時は奥から手前へ Z ソート）＋ 使用済みレイヤーバッファのプール返却
         let bg = if transparent_bg {
             LinearPremul::TRANSPARENT
         } else {
             LinearPremul::from_srgb_straight(RgbaColor::BLACK)
         };
         let mut canvas = LinearImage::new(w, h, bg);
-        let mut draw_list: Vec<(usize, LinearImage, BlendMode, f32)> = layer_outputs
-            .into_iter()
-            .enumerate()
-            .filter_map(|(idx, opt)| {
+        let mut draw_list: Vec<(usize, LinearImage, BlendMode, f32)> = Vec::new();
+        for (idx, opt) in layer_outputs.into_iter().enumerate() {
+            if let Some((img, bm, d)) = opt {
                 if consumed_matte_layers[idx] {
-                    None
+                    self.frame_pool.release_linear_canvas(img);
                 } else {
-                    opt.map(|(img, bm, d)| (idx, img, bm, d))
+                    draw_list.push((idx, img, bm, d));
                 }
-            })
-            .collect();
+            }
+        }
 
         if scene.camera.enabled {
             // 奥（camera_depth が大きい）から手前（小さい）の順に描画
@@ -932,6 +973,7 @@ impl RenderGraph {
 
         for (_, layer_img, blend_mode, _) in draw_list {
             canvas.blend_with_mode(&layer_img, 0, 0, 1.0, blend_mode);
+            self.frame_pool.release_linear_canvas(layer_img);
         }
 
         canvas

@@ -359,6 +359,7 @@ pub fn build_shorts_clip_scene_command(
         markers: Vec::new(),
         node_graph: crate::node_graph::NodeCompositeGraph::default(),
         review_comments: Vec::new(),
+        ab_compare: crate::studio_hub::AbCompareConfig::default(),
         layers: new_layers,
     };
 

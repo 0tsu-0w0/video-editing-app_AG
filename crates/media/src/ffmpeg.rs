@@ -54,6 +54,10 @@ pub struct MediaProbe {
     pub audio_sample_rate: Option<u32>,
     pub audio_channels: Option<u16>,
     pub color_space: Option<String>,
+    /// v7.0 #48: コンテナ／ストリーム埋め込み SMPTE 開始タイムコード（例: `"01:00:00:00"`）
+    pub start_timecode: Option<String>,
+    /// v7.0 #48: カメラリール名・テープ名タグ（`reel_name` / `com.apple.proapps.reel` 等）
+    pub reel_name: Option<String>,
 }
 
 /// v1.0 #19: 書き出しカラーマネージメント（Rec.709 SDR / HDR10 PQ 10-bit）
@@ -224,6 +228,8 @@ struct FfprobeOutput {
 #[derive(Deserialize)]
 struct FfprobeFormat {
     duration: Option<String>,
+    #[serde(default)]
+    tags: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -235,6 +241,25 @@ struct FfprobeStream {
     sample_rate: Option<String>,
     channels: Option<u16>,
     color_space: Option<String>,
+    #[serde(default)]
+    tags: std::collections::BTreeMap<String, String>,
+}
+
+fn lookup_tag_ci(
+    tags: &std::collections::BTreeMap<String, String>,
+    keys: &[&str],
+) -> Option<String> {
+    for &wanted in keys {
+        for (k, v) in tags {
+            if k.eq_ignore_ascii_case(wanted) {
+                let t = v.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_rational_fps(s: &str) -> Option<FrameRate> {
@@ -277,6 +302,16 @@ impl FfmpegCli {
         }
 
         let parsed: FfprobeOutput = serde_json::from_slice(&output.stdout)?;
+        let mut start_timecode = parsed
+            .format
+            .as_ref()
+            .and_then(|f| lookup_tag_ci(&f.tags, &["timecode", "SMPTE_TIMECODE"]));
+        let mut reel_name = parsed.format.as_ref().and_then(|f| {
+            lookup_tag_ci(
+                &f.tags,
+                &["reel_name", "com.apple.proapps.reel", "tape", "reel"],
+            )
+        });
         let duration_sec = parsed
             .format
             .and_then(|f| f.duration)
@@ -291,6 +326,15 @@ impl FfmpegCli {
         let mut color_space = None;
 
         for stream in parsed.streams {
+            if start_timecode.is_none() {
+                start_timecode = lookup_tag_ci(&stream.tags, &["timecode", "SMPTE_TIMECODE"]);
+            }
+            if reel_name.is_none() {
+                reel_name = lookup_tag_ci(
+                    &stream.tags,
+                    &["reel_name", "com.apple.proapps.reel", "tape", "reel"],
+                );
+            }
             match stream.codec_type.as_deref() {
                 Some("video") if width.is_none() => {
                     width = stream.width;
@@ -314,6 +358,8 @@ impl FfmpegCli {
             audio_sample_rate,
             audio_channels,
             color_space,
+            start_timecode,
+            reel_name,
         })
     }
 

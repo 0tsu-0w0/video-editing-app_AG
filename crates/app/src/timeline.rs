@@ -5,13 +5,14 @@ use ve_audio::{
     AudioGraph, BeatDetectionConfig, WaveformPeaks, detect_audio_beats, detect_beats_from_waveform,
 };
 use ve_core::{
-    AlignMode, CommandSource, EditCommand, FilterTargetScope, ItemId, ItemKind, JumpCutConfig,
-    ParticleConfig, RationalTime, RgbaColor, SceneId, SelectDirection, TextAnimator, TimelineItem,
-    TimelineMarker, Transform2D, TransitionKind, VectorShapeConfig, build_align_commands,
-    build_beat_cut_commands, build_beat_markers_command, build_close_gaps_commands,
-    build_fit_duration_to_layer_commands, build_jump_cut_commands, build_replace_text_commands,
-    build_ripple_delete_commands, build_snap_to_beats_commands, detect_speech_intervals_from_rms,
-    format_youtube_chapters, search_text_items, select_items_from_time, select_layer_items,
+    AlignMode, CachedSceneIntervalIndex, CommandSource, EditCommand, FilterTargetScope, ItemId,
+    ItemKind, JumpCutConfig, ParticleConfig, RationalTime, RgbaColor, SceneId, SelectDirection,
+    TextAnimator, TimelineItem, TimelineMarker, Transform2D, TransitionKind, VectorShapeConfig,
+    build_align_commands, build_beat_cut_commands, build_beat_markers_command,
+    build_close_gaps_commands, build_fit_duration_to_layer_commands, build_jump_cut_commands,
+    build_replace_text_commands, build_ripple_delete_commands, build_snap_to_beats_commands,
+    detect_speech_intervals_from_rms, format_youtube_chapters, search_text_items,
+    select_items_from_time, select_layer_items,
 };
 use ve_mcp::EditorSession;
 
@@ -73,6 +74,8 @@ pub struct TimelineState {
     pub search_status: String,
     // A-3: レイヤー常駐設定エディタ
     pub editing_layer_index: Option<usize>,
+    // v7.0 #48: 10,000+ クリップ区間木 O(log N) キャッシュ
+    pub interval_index: CachedSceneIntervalIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +136,7 @@ impl Default for TimelineState {
             search_match_index: 0,
             search_status: String::new(),
             editing_layer_index: None,
+            interval_index: CachedSceneIntervalIndex::default(),
         }
     }
 }
@@ -1640,21 +1644,54 @@ impl TimelineState {
             Some(DragOp { item_id, .. }) => [*item_id].into_iter().collect(),
             None => BTreeSet::new(),
         };
+        // v7.0 #48: 大規模タイムライン（64+ クリップ）は区間木 O(log N + K) で表示窓とスナップ候補を高速抽出
+        let vis_span_sec = ((canvas_rect.right() - track_origin_x).max(1.0) / pps.max(1.0)) as f64;
+        let vis_start_rt = RationalTime::from_seconds((scroll_sec - 0.5).max(0.0));
+        let vis_end_rt = RationalTime::from_seconds(scroll_sec + vis_span_sec + 0.5);
+        let snap_start_rt = RationalTime::from_seconds((scroll_sec - 2.0).max(0.0));
+        let snap_end_rt = RationalTime::from_seconds(scroll_sec + vis_span_sec + 2.0);
+        let rev_key = session.bus.revision().max(1);
+
         let mut snap_targets: Vec<f64> = vec![session.playhead.as_seconds()];
         if self.beat_snap_enabled {
             for &(b_sec, _) in &self.beat_grid {
                 snap_targets.push(b_sec);
             }
         }
+        let mut visible_indices_by_layer: Option<Vec<Vec<usize>>> = None;
         if let Some(scene) = session.project.active_scene() {
             for m in &scene.markers {
                 snap_targets.push(m.time.as_seconds());
             }
-            for layer in &scene.layers {
-                for item in &layer.items {
-                    if !dragged_ids.contains(&item.id) {
+            let total_scene_items: usize = scene.layers.iter().map(|l| l.items.len()).sum();
+            if total_scene_items >= 64 {
+                let idx = self.interval_index.get_or_build(scene, rev_key);
+                for hit in idx.query_range(snap_start_rt, snap_end_rt) {
+                    if let Some(item) = scene
+                        .layers
+                        .get(hit.layer_index)
+                        .and_then(|l| l.items.get(hit.item_index))
+                        && !dragged_ids.contains(&item.id)
+                    {
                         snap_targets.push(item.start.as_seconds());
                         snap_targets.push(item.end().as_seconds());
+                    }
+                }
+                let mut per_layer = Vec::with_capacity(scene.layers.len());
+                for layer_idx in 0..scene.layers.len() {
+                    let mut indices =
+                        idx.query_layer_indices_in_range(layer_idx, vis_start_rt, vis_end_rt);
+                    indices.sort_unstable();
+                    per_layer.push(indices);
+                }
+                visible_indices_by_layer = Some(per_layer);
+            } else {
+                for layer in &scene.layers {
+                    for item in &layer.items {
+                        if !dragged_ids.contains(&item.id) {
+                            snap_targets.push(item.start.as_seconds());
+                            snap_targets.push(item.end().as_seconds());
+                        }
                     }
                 }
             }
@@ -1783,7 +1820,16 @@ impl TimelineState {
                     Stroke::new(1.0, Color32::from_rgb(42, 46, 56)),
                 );
 
-                for item in &layer.items {
+                let culled_indices = visible_indices_by_layer
+                    .as_ref()
+                    .and_then(|v| v.get(layer_idx));
+                let iter_len = culled_indices.map_or(layer.items.len(), Vec::len);
+                for slot in 0..iter_len {
+                    let Some(item) = culled_indices
+                        .map_or_else(|| layer.items.get(slot), |idxs| layer.items.get(idxs[slot]))
+                    else {
+                        continue;
+                    };
                     let x0 = track_origin_x + (item.start.as_seconds() - scroll_sec) as f32 * pps;
                     let x1 = (track_origin_x + (item.end().as_seconds() - scroll_sec) as f32 * pps)
                         .max(x0 + 8.0);
@@ -2303,7 +2349,8 @@ impl TimelineState {
             let row_h = (bar_rect.height() / l_cnt).max(2.0);
             for (l_idx, layer) in scene.layers.iter().enumerate() {
                 let y = bar_rect.top() + l_idx as f32 * row_h;
-                for item in &layer.items {
+                let step = (layer.items.len() / 1000).max(1);
+                for item in layer.items.iter().step_by(step) {
                     let x0 = bar_rect.left()
                         + (item.start.as_seconds() / span) as f32 * bar_rect.width();
                     let x1 = (bar_rect.left()

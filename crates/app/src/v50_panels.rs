@@ -81,6 +81,7 @@ impl Default for V50PanelsState {
 }
 
 impl V50PanelsState {
+    #[allow(dead_code)]
     pub fn show_v50_window(
         &mut self,
         ctx: &egui::Context,
@@ -140,7 +141,7 @@ impl V50PanelsState {
         mutated
     }
 
-    fn show_rig_tab(
+    pub fn show_rig_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -276,7 +277,7 @@ impl V50PanelsState {
         mutated
     }
 
-    fn show_bgm_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn show_bgm_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut mutated = false;
         ui.heading("🎼 オフライン自動プロシージャル BGM コンポーザー (#38)");
         ui.label(
@@ -398,7 +399,7 @@ impl V50PanelsState {
         mutated
     }
 
-    fn show_speed_ramp_tab(
+    pub fn show_speed_ramp_tab(
         &mut self,
         ui: &mut egui::Ui,
         session: &SharedEditorSession,
@@ -552,7 +553,7 @@ impl V50PanelsState {
         mutated
     }
 
-    fn show_finishing_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
+    pub fn show_finishing_tab(&mut self, ui: &mut egui::Ui, session: &SharedEditorSession) -> bool {
         let mut mutated = false;
         let Ok(cur_cfg) = session.lock().map(|s| {
             s.project

@@ -9,3 +9,4 @@ pub use director::{
 };
 pub use server::{EmbeddedMcpServer, McpServerError};
 pub use session::{EditorSession, SharedEditorSession};
+pub use tools::{McpDomainSummary, tool_domain_catalog};

@@ -1,7 +1,7 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ve_core::{
-    BezierMask, CommandSource, EditCommand, ItemId, ItemKind, MaskMode, RationalTime, Scene,
-    TimelineItem, Transform2D,
+    AbCompareMode, BezierMask, CommandSource, EditCommand, ItemId, ItemKind, MaskMode,
+    RationalTime, Scene, TimelineItem, Transform2D,
 };
 use ve_mcp::EditorSession;
 
@@ -64,6 +64,8 @@ enum GizmoDrag {
         start_pointer: Pos2,
         initial_pan: Vec2,
     },
+    /// v7.0 #48: A/B スプリット比較ワイプ線の直接ドラッグ
+    AbSplitWipe,
 }
 
 /// プレビューキャンバス直接操作状態（Transform Gizmo・スナップガイド・セーフエリア・ズーム＆パン）
@@ -111,7 +113,12 @@ impl PreviewCanvasState {
             .unwrap_or((1280.0, 720.0));
         let is_vertical = scene_h > scene_w;
 
-        // プレビュー操作ツールバー（ズーム・フィット・ガイド・スナップ）
+        // プレビュー操作ツールバー（ズーム・フィット・ガイド・スナップ・v7.0 A/B 比較）
+        let cur_ab_compare = session
+            .project
+            .active_scene()
+            .map(|s| s.ab_compare.clone())
+            .unwrap_or_default();
         ui.horizontal_wrapped(|ui| {
             if ui.small_button("Fit").clicked() {
                 self.zoom = 1.0;
@@ -129,6 +136,40 @@ impl PreviewCanvasState {
             ui.checkbox(&mut self.show_safe_guides, "📐 セーフ枠");
             ui.checkbox(&mut self.show_rule_of_thirds, "▦ 3分割");
             ui.checkbox(&mut self.snap_to_guides, "🧲 中央吸着");
+            ui.separator();
+            let ab_active = cur_ab_compare.is_active();
+            let ab_label = if ab_active {
+                format!(
+                    "🌓 A/B {:.0}%",
+                    cur_ab_compare.split_ratio.clamp(0.0, 1.0) * 100.0
+                )
+            } else {
+                "🌓 A/B".to_string()
+            };
+            if ui
+                .selectable_label(ab_active, ab_label)
+                .on_hover_text("v7.0 #48: A/B スプリット比較ビュー切替 (Alt+W / キャンバス上のワイプ線をドラッグ可)")
+                .clicked()
+            {
+                let mut next = cur_ab_compare.clone();
+                next.mode = if ab_active {
+                    AbCompareMode::Off
+                } else {
+                    AbCompareMode::VerticalSplit
+                };
+                if session
+                    .bus
+                    .execute(
+                        &mut session.project,
+                        EditCommand::SetAbCompare { ab_compare: next },
+                        CommandSource::Gui,
+                        None,
+                    )
+                    .is_ok()
+                {
+                    modified = true;
+                }
+            }
             ui.separator();
             ui.weak(format!(
                 "{}×{}{}",
@@ -212,6 +253,61 @@ impl PreviewCanvasState {
             draw_rule_of_thirds(&painter, image_rect);
         }
 
+        // v7.0 #48: A/B スプリット比較インタラクティブ ワイプハンドル描画
+        let ab_cfg = session
+            .project
+            .active_scene()
+            .map(|s| s.ab_compare.clone())
+            .unwrap_or_default();
+        let ab_wipe_handle: Option<(Pos2, AbCompareMode)> =
+            if ab_cfg.is_active() && ab_cfg.mode != AbCompareMode::DifferenceAmplified {
+                let r = ab_cfg.split_ratio.clamp(0.02, 0.98);
+                let (knob_pos, glyph) = match ab_cfg.mode {
+                    AbCompareMode::VerticalSplit => (
+                        Pos2::new(
+                            image_rect.left() + r * image_rect.width(),
+                            image_rect.center().y,
+                        ),
+                        "⟷",
+                    ),
+                    AbCompareMode::HorizontalSplit => (
+                        Pos2::new(
+                            image_rect.center().x,
+                            image_rect.top() + r * image_rect.height(),
+                        ),
+                        "⇕",
+                    ),
+                    AbCompareMode::DiagonalSplit => (
+                        Pos2::new(
+                            image_rect.left() + r * image_rect.width(),
+                            image_rect.top() + r * image_rect.height(),
+                        ),
+                        "⤢",
+                    ),
+                    AbCompareMode::Off | AbCompareMode::DifferenceAmplified => unreachable!(),
+                };
+                painter.circle_filled(
+                    knob_pos,
+                    12.0,
+                    Color32::from_rgba_unmultiplied(24, 30, 42, 215),
+                );
+                painter.circle_stroke(
+                    knob_pos,
+                    12.0,
+                    Stroke::new(1.8, Color32::from_rgb(255, 224, 92)),
+                );
+                painter.text(
+                    knob_pos,
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    egui::FontId::proportional(13.0),
+                    Color32::from_rgb(255, 244, 180),
+                );
+                Some((knob_pos, ab_cfg.mode))
+            } else {
+                None
+            };
+
         let playhead = session.playhead;
         let shift_held = ui.input(|i| i.modifiers.shift);
         let alt_held = ui.input(|i| i.modifiers.alt);
@@ -261,7 +357,37 @@ impl PreviewCanvasState {
             painter.line_segment([p0, p1], Stroke::new(1.5, Color32::from_rgb(0, 230, 255)));
         }
 
-        // ポインタ操作開始（パン / マスク頂点・ハンドル / 回転 / スケール / 移動 / クリック選択）
+        // ポインタ操作開始（パン / A/Bワイプ線 / マスク頂点・ハンドル / 回転 / スケール / 移動 / クリック選択）
+        let hit_ab_wipe = |pos: Pos2| -> bool {
+            let Some((knob_pos, mode)) = ab_wipe_handle else {
+                return false;
+            };
+            if knob_pos.distance(pos) <= 18.0 {
+                return true;
+            }
+            if !image_rect.contains(pos) {
+                return false;
+            }
+            let r = ab_cfg.split_ratio.clamp(0.02, 0.98);
+            match mode {
+                AbCompareMode::VerticalSplit => {
+                    let sx = image_rect.left() + r * image_rect.width();
+                    (pos.x - sx).abs() <= 10.0
+                }
+                AbCompareMode::HorizontalSplit => {
+                    let sy = image_rect.top() + r * image_rect.height();
+                    (pos.y - sy).abs() <= 10.0
+                }
+                AbCompareMode::DiagonalSplit => {
+                    let nx = (pos.x - image_rect.left()) / image_rect.width().max(1.0);
+                    let ny = (pos.y - image_rect.top()) / image_rect.height().max(1.0);
+                    ((0.5 * (nx + ny)) - r).abs() * image_rect.width().min(image_rect.height())
+                        <= 14.0
+                }
+                AbCompareMode::Off | AbCompareMode::DifferenceAmplified => false,
+            }
+        };
+
         if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
@@ -270,6 +396,9 @@ impl PreviewCanvasState {
                     start_pointer: pos,
                     initial_pan: self.pan,
                 });
+            } else if hit_ab_wipe(pos) {
+                self.drag = Some(GizmoDrag::AbSplitWipe);
+                session.bus.set_gui_drag_locked(true);
             } else if let (Some(geo), Some(handles)) = (&selected_geo, &handle_rects) {
                 let s_pos = screen_to_scene(pos);
                 let hit_r = 10.0;
@@ -388,6 +517,33 @@ impl PreviewCanvasState {
                         initial_pan,
                     } => {
                         self.pan = initial_pan + (pos - start_pointer);
+                    }
+                    GizmoDrag::AbSplitWipe => {
+                        let mut next = ab_cfg.clone();
+                        let nx = ((pos.x - image_rect.left()) / image_rect.width().max(1.0))
+                            .clamp(0.02, 0.98);
+                        let ny = ((pos.y - image_rect.top()) / image_rect.height().max(1.0))
+                            .clamp(0.02, 0.98);
+                        next.split_ratio = match next.mode {
+                            AbCompareMode::VerticalSplit => nx,
+                            AbCompareMode::HorizontalSplit => ny,
+                            AbCompareMode::DiagonalSplit => (0.5 * (nx + ny)).clamp(0.02, 0.98),
+                            AbCompareMode::Off | AbCompareMode::DifferenceAmplified => {
+                                next.split_ratio
+                            }
+                        };
+                        if session
+                            .bus
+                            .execute(
+                                &mut session.project,
+                                EditCommand::SetAbCompare { ab_compare: next },
+                                CommandSource::Gui,
+                                Some("ab_split_drag"),
+                            )
+                            .is_ok()
+                        {
+                            modified = true;
+                        }
                     }
                     GizmoDrag::Move {
                         item_id,

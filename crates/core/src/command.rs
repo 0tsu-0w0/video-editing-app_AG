@@ -424,6 +424,21 @@ pub enum EditCommand {
         item_id: ItemId,
         vfx_paint: crate::vfx_paint::VfxPaintConfig,
     },
+    /// v7.0 #48: アセットのリール名・SMPTE 開始タイムコード・プロキシ連携メタデータを更新する
+    SetAssetConformMeta {
+        asset_id: crate::project::AssetId,
+        meta: crate::conform::AssetConformMeta,
+    },
+    /// v7.0 #48: プロキシ⇔原本自動コンフォームでクリップの参照アセットとソース開始オフセットを差し替える
+    ConformClipSource {
+        item_id: ItemId,
+        new_asset_id: crate::project::AssetId,
+        new_source_offset: RationalTime,
+    },
+    /// v7.0 #48: アクティブシーンの A/B スプリット比較ビュー設定を更新する
+    SetAbCompare {
+        ab_compare: crate::studio_hub::AbCompareConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -507,6 +522,9 @@ impl EditCommand {
             Self::SetCinemaFinishing { .. } => "set_cinema_finishing",
             Self::SetDataChart { .. } => "set_data_chart",
             Self::SetVfxPaint { .. } => "set_vfx_paint",
+            Self::SetAssetConformMeta { .. } => "set_asset_conform_meta",
+            Self::ConformClipSource { .. } => "conform_clip_source",
+            Self::SetAbCompare { .. } => "set_ab_compare",
             Self::Batch { .. } => "batch_execute",
         }
     }
@@ -992,6 +1010,7 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 markers: Vec::new(),
                 node_graph: NodeCompositeGraph::default(),
                 review_comments: Vec::new(),
+                ab_compare: crate::studio_hub::AbCompareConfig::default(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -1847,6 +1866,50 @@ fn apply_command(project: &mut Project, command: &EditCommand) -> Result<(), Com
                 stroke.write_on_progress = stroke.write_on_progress.clamp(0.0, 1.0);
             }
             item.vfx_paint = next;
+            Ok(())
+        }
+        EditCommand::SetAssetConformMeta { asset_id, meta } => {
+            project.conform_meta.insert(*asset_id, meta.clone());
+            Ok(())
+        }
+        EditCommand::ConformClipSource {
+            item_id,
+            new_asset_id,
+            new_source_offset,
+        } => {
+            let item = find_item_mut(project, *item_id)?;
+            let clamped_off = (*new_source_offset).max(RationalTime::ZERO);
+            match &mut item.kind {
+                ItemKind::Video {
+                    asset_id,
+                    source_offset,
+                    ..
+                }
+                | ItemKind::Audio {
+                    asset_id,
+                    source_offset,
+                    ..
+                } => {
+                    *asset_id = *new_asset_id;
+                    *source_offset = clamped_off;
+                    Ok(())
+                }
+                ItemKind::Image { asset_id } => {
+                    *asset_id = *new_asset_id;
+                    Ok(())
+                }
+                _ => Err(CommandError::ItemNotFound(*item_id)),
+            }
+        }
+        EditCommand::SetAbCompare { ab_compare } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = ab_compare.clone();
+            next.split_ratio = next.split_ratio.clamp(0.05, 0.95);
+            next.diff_gain = next.diff_gain.clamp(1.0, 16.0);
+            next.reference_sec = next.reference_sec.max(0.0);
+            scene.ab_compare = next;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {
