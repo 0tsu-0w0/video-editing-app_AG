@@ -555,3 +555,63 @@ fn filter_group_spectrum_and_marker_update_commands_are_undoable() {
         }
     ));
 }
+
+#[test]
+fn undo_stack_shares_adjacent_arc_snapshots_for_half_memory() {
+    let base = Project::new("ArcUndoShare", ProjectSettings::default());
+    let mut project = base.clone();
+    let mut bus = CommandBus::new();
+
+    let item = sample_item("Mover");
+    let id = item.id;
+    bus.execute(
+        &mut project,
+        EditCommand::AddObject {
+            layer_index: 0,
+            item,
+        },
+        CommandSource::Gui,
+        None,
+    )
+    .unwrap();
+
+    // 49 回の連続移動（合計 50 ステップ）を実行
+    for step in 1..50 {
+        bus.execute(
+            &mut project,
+            EditCommand::MoveObject {
+                item_id: id,
+                target_layer_index: 0,
+                new_start: RationalTime::from_seconds(step as f64 * 0.1),
+            },
+            CommandSource::Gui,
+            None,
+        )
+        .unwrap();
+    }
+
+    assert_eq!(bus.undo_len(), 50);
+    // 非共有なら 100 スナップショット必要だが、隣接 Arc 共有により 51 個（約 50% 削減）に収まる
+    assert_eq!(bus.unique_snapshot_count(), 51);
+
+    // 半分 Undo しても Redo スタックと共有されたまま総スナップショット数は増えない
+    for _ in 0..25 {
+        assert!(bus.undo(&mut project));
+    }
+    assert_eq!(bus.undo_len(), 25);
+    assert_eq!(bus.redo_len(), 25);
+    assert_eq!(bus.unique_snapshot_count(), 51);
+
+    // 残りも Undo → 初期プロジェクトと完全一致、その後 50 回 Redo で最終状態へ復帰
+    for _ in 0..25 {
+        assert!(bus.undo(&mut project));
+    }
+    assert_eq!(project, base);
+    for _ in 0..50 {
+        assert!(bus.redo(&mut project));
+    }
+    assert_eq!(
+        project.active_scene().unwrap().layers[0].items[0].start,
+        RationalTime::from_seconds(4.9)
+    );
+}

@@ -192,9 +192,14 @@ impl LinearImage {
     }
 
     pub fn to_rgba8_srgb(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.pixels.len() * 4);
-        for px in &self.pixels {
-            out.extend_from_slice(&px.to_rgba8_srgb());
+        let mut out = vec![0u8; self.pixels.len() * 4];
+        for (dst, px) in out
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.pixels.iter())
+        {
+            *dst = px.to_rgba8_srgb();
         }
         out
     }
@@ -202,15 +207,18 @@ impl LinearImage {
     /// 呼び出し側の再利用バッファへ `wgpu::TextureFormat::Rgba16Float` バイト列を書き込む（毎フレームゼロ確保）
     pub fn write_rgba16f_bytes(&self, out: &mut Vec<u8>) {
         let needed = self.pixels.len() * 8;
-        out.clear();
-        if out.capacity() < needed {
-            out.reserve(needed - out.capacity());
-        }
-        for px in &self.pixels {
-            out.extend_from_slice(&f16::from_f32(px.r).to_le_bytes());
-            out.extend_from_slice(&f16::from_f32(px.g).to_le_bytes());
-            out.extend_from_slice(&f16::from_f32(px.b).to_le_bytes());
-            out.extend_from_slice(&f16::from_f32(px.a).to_le_bytes());
+        out.resize(needed, 0);
+        for (dst, px) in out
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(self.pixels.iter())
+        {
+            let r = f16::from_f32(px.r).to_le_bytes();
+            let g = f16::from_f32(px.g).to_le_bytes();
+            let b = f16::from_f32(px.b).to_le_bytes();
+            let a = f16::from_f32(px.a).to_le_bytes();
+            *dst = [r[0], r[1], g[0], g[1], b[0], b[1], a[0], a[1]];
         }
     }
 
@@ -284,33 +292,86 @@ impl LinearImage {
         let dst_stride = self.width as usize;
         let full_opacity = (opacity - 1.0).abs() <= 1e-6;
 
-        for row in 0..copy_h {
-            let src_row_start = (src_y0 + row) * src_stride + src_x0;
-            let dst_row_start = (dst_y0_u + row) * dst_stride + dst_x0_u;
-            let src_slice = &src.pixels[src_row_start..src_row_start + copy_w];
-            let dst_slice = &mut self.pixels[dst_row_start..dst_row_start + copy_w];
-
-            for (dst_px, &raw_sp) in dst_slice.iter_mut().zip(src_slice.iter()) {
-                // 完全透明ピクセルを高速スキップ（文字・立ち絵・図形レイヤー合成で大幅高速化）
-                if raw_sp.a <= 1e-6 && raw_sp.r == 0.0 && raw_sp.g == 0.0 && raw_sp.b == 0.0 {
-                    continue;
-                }
-                let sp = if full_opacity {
-                    raw_sp
-                } else {
-                    LinearPremul {
-                        r: raw_sp.r * opacity,
-                        g: raw_sp.g * opacity,
-                        b: raw_sp.b * opacity,
-                        a: raw_sp.a * opacity,
+        // モード・不透明度分岐をループ外へホイストし、最頻出の Normal 合成をタイト化
+        match (mode, full_opacity) {
+            (BlendMode::Normal, true) => {
+                for row in 0..copy_h {
+                    let src_row_start = (src_y0 + row) * src_stride + src_x0;
+                    let dst_row_start = (dst_y0_u + row) * dst_stride + dst_x0_u;
+                    let src_slice = &src.pixels[src_row_start..src_row_start + copy_w];
+                    let dst_slice = &mut self.pixels[dst_row_start..dst_row_start + copy_w];
+                    for (dst_px, &sp) in dst_slice.iter_mut().zip(src_slice.iter()) {
+                        if sp.a <= 1e-6 && sp.r == 0.0 && sp.g == 0.0 && sp.b == 0.0 {
+                            continue;
+                        }
+                        if sp.a >= 1.0 - 1e-6 {
+                            *dst_px = sp;
+                        } else {
+                            *dst_px = sp.over(*dst_px);
+                        }
                     }
-                };
-                *dst_px = sp.blend(*dst_px, mode);
+                }
+            }
+            (BlendMode::Normal, false) => {
+                for row in 0..copy_h {
+                    let src_row_start = (src_y0 + row) * src_stride + src_x0;
+                    let dst_row_start = (dst_y0_u + row) * dst_stride + dst_x0_u;
+                    let src_slice = &src.pixels[src_row_start..src_row_start + copy_w];
+                    let dst_slice = &mut self.pixels[dst_row_start..dst_row_start + copy_w];
+                    for (dst_px, &raw_sp) in dst_slice.iter_mut().zip(src_slice.iter()) {
+                        if raw_sp.a <= 1e-6 && raw_sp.r == 0.0 && raw_sp.g == 0.0 && raw_sp.b == 0.0
+                        {
+                            continue;
+                        }
+                        let sp = LinearPremul {
+                            r: raw_sp.r * opacity,
+                            g: raw_sp.g * opacity,
+                            b: raw_sp.b * opacity,
+                            a: raw_sp.a * opacity,
+                        };
+                        *dst_px = sp.over(*dst_px);
+                    }
+                }
+            }
+            (_, true) => {
+                for row in 0..copy_h {
+                    let src_row_start = (src_y0 + row) * src_stride + src_x0;
+                    let dst_row_start = (dst_y0_u + row) * dst_stride + dst_x0_u;
+                    let src_slice = &src.pixels[src_row_start..src_row_start + copy_w];
+                    let dst_slice = &mut self.pixels[dst_row_start..dst_row_start + copy_w];
+                    for (dst_px, &sp) in dst_slice.iter_mut().zip(src_slice.iter()) {
+                        if sp.a <= 1e-6 && sp.r == 0.0 && sp.g == 0.0 && sp.b == 0.0 {
+                            continue;
+                        }
+                        *dst_px = sp.blend(*dst_px, mode);
+                    }
+                }
+            }
+            (_, false) => {
+                for row in 0..copy_h {
+                    let src_row_start = (src_y0 + row) * src_stride + src_x0;
+                    let dst_row_start = (dst_y0_u + row) * dst_stride + dst_x0_u;
+                    let src_slice = &src.pixels[src_row_start..src_row_start + copy_w];
+                    let dst_slice = &mut self.pixels[dst_row_start..dst_row_start + copy_w];
+                    for (dst_px, &raw_sp) in dst_slice.iter_mut().zip(src_slice.iter()) {
+                        if raw_sp.a <= 1e-6 && raw_sp.r == 0.0 && raw_sp.g == 0.0 && raw_sp.b == 0.0
+                        {
+                            continue;
+                        }
+                        let sp = LinearPremul {
+                            r: raw_sp.r * opacity,
+                            g: raw_sp.g * opacity,
+                            b: raw_sp.b * opacity,
+                            a: raw_sp.a * opacity,
+                        };
+                        *dst_px = sp.blend(*dst_px, mode);
+                    }
+                }
             }
         }
     }
 
-    /// トラックマット適用（アルファ／ルミナンスおよび反転）
+    /// トラックマット適用（アルファ／ルミナンスおよび反転・モード分岐をループ外へホイスト）
     pub fn apply_track_matte(&mut self, matte: &LinearImage, mode: TrackMatteMode) {
         let w = self.width.min(matte.width) as usize;
         let h = self.height.min(matte.height) as usize;
@@ -319,17 +380,43 @@ impl LinearImage {
         for y in 0..h {
             let dst_row = &mut self.pixels[y * dst_stride..y * dst_stride + w];
             let matte_row = &matte.pixels[y * matte_stride..y * matte_stride + w];
-            for (dst, &mp) in dst_row.iter_mut().zip(matte_row.iter()) {
-                let factor = match mode {
-                    TrackMatteMode::Alpha => mp.a.clamp(0.0, 1.0),
-                    TrackMatteMode::AlphaInverted => (1.0 - mp.a).clamp(0.0, 1.0),
-                    TrackMatteMode::Luma => mp.luma(),
-                    TrackMatteMode::LumaInverted => (1.0 - mp.luma()).clamp(0.0, 1.0),
-                };
-                dst.r *= factor;
-                dst.g *= factor;
-                dst.b *= factor;
-                dst.a *= factor;
+            match mode {
+                TrackMatteMode::Alpha => {
+                    for (dst, &mp) in dst_row.iter_mut().zip(matte_row.iter()) {
+                        let f = mp.a.clamp(0.0, 1.0);
+                        dst.r *= f;
+                        dst.g *= f;
+                        dst.b *= f;
+                        dst.a *= f;
+                    }
+                }
+                TrackMatteMode::AlphaInverted => {
+                    for (dst, &mp) in dst_row.iter_mut().zip(matte_row.iter()) {
+                        let f = (1.0 - mp.a).clamp(0.0, 1.0);
+                        dst.r *= f;
+                        dst.g *= f;
+                        dst.b *= f;
+                        dst.a *= f;
+                    }
+                }
+                TrackMatteMode::Luma => {
+                    for (dst, &mp) in dst_row.iter_mut().zip(matte_row.iter()) {
+                        let f = mp.luma();
+                        dst.r *= f;
+                        dst.g *= f;
+                        dst.b *= f;
+                        dst.a *= f;
+                    }
+                }
+                TrackMatteMode::LumaInverted => {
+                    for (dst, &mp) in dst_row.iter_mut().zip(matte_row.iter()) {
+                        let f = (1.0 - mp.luma()).clamp(0.0, 1.0);
+                        dst.r *= f;
+                        dst.g *= f;
+                        dst.b *= f;
+                        dst.a *= f;
+                    }
+                }
             }
         }
     }

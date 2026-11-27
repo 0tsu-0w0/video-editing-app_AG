@@ -1,5 +1,27 @@
 # Changelog
 
+## [10.1.0] - 2026-11-27
+
+v10.0.0 公開後の**パフォーマンス最適化 ＆ メモリ軽量化ハードニング**を実施し、あわせて次期ロードマップ **v11.0〜v14.0（#61〜#76）** を `docs/future_features.md` へ策定しました（Pure Rust / ゼロ `unsafe` / `Cargo.toml`・`Cargo.lock` 無変更）。
+
+### パフォーマンス最適化 ＆ メモリ軽量化
+* **Undo/Redo メモリ約 50% 削減（`ve-core`）:** `CommandBus` の `UndoRecord` を `Arc<Project>` 化し、連続編集時の隣接スナップショット（`prev.after == cur.before`）を自動共有（200 段 Undo 時の保持スナップショット数を 400 → 201 へ約半減・`unique_snapshot_count()` 計測 API 追加）。
+* **RAM プレビュー 50% 省メモリ ＆ 60fps 再生時ゼロクローン化（`ve-app` / `ve-render`）:**
+  * `RamPreviewManager` のキャッシュ格納形式を 16 B/px `LinearImage` から 8 B/px `PackedRamFrame`（`Rgba16Float`）へ移行し、RAM 消費量を厳密に **50% 削減**（640×360×96 枚: 340 MiB → 170 MiB、1080p×96 枚: 3.1 GiB → 1.55 GiB）。
+  * `WgpuPreviewPipeline::upload_rgba16f_process_and_present` を追加し、RAM キャッシュヒット時は f32↔f16 再変換ゼロで直接 GPU テクスチャへ転送。
+  * `EditorApp::update` に `needs_target_update` / `try_update_center_frame_fast` を導入し、待機中・通常再生中の毎フレーム `Project` / `proxy_paths` / `WaveformPeaks` ディープクローンを完全排除。
+  * ワーカーの `RenderGraph` に `active_revision` 同期（区間木 $O(\log N)$ 有効化）を追加し、`set_project_folder` / `register_proxy` の同一値再登録ガードにより毎フレーム `lut_cache` と常駐 `VideoStreamDecoder` が破棄されるボトルネックを解消。
+* **テキスト描画 省メモリ BBox LRU キャッシュ ＆ 外接矩形縁取り最適化（`ve-render`）:**
+  * `TextRenderer` に透過領域を切り落とした省メモリ BBox LRU キャッシュ（上限 64 エントリ / 16 MiB）を追加し、静的字幕および文字ごとアニメーション完了後の定常フレームを O(1) 再利用（ビット完全一致）。
+  * `apply_text_style` の縁取り膨張およびドロップシャドウ抽出を `alpha_bounds` 外接矩形範囲のみへ限定し、キャッシュミス時も透過領域走査を完全スキップ。
+* **RenderGraph・ピクセル合成・ブラー・回転・色調/スコープ高速化（`ve-render`）:**
+  * `lut_cache` を `Arc<CubeLut3D>` 化し毎フレーム ~431 KB の 3D LUT クローンを排除、`ItemKind::VtuberAvatar` カスタム PNG を `png_cache` 経由へキャッシュ化、`render_project_scene_cached_rgba8` にリビジョン別シーン署名キャッシュを追加、`render_frame_batch_parallel` で区間木 $O(\log N)$ を有効化。
+  * `LinearImage::blend_with_mode` / `apply_track_matte` のモード・不透明度分岐をループ外へホイスト、`to_rgba8_srgb` / `write_rgba16f_bytes` の `chunks_exact_mut` 直接書き込み化、`box_blur_separable` 中央領域のクランプ分岐排除、`rotate_linear_image` の行定数ホイスト＋境界内直接参照化、`apply_scene_color_grade` の中立ガンマ `powf(1.0)` スキップ、および `compute_video_scopes` の 8193 段 LUT 化を実施。
+* **回帰テスト拡充:** `crates/render/tests/perf_lightweight_regression.rs` および `CommandBus` `Arc` 共有テスト・`RamPreviewManager` 8 B/px 検証を追加。
+
+### 次期ロードマップ策定（`docs/future_features.md`）
+* **v11.0〜v14.0（#61〜#76）** を追加（v11.0: ゼロコピー GPU グラフ＆適応 8K エンジン / v12.0: HDR 4000nit＆パワーウィンドウ＆Phase Vocoder DAW＆縦書き・ルビ / v13.0: glTF・VRM スキニング＆ビジュアル WGSL シェーダー＆Voronoi 破壊＆EXR 16-bit / v14.0: ブランドデザインシステム＆スタイル学習 120+ MCP＆WASM v2＆長期運用 WCAG AAA）。
+
 ## [10.0.0] - 2026-11-25
 
 Spatial Computing, Physics Fluids & Autonomous Cinema OS 最終マイルストーン v10.0（#57〜#60）をすべて実装し、**全 60 ロードマップ項目を完全達成**しました（Pure Rust / ゼロ `unsafe` / ゼロ追加依存・**全 100 MCP ツール / 10 ドメイン**）。

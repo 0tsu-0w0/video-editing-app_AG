@@ -628,7 +628,10 @@ pub(crate) fn box_blur_separable(image: &mut LinearImage, radius: i32) {
     let mut temp = vec![LinearPremul::TRANSPARENT; image.pixels.len()];
     let inv_denom = 1.0_f64 / f64::from(radius * 2 + 1);
 
-    // 水平パス（行ごとにスライディングウィンドウ加算）
+    // 水平パス（行ごとにスライディングウィンドウ加算・中央領域は clamp 分岐ゼロ）
+    let r_u = radius as usize;
+    let inner_start = (r_u + 1).min(wu);
+    let inner_end = wu.saturating_sub(r_u).max(inner_start);
     for y in 0..hu {
         let src_row = &image.pixels[y * wu..(y + 1) * wu];
         let dst_row = &mut temp[y * wu..(y + 1) * wu];
@@ -649,16 +652,49 @@ pub(crate) fn box_blur_separable(image: &mut LinearImage, radius: i32) {
             a: (acc[3] * inv_denom).max(0.0) as f32,
         };
 
-        for x in 1..w {
-            let sub_x = (x - 1 - radius).clamp(0, w - 1) as usize;
-            let add_x = (x + radius).clamp(0, w - 1) as usize;
+        // 左端境界
+        for (x, dst_px) in dst_row.iter_mut().enumerate().take(inner_start).skip(1) {
+            let sub_x = (x as i32 - 1 - radius).clamp(0, w - 1) as usize;
+            let add_x = (x as i32 + radius).clamp(0, w - 1) as usize;
             let p_sub = src_row[sub_x];
             let p_add = src_row[add_x];
             acc[0] += f64::from(p_add.r) - f64::from(p_sub.r);
             acc[1] += f64::from(p_add.g) - f64::from(p_sub.g);
             acc[2] += f64::from(p_add.b) - f64::from(p_sub.b);
             acc[3] += f64::from(p_add.a) - f64::from(p_sub.a);
-            dst_row[x as usize] = LinearPremul {
+            *dst_px = LinearPremul {
+                r: (acc[0] * inv_denom).max(0.0) as f32,
+                g: (acc[1] * inv_denom).max(0.0) as f32,
+                b: (acc[2] * inv_denom).max(0.0) as f32,
+                a: (acc[3] * inv_denom).max(0.0) as f32,
+            };
+        }
+        // 中央領域（境界クランプ不要の連続走査）
+        for x in inner_start..inner_end {
+            let p_sub = src_row[x - 1 - r_u];
+            let p_add = src_row[x + r_u];
+            acc[0] += f64::from(p_add.r) - f64::from(p_sub.r);
+            acc[1] += f64::from(p_add.g) - f64::from(p_sub.g);
+            acc[2] += f64::from(p_add.b) - f64::from(p_sub.b);
+            acc[3] += f64::from(p_add.a) - f64::from(p_sub.a);
+            dst_row[x] = LinearPremul {
+                r: (acc[0] * inv_denom).max(0.0) as f32,
+                g: (acc[1] * inv_denom).max(0.0) as f32,
+                b: (acc[2] * inv_denom).max(0.0) as f32,
+                a: (acc[3] * inv_denom).max(0.0) as f32,
+            };
+        }
+        // 右端境界
+        for (x, dst_px) in dst_row.iter_mut().enumerate().skip(inner_end) {
+            let sub_x = (x as i32 - 1 - radius).clamp(0, w - 1) as usize;
+            let add_x = (x as i32 + radius).clamp(0, w - 1) as usize;
+            let p_sub = src_row[sub_x];
+            let p_add = src_row[add_x];
+            acc[0] += f64::from(p_add.r) - f64::from(p_sub.r);
+            acc[1] += f64::from(p_add.g) - f64::from(p_sub.g);
+            acc[2] += f64::from(p_add.b) - f64::from(p_sub.b);
+            acc[3] += f64::from(p_add.a) - f64::from(p_sub.a);
+            *dst_px = LinearPremul {
                 r: (acc[0] * inv_denom).max(0.0) as f32,
                 g: (acc[1] * inv_denom).max(0.0) as f32,
                 b: (acc[2] * inv_denom).max(0.0) as f32,
@@ -730,22 +766,26 @@ pub(crate) fn rotate_linear_image(src: &LinearImage, angle_deg: f32) -> LinearIm
     let dst_cy = out_h as f32 * 0.5;
     let iw = src.width as i32;
     let ih = src.height as i32;
+    let src_w_u = src.width as usize;
 
     let sample = |x: i32, y: i32| -> LinearPremul {
         if x < 0 || y < 0 || x >= iw || y >= ih {
             LinearPremul::TRANSPARENT
         } else {
-            src.pixels[(y as u32 * src.width + x as u32) as usize]
+            src.pixels[y as usize * src_w_u + x as usize]
         }
     };
 
     for y in 0..out_h {
         let dy = y as f32 + 0.5 - dst_cy;
-        for x in 0..out_w {
+        let row_sx_base = dy * sin + src_cx - 0.5;
+        let row_sy_base = dy * cos + src_cy - 0.5;
+        let dst_row = &mut dst.pixels[(y * out_w) as usize..((y + 1) * out_w) as usize];
+        for (x, dst_px) in dst_row.iter_mut().enumerate() {
             let dx = x as f32 + 0.5 - dst_cx;
             // 逆回転でソース座標を算出
-            let sx = dx * cos + dy * sin + src_cx - 0.5;
-            let sy = -dx * sin + dy * cos + src_cy - 0.5;
+            let sx = dx * cos + row_sx_base;
+            let sy = -dx * sin + row_sy_base;
             if sx < -1.0 || sy < -1.0 || sx >= sw || sy >= sh {
                 continue;
             }
@@ -753,15 +793,30 @@ pub(crate) fn rotate_linear_image(src: &LinearImage, angle_deg: f32) -> LinearIm
             let y0 = sy.floor() as i32;
             let fx = sx - x0 as f32;
             let fy = sy - y0 as f32;
-            let p00 = sample(x0, y0);
-            let p10 = sample(x0 + 1, y0);
-            let p01 = sample(x0, y0 + 1);
-            let p11 = sample(x0 + 1, y0 + 1);
-            let w00 = (1.0 - fx) * (1.0 - fy);
-            let w10 = fx * (1.0 - fy);
-            let w01 = (1.0 - fx) * fy;
+            let (p00, p10, p01, p11) = if x0 >= 0 && y0 >= 0 && x0 + 1 < iw && y0 + 1 < ih {
+                let r0 = y0 as usize * src_w_u + x0 as usize;
+                let r1 = r0 + src_w_u;
+                (
+                    src.pixels[r0],
+                    src.pixels[r0 + 1],
+                    src.pixels[r1],
+                    src.pixels[r1 + 1],
+                )
+            } else {
+                (
+                    sample(x0, y0),
+                    sample(x0 + 1, y0),
+                    sample(x0, y0 + 1),
+                    sample(x0 + 1, y0 + 1),
+                )
+            };
+            let inv_fx = 1.0 - fx;
+            let inv_fy = 1.0 - fy;
+            let w00 = inv_fx * inv_fy;
+            let w10 = fx * inv_fy;
+            let w01 = inv_fx * fy;
             let w11 = fx * fy;
-            dst.pixels[(y * out_w + x) as usize] = LinearPremul {
+            *dst_px = LinearPremul {
                 r: p00.r * w00 + p10.r * w10 + p01.r * w01 + p11.r * w11,
                 g: p00.g * w00 + p10.g * w10 + p01.g * w01 + p11.g * w11,
                 b: p00.b * w00 + p10.b * w10 + p01.b * w01 + p11.b * w11,
