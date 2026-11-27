@@ -1,6 +1,6 @@
-//! v7.0 #45〜#48 / v8.0 #49〜#52 / v9.0 #53〜#56 / v10.0 #57〜#60: 役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` ファジー検索コマンドパレット
+//! v7.0 #45〜#48 / v8.0 #49〜#52 / v9.0 #53〜#56 / v10.0 #57〜#60 / v11.0 #61〜#64: 役割別 6 スタジオ Hub UX 統合 ＆ `Ctrl+K` ファジー検索コマンドパレット
 //! ＋ GPU 4K/8K フレームプールパネル ＋ 10,000+ 区間木＆プロキシ⇔原本 TC コンフォームパネル
-//! ＋ A/B スプリット比較ビューパネル ＋ MCP モジュールカタログ (100 ツール / 10 ドメイン) インスペクタ
+//! ＋ A/B スプリット比較ビューパネル ＋ MCP モジュールカタログ (104 ツール / 11 ドメイン) インスペクタ
 
 use crate::color_scopes::ColorScopesState;
 use crate::render_queue::RenderQueueState;
@@ -15,6 +15,7 @@ use crate::v60_panels::V60PanelsState;
 use crate::v80_panels::V80PanelsState;
 use crate::v90_panels::V90PanelsState;
 use crate::v100_panels::V100PanelsState;
+use crate::v110_panels::V110PanelsState;
 use egui::{Color32, Context, RichText, Ui};
 use std::collections::BTreeMap;
 use ve_core::{
@@ -417,6 +418,7 @@ impl V70StudioHubState {
         v80_panels: &mut V80PanelsState,
         v90_panels: &mut V90PanelsState,
         v100_panels: &mut V100PanelsState,
+        v110_panels: &mut V110PanelsState,
         outcome: &mut StudioHubFrameOutcome,
     ) {
         if !self.show_hub_window {
@@ -425,7 +427,7 @@ impl V70StudioHubState {
 
         let mut open = self.show_hub_window;
         let title = format!(
-            "🎛 Unified Studio Hub — {} (v10.0)",
+            "🎛 Unified Studio Hub — {} (v11.0)",
             self.active_hub.button_label(lang)
         );
         egui::Window::new(title)
@@ -524,6 +526,11 @@ impl V70StudioHubState {
                         }
                         "hub.edit.smart_dam" => {
                             if v90_panels.ui_smart_dam_tab(ui, session) {
+                                outcome.preview_dirty = true;
+                            }
+                        }
+                        "hub.edit.adaptive_prerender" => {
+                            if v110_panels.ui_adaptive_prerender_tab(ui, session) {
                                 outcome.preview_dirty = true;
                             }
                         }
@@ -637,6 +644,12 @@ impl V70StudioHubState {
                                 selected_item,
                                 render_graph,
                             ) {
+                                outcome.preview_dirty = true;
+                                outcome.clear_ram_preview = true;
+                            }
+                        }
+                        "hub.vfx.gpu_graph_v110" => {
+                            if v110_panels.ui_gpu_render_graph_tab(ui, session) {
                                 outcome.preview_dirty = true;
                                 outcome.clear_ram_preview = true;
                             }
@@ -763,6 +776,17 @@ impl V70StudioHubState {
                         }
 
                         // ===== Deliver Hub =====
+                        "hub.deliver.profiler_hud" => {
+                            if v110_panels.ui_profiler_hud_tab(ui, session, render_graph) {
+                                outcome.preview_dirty = true;
+                            }
+                        }
+                        "hub.deliver.memory_fastbin" => {
+                            if v110_panels.ui_memory_fastbin_tab(ui, session, render_graph) {
+                                outcome.preview_dirty = true;
+                                outcome.clear_ram_preview = true;
+                            }
+                        }
                         "hub.deliver.render_farm" => {
                             if v100_panels.ui_render_farm_tab(ui, session) {
                                 outcome.preview_dirty = true;
@@ -1047,14 +1071,14 @@ impl V70StudioHubState {
 
         ui.separator();
         ui.collapsing(
-            "🚀 v10.0 WGSL コンピュート（360° 全天球＆2D 流体移流）＆ 全 8 シェーダー Naga 検証",
+            "🚀 v11.0 WGSL コンピュート（ゼロコピー連結・360°・2D 流体）＆ 全 9 シェーダー Naga 検証",
             |ui| {
                 static CACHED_CHECKS: std::sync::OnceLock<Vec<ve_render::WgslValidationSummary>> =
                     std::sync::OnceLock::new();
                 let checks = CACHED_CHECKS
                     .get_or_init(ve_render::validate_all_builtin_wgsl_shaders);
                 if ui
-                    .button("⚡ 全 8 WGSL シェーダー検証 ＋ 360° GPU/CPU ベンチ実行")
+                    .button("⚡ 全 9 WGSL シェーダー検証 ＋ 360° GPU/CPU ベンチ実行")
                     .clicked()
                 {
                     let rep = ve_render::benchmark_v100_gpu_or_cpu(640, 360);
@@ -1436,12 +1460,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn studio_hub_state_maps_all_six_hubs_and_100_mcp_tools() {
+    fn studio_hub_state_maps_all_six_hubs_and_104_mcp_tools() {
         let mut hub = V70StudioHubState::default();
         assert_eq!(hub.hub_active_tool.len(), 6);
         let total_mcp: usize = hub.mcp_catalog_cache.iter().map(|d| d.tool_count).sum();
-        assert_eq!(total_mcp, 100);
-        assert_eq!(hub.mcp_catalog_cache.len(), 10);
+        assert_eq!(total_mcp, 104);
+        assert_eq!(hub.mcp_catalog_cache.len(), 11);
+
+        let catalog = studio_palette_catalog();
+        for id in [
+            "hub.vfx.gpu_graph_v110",
+            "hub.edit.adaptive_prerender",
+            "hub.deliver.memory_fastbin",
+            "hub.deliver.profiler_hud",
+        ] {
+            assert!(
+                catalog.iter().any(|e| e.id == id),
+                "missing v11.0 palette entry: {id}"
+            );
+        }
 
         hub.open_hub(StudioHubId::Color);
         assert!(hub.show_hub_window);

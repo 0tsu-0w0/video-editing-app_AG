@@ -119,6 +119,10 @@ impl ProjectFolder {
         files
     }
 
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
     pub fn cache_precomp_dir(&self) -> PathBuf {
         self.root.join("cache").join("precomp")
     }

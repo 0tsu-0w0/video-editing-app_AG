@@ -523,6 +523,18 @@ pub enum EditCommand {
     SetRenderFarm {
         render_farm: crate::cinema_os::RenderFarmConfig,
     },
+    /// v11.0 #61: アクティブシーンのゼロコピー GPU レンダリンググラフ設定を更新する
+    SetGpuRenderGraph {
+        gpu_graph: crate::perf_engine::GpuRenderGraphConfig,
+    },
+    /// v11.0 #62: プロジェクトの適応解像度再生＆スマート事前レンダリング設定を更新する
+    SetAdaptivePlayback {
+        adaptive_playback: crate::perf_engine::AdaptivePlaybackConfig,
+    },
+    /// v11.0 #64: プロジェクトのリアルタイム・パフォーマンスプロファイラ HUD 設定を更新する
+    SetProfilerHud {
+        profiler_hud: crate::perf_engine::ProfilerHudConfig,
+    },
     /// 複数コマンドを1つの Undo 単位として原子的に実行する
     Batch {
         label: String,
@@ -626,6 +638,9 @@ impl EditCommand {
             Self::SetFluidSim { .. } => "set_fluid_sim",
             Self::SetClothSim { .. } => "set_cloth_sim",
             Self::SetRenderFarm { .. } => "set_render_farm",
+            Self::SetGpuRenderGraph { .. } => "set_gpu_render_graph",
+            Self::SetAdaptivePlayback { .. } => "set_adaptive_playback",
+            Self::SetProfilerHud { .. } => "set_profiler_hud",
             Self::Batch { .. } => "batch_execute",
         }
     }

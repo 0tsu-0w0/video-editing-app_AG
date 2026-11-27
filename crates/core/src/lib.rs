@@ -27,6 +27,7 @@ pub mod motion_foundry;
 pub mod multi_deliver;
 pub mod multicam;
 pub mod node_graph;
+pub mod perf_engine;
 pub mod physics;
 pub mod preset;
 pub mod project;
@@ -160,6 +161,17 @@ pub use multicam::{
 pub use node_graph::{
     ChannelSelector, CompositeNode, CompositeNodeKind, NodeCompositeGraph, NodeConnection,
     NodeGraphError, NodeId, NodeToLayerSyncSummary, sync_node_graph_to_scene_layers,
+};
+pub use perf_engine::{
+    AdaptivePlaybackConfig, AdaptiveScaleState, BottleneckRecommendation, BottleneckSeverity,
+    ComplexityHotspotSegment, FrameProfileReport, GpuGraphExecutionPlan, GpuGraphPassKind,
+    GpuGraphPassNode, GpuRenderGraphConfig, PassTimingSample, ProfilerHudConfig,
+    ProfilerSummaryStats, ProjectCompactionReport, ProjectMemoryAudit, RollingProfilerHistory,
+    SmartPrerenderPlan, StructuralLayerDiff, audit_project_memory,
+    build_auto_optimize_scene_commands, build_gpu_render_graph_plan, compact_project_and_caches,
+    compute_structural_layer_diff, decode_project_fastbin, diagnose_timeline_bottlenecks,
+    encode_project_fastbin, fastbin_snapshot_path, load_project_fastbin_from_folder,
+    plan_smart_prerender_schedule, save_project_fastbin_to_folder,
 };
 pub use physics::{
     PhysicsBodyTrajectory, PhysicsConfig, PhysicsPreset, PhysicsTrajectorySample,

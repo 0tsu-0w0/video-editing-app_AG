@@ -1,5 +1,25 @@
 # Changelog
 
+## [11.0.0] - 2026-11-27
+
+Zero-Copy GPU Engine, Real-Time 8K & Native Studio Performance マイルストーン **v11.0（#61〜#64）** を実装し、ロードマップ累計 **64 項目達成・全 104 MCP ツール / 11 ドメイン・全 9 本組み込み WGSL シェーダー** へ到達しました（Pure Rust / ゼロ `unsafe` / `Cargo.toml`・`Cargo.lock` 無変更・完全オフライン完結）。
+
+### #61 完全ゼロコピー GPU レンダリンググラフ（VRAM 常駐テクスチャ合成 ＆ WGSL 全パス連結）
+* `ve-core` / `ve-render`: `perf_engine` / `gpu_v110` モジュール — 依存 DAG スケジューラ＆PCIe 転送削減試算 `build_gpu_render_graph_plan`（`Scene::gpu_graph` / `EditCommand::SetGpuRenderGraph`・8K タイリング判定）、第 9 本目の組み込み WGSL Compute シェーダー `ZERO_COPY_COMPOSITE_GRADE_WGSL`（IEEE-754 半精度ビットキャスト）、1 コマンドバッファ内で中間 CPU リードバック 0 回のまま合成・グレーディング→`SPATIAL_360_EQUIRECT_WGSL` を連続ディスパッチする `GpuZeroCopyRenderGraph`、および決定論 CPU フォールバック `execute_zero_copy_gpu_graph_or_cpu` / `benchmark_v110_zero_copy_graph`（全 9 WGSL シェーダー Naga 一括検証）を実装
+* `ve-app` / `ve-mcp`: VFX & Motion Hub 内「⚡ ゼロコピー GPU グラフ (#61)」タブ、MCP `configure_gpu_render_graph` ツールを追加
+
+### #62 適応解像度プロキシ自動切替 ＆ スマートバックグラウンド事前レンダリングスケジューラ
+* `ve-core`: `AdaptivePlaybackConfig` / `AdaptiveScaleState`（EMA 指数移動平均＋ヒステリシス 1/1→1/2→1/4 自動スケール・停止時 1/1 フル解像度即復帰・`Project::adaptive_playback` / `EditCommand::SetAdaptivePlayback`）および 1 秒刻み複雑度ホットスポット解析・優先フレームキュー生成 `plan_smart_prerender_schedule` を実装
+* `ve-app` / `ve-mcp`: `EditorApp` プレビュー描画ループへのリアルタイム適応スケーリング統合、Edit Hub 内「🎯 適応解像度 8K＆スマート先読み (#62)」タブ、MCP `manage_adaptive_playback_and_prerender` ツールを追加
+
+### #63 大規模プロジェクト超軽量化（FastBin SHA-256 スナップショット・構造共有差分・メモリ監査＆コンパクション）
+* `ve-core`: Pure-Rust RLE 圧縮＋FIPS 180-4 SHA-256 整合性検証付きバイナリスナップショット `VEFAST11`（`encode_project_fastbin` / `decode_project_fastbin` / `save_project_fastbin_to_folder` / `load_project_fastbin_from_folder` → `cache/project.fastbin`）、レイヤー単位構造共有差分 `compute_structural_layer_diff`、参照グラフ・Undo `Arc` 共有率・キャッシュ容量監査 `audit_project_memory`、および 1-Undo 未使用アセット＆キャッシュ整理 `compact_project_and_caches` を実装
+* `ve-app` / `ve-mcp`: Deliver Hub 内「💾 超軽量 FastBin＆メモリ監査 (#63)」タブ、MCP `audit_and_compact_project_memory` ツールを追加
+
+### #64 リアルタイム・パフォーマンスプロファイラ HUD ＆ 自動ボトルネック診断
+* `ve-core` / `ve-render`: `ProfilerHudConfig` / `FrameProfileReport` / `RollingProfilerHistory`（直近 120 フレーム平均・p95・p99・推定 FPS・予算超過率）、パス別マイクロ秒実測＋キャッシュ統計収集 `RenderGraph::render_project_scene_profiled`、Pure-Rust ダークガラス HUD オーバーレイ `draw_profiler_hud_overlay`（予算バー・`GPU DIRECT` バッジ・`1/N` ドット・パス比率フレームグラフバー）、自動ボトルネック診断 `diagnose_timeline_bottlenecks`、および安全な 1-Undo 非破壊最適化 `build_auto_optimize_scene_commands`（`Project::profiler_hud` / `EditCommand::SetProfilerHud`）を実装
+* `ve-app` / `ve-mcp`: Deliver Hub 内「📈 プロファイラ HUD＆自動診断 (#64)」タブ（ミニフレームグラフ＋1-Undo 最適化ボタン）、MCP `profile_timeline_bottlenecks`（第 11 ドメイン `v110_performance_gpu`・**全 104 MCP ツール / 11 ドメイン**）、およびゴールデン視覚回帰テスト `golden_v110_zero_copy_gpu_graph_adaptive_fastbin_and_profiler_hud` を追加
+
 ## [10.1.0] - 2026-11-27
 
 v10.0.0 公開後の**パフォーマンス最適化 ＆ メモリ軽量化ハードニング**を実施し、あわせて次期ロードマップ **v11.0〜v14.0（#61〜#76）** を `docs/future_features.md` へ策定しました（Pure Rust / ゼロ `unsafe` / `Cargo.toml`・`Cargo.lock` 無変更）。

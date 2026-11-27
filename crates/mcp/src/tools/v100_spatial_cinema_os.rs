@@ -1040,8 +1040,8 @@ fn call_retention_and_ab(guard: &mut EditorSession, args: &Value) -> Result<Valu
             let total_tools: usize = catalog.iter().map(|d| d.tool_count).sum();
             let diag = analyze_viewer_retention(&guard.project, None);
             let text = serde_json::to_string_pretty(&json!({
-                "version": "10.0.0",
-                "roadmap_completed": "60/60",
+                "version": "11.0.0",
+                "roadmap_completed": "64/76",
                 "mcp_domains": catalog.len(),
                 "mcp_total_tools": total_tools,
                 "predicted_avg_retention_pct": diag.predicted_avg_retention_pct,

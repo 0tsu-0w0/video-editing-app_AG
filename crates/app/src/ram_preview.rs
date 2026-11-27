@@ -624,12 +624,16 @@ mod tests {
             36,
         ));
 
-        let deadline = Instant::now() + Duration::from_secs(3);
+        // Windows デバッグビルドの初回 FontSystem::new() ロード完了を十分に許容する（高速環境では即座にループ終了）
+        let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline && mgr.cached_count(1, proj.active_scene_id, 64, 36) < 3 {
             thread::sleep(Duration::from_millis(15));
         }
         let cnt = mgr.cached_count(1, proj.active_scene_id, 64, 36);
-        assert!(cnt >= 3, "expected background worker to prefetch frames");
+        assert!(
+            cnt >= 3,
+            "expected background worker to prefetch frames (got {cnt})"
+        );
         // 8 B/px Rgba16Float 格納（従来の 16 B/px の半分）を検証
         assert_eq!(mgr.cached_bytes(), cnt * 64 * 36 * 8);
         let ranges = mgr.cached_frame_ranges(1, proj.active_scene_id, 64, 36);

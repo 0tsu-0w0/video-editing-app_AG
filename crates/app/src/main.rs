@@ -15,6 +15,7 @@ mod timeline;
 mod v09_panels;
 mod v100_panels;
 mod v10_panels;
+mod v110_panels;
 mod v20_panels;
 mod v21_panels;
 mod v30_panels;
@@ -56,6 +57,7 @@ use v70_studio_hub::{StudioHubFrameOutcome, V70StudioHubState};
 use v80_panels::V80PanelsState;
 use v90_panels::V90PanelsState;
 use v100_panels::V100PanelsState;
+use v110_panels::V110PanelsState;
 use ve_audio::{AudioEngineState, AudioGraph, WaveformPeaks};
 use ve_core::{
     AbCompareConfig, AbCompareMode, AbReferenceSource, AssetResolution, BlendMode, CommandBus,
@@ -164,6 +166,7 @@ struct EditorApp {
     v80_panels: V80PanelsState,
     v90_panels: V90PanelsState,
     v100_panels: V100PanelsState,
+    v110_panels: V110PanelsState,
     user_settings: EditorUserSettings,
     hw_decode: HwDecodeBackend,
     visuals_dirty: bool,
@@ -400,6 +403,7 @@ impl EditorApp {
             v80_panels: V80PanelsState::default(),
             v90_panels: V90PanelsState::default(),
             v100_panels: V100PanelsState::default(),
+            v110_panels: V110PanelsState::default(),
             user_settings: EditorUserSettings::default(),
             hw_decode: HwDecodeBackend::Auto,
             visuals_dirty: true,
@@ -2302,9 +2306,18 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // バックグラウンド RAM プレビュー先読み更新 + wgpu Ping-Pong GPU 描画（動的リサイズ対応）
+        // バックグラウンド RAM プレビュー先読み更新 + wgpu Ping-Pong GPU 描画（動的リサイズ＆v11.0 適応解像度対応）
         let active_gpu_passes = self.build_active_gpu_passes();
-        let (revision, active_id, scene_w, scene_h, scene_fps, folder_snap) = {
+        let (
+            revision,
+            active_id,
+            scene_w,
+            scene_h,
+            scene_fps,
+            folder_snap,
+            adaptive_cfg,
+            profiler_hud_enabled,
+        ) = {
             let sess = self.session.lock().unwrap();
             let (sw, sh, sfps) = sess
                 .project
@@ -2318,9 +2331,22 @@ impl eframe::App for EditorApp {
                 sh,
                 sfps,
                 sess.folder.clone(),
+                sess.project.adaptive_playback.clone(),
+                sess.project.profiler_hud.enabled,
             )
         };
-        let (pw, ph) = self.compute_preview_dims(scene_w, scene_h);
+        if !is_playing && adaptive_cfg.snap_full_res_on_pause {
+            self.v110_panels.adaptive_scale.current_divisor =
+                adaptive_cfg.min_scale_divisor.clamp(1, 4);
+        }
+        let eff_adaptive_div = if adaptive_cfg.enabled {
+            self.v110_panels.adaptive_scale.current_divisor.clamp(1, 4)
+        } else {
+            1
+        };
+        let (base_pw, base_ph) = self.compute_preview_dims(scene_w, scene_h);
+        let pw = (base_pw / eff_adaptive_div).max(64);
+        let ph = (base_ph / eff_adaptive_div).max(36);
         let cur_frame_idx = current_time.to_frame_floor(scene_fps).max(0);
 
         if self.ram_preview.enabled
@@ -2397,9 +2423,14 @@ impl eframe::App for EditorApp {
                         .active_scene()
                         .map(|s| s.ab_compare.clone())
                         .unwrap_or_default();
+                    let hud_bit = if profiler_hud_enabled {
+                        0x55AA_55AA_u64
+                    } else {
+                        0
+                    };
                     (
                         ab.is_active(),
-                        ab_compare_signature(&ab, self.v70_hub.frozen_still_a.is_some()),
+                        ab_compare_signature(&ab, self.v70_hub.frozen_still_a.is_some()) ^ hud_bit,
                     )
                 };
                 let render_key = (
@@ -2420,11 +2451,12 @@ impl eframe::App for EditorApp {
                         width: pw,
                         height: ph,
                     };
-                    let cached_packed = if self.ram_preview.enabled && !ab_active {
-                        self.ram_preview.get_frame(ram_key)
-                    } else {
-                        None
-                    };
+                    let cached_packed =
+                        if self.ram_preview.enabled && !ab_active && !profiler_hud_enabled {
+                            self.ram_preview.get_frame(ram_key)
+                        } else {
+                            None
+                        };
                     if let Some(packed) = cached_packed {
                         self.last_ram_cached_hit = true;
                         if self.color_scopes.show_scopes
@@ -2440,6 +2472,11 @@ impl eframe::App for EditorApp {
                             &packed.rgba16f,
                             &active_gpu_passes,
                             current_time.as_seconds() as f32,
+                        );
+                        self.v110_panels.adaptive_scale.record_frame_time(
+                            0.5,
+                            is_playing,
+                            &adaptive_cfg,
                         );
                         self.last_rendered_key = Some(render_key);
                         self.preview_dirty = false;
@@ -2457,18 +2494,29 @@ impl eframe::App for EditorApp {
                                 self.v70_hub.frozen_still_a.as_ref(),
                             )
                         } else {
-                            self.render_graph.render_project_scene_scaled(
-                                &proj_clone,
-                                active_id,
-                                current_time,
-                                pw,
-                                ph,
-                                false,
-                            )
+                            self.render_graph
+                                .render_project_scene_profiled(
+                                    &proj_clone,
+                                    active_id,
+                                    current_time,
+                                    pw,
+                                    ph,
+                                    false,
+                                    eff_adaptive_div,
+                                )
+                                .map(|(img, report)| {
+                                    self.v110_panels.adaptive_scale.record_frame_time(
+                                        report.total_ms(),
+                                        is_playing,
+                                        &proj_clone.adaptive_playback,
+                                    );
+                                    self.v110_panels.profiler_history.push(report);
+                                    img
+                                })
                         };
 
                         if let Some(linear_img) = rendered {
-                            if self.ram_preview.enabled && !ab_active {
+                            if self.ram_preview.enabled && !ab_active && !profiler_hud_enabled {
                                 self.ram_preview.insert_frame(
                                     ram_key,
                                     Arc::new(PackedRamFrame::from_linear_image(&linear_img)),
@@ -2660,6 +2708,7 @@ impl eframe::App for EditorApp {
             &mut self.v80_panels,
             &mut self.v90_panels,
             &mut self.v100_panels,
+            &mut self.v110_panels,
             &mut hub_outcome,
         );
         self.v70_hub.show_command_palette_modal(

@@ -885,3 +885,101 @@ fn golden_v100_spatial_360_fluid_cloth_ibl_and_mocap_determinism() {
     let pose = ve_core::extract_silhouette_pose_from_rgba8(&rgba1, f1.width, f1.height, 0.08, 0.8);
     assert!(pose.confidence > 0.1);
 }
+
+#[test]
+fn golden_v110_zero_copy_gpu_graph_adaptive_fastbin_and_profiler_hud() {
+    let mut proj = Project::new(
+        "GoldenV110",
+        ProjectSettings {
+            width: 240,
+            height: 136,
+            fps: ve_core::FrameRate::FPS_60,
+            ..ProjectSettings::default()
+        },
+    );
+    proj.profiler_hud.enabled = true;
+    proj.profiler_hud.show_frame_graph = true;
+    proj.adaptive_playback.enabled = true;
+    {
+        let scene = proj.active_scene_mut().unwrap();
+        scene.color_grade.enabled = true;
+        scene.color_grade.exposure = 0.2;
+        scene.color_grade.contrast = 1.15;
+        scene.color_management.enabled = true;
+        scene.spatial_video =
+            ve_core::SpatialVideoConfig::from_preset(ve_core::Spatial360Preset::ActionHorizonLock);
+
+        let mut rect = TimelineItem::new(
+            "HeroPlate",
+            RationalTime::ZERO,
+            RationalTime::from_seconds(4.0),
+            ItemKind::Shape {
+                shape: ve_core::ShapeKind::Rectangle,
+                width: 140.0,
+                height: 76.0,
+                color: ve_core::RgbaColor {
+                    r: 0.25,
+                    g: 0.65,
+                    b: 0.95,
+                    a: 1.0,
+                },
+            },
+        );
+        rect.transform.x = 120.0;
+        rect.transform.y = 68.0;
+        scene.layers[0].items.push(rect);
+    }
+
+    // 1. FastBin SHA-256 ラウンドトリップで完全一致すること
+    let fb = ve_core::encode_project_fastbin(&proj).unwrap();
+    let restored = ve_core::decode_project_fastbin(&fb).unwrap();
+    assert_eq!(proj, restored);
+
+    // 2. プロファイル付きレンダリングの決定論性＆HUD 描画＆実測パス内訳検証
+    let t = RationalTime::from_seconds(0.5);
+    let mut g1 = RenderGraph::new();
+    let mut g2 = RenderGraph::new();
+    let (img1, rep1) = g1
+        .render_project_scene_profiled(&proj, proj.active_scene_id, t, 240, 136, false, 2)
+        .unwrap();
+    let (img2, rep2) = g2
+        .render_project_scene_profiled(&restored, restored.active_scene_id, t, 240, 136, false, 2)
+        .unwrap();
+    assert_eq!(rep1.adaptive_divisor, 2);
+    assert!(rep1.active_item_count >= 1);
+    assert!(
+        rep1.pass_breakdown.len() >= 3,
+        "expected LayerComposite + ColorGrade + ACEScg + Spatial360 breakdown, got {:?}",
+        rep1.pass_breakdown
+    );
+    assert_eq!(rep1.width, 240);
+    assert_eq!(rep2.width, 240);
+    assert_eq!(img1.width, 240);
+    assert_eq!(img2.height, 136);
+
+    // HUD を無効にしたフレームと比較して、左上 HUD 領域が実際に描画されていること
+    let mut no_hud_proj = proj.clone();
+    no_hud_proj.profiler_hud.enabled = false;
+    let (img_no_hud, _) = g1
+        .render_project_scene_profiled(
+            &no_hud_proj,
+            no_hud_proj.active_scene_id,
+            t,
+            240,
+            136,
+            false,
+            2,
+        )
+        .unwrap();
+    assert_ne!(
+        img1.to_rgba8_srgb(),
+        img_no_hud.to_rgba8_srgb(),
+        "Profiler HUD overlay must visibly render onto frame when enabled"
+    );
+
+    // 3. v11.0 ゼロコピー GPU/CPU グラフチェーンベンチマーク（全 9 本 WGSL Naga 検証）
+    let stats = ve_render::benchmark_v110_zero_copy_graph(160, 90);
+    assert_eq!(stats.validated_shader_count, 9);
+    assert!(stats.all_shaders_valid);
+    assert_eq!(stats.intermediate_cpu_readbacks, 0);
+}

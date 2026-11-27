@@ -295,10 +295,10 @@ fn e2e_v100_legacy_v01_project_json_backward_compatibility() {
 #[test]
 fn e2e_v100_all_builtin_wgsl_shaders_validate_and_gpu_or_cpu_fallback_matches() {
     let checks = validate_all_builtin_wgsl_shaders();
-    assert_eq!(checks.len(), 8);
+    assert_eq!(checks.len(), 9);
     assert!(
         checks.iter().all(|c| c.valid),
-        "all 8 builtin WGSL shaders must pass naga validation: {:?}",
+        "all 9 builtin WGSL shaders must pass naga validation: {:?}",
         checks
     );
 
