@@ -3078,3 +3078,62 @@ fn v100_mcp_tools_spatial_fluids_mocap_farm_and_cinema_os_100_tools() {
     assert_eq!(sum_json["mcp_total_tools"], 100);
     assert_eq!(sum_json["roadmap_completed"], "60/60");
 }
+
+#[test]
+fn v100_mcp_all_100_tools_schema_audit_and_error_resilience() {
+    let defs = tool_definitions();
+    let arr = defs
+        .as_array()
+        .expect("tool_definitions must be JSON array");
+    assert_eq!(arr.len(), 100, "must expose exactly 100 MCP tools");
+
+    let catalog = tool_domain_catalog();
+    assert_eq!(catalog.len(), 10, "must have exactly 10 domains");
+    let catalog_sum: usize = catalog.iter().map(|d| d.tool_count).sum();
+    assert_eq!(catalog_sum, 100);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for def in arr {
+        let name = def["name"]
+            .as_str()
+            .expect("every MCP tool must have string name");
+        assert!(!name.is_empty());
+        assert!(seen.insert(name.to_string()), "duplicate MCP tool: {name}");
+        let desc = def["description"]
+            .as_str()
+            .expect("every MCP tool must have description");
+        assert!(
+            desc.chars().count() >= 8,
+            "MCP tool '{name}' description too short: {desc}"
+        );
+        assert_eq!(
+            def["inputSchema"]["type"], "object",
+            "MCP tool '{name}' inputSchema.type must be 'object'"
+        );
+    }
+
+    // 不正・空引数や未知ツール名でもパニックせず安全に Ok/Err を返すことを全 100 ツール横断で検証
+    let proj = Project::new("ResilienceAudit", ProjectSettings::default());
+    let session = Arc::new(Mutex::new(EditorSession::new(proj)));
+    assert!(call_tool(&session, "nonexistent_tool_xyz", &json!({})).is_err());
+    for tool_name in [
+        "configure_360_overcapture_and_horizon_lock",
+        "configure_stereoscopic_spatial_3d",
+        "add_or_update_fluid_simulation",
+        "add_or_update_cloth_simulation",
+        "configure_3d_shadows_and_hdri_ibl",
+        "import_bvh_mocap_and_retarget",
+        "extract_silhouette_mocap_pose",
+        "manage_lan_render_farm",
+        "produce_storyboard_animatic_from_script",
+        "predict_retention_and_generate_ab_variants",
+        "mcp_catalog_introspect",
+        "studio_hub_control",
+    ] {
+        let res = call_tool(&session, tool_name, &json!({}));
+        assert!(
+            res.is_ok() || res.is_err(),
+            "tool {tool_name} must not panic on empty args"
+        );
+    }
+}

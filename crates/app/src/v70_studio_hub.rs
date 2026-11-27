@@ -1044,6 +1044,38 @@ impl V70StudioHubState {
             ));
         }
         ui.weak(&self.gpu_pool_status_msg);
+
+        ui.separator();
+        ui.collapsing(
+            "🚀 v10.0 WGSL コンピュート（360° 全天球＆2D 流体移流）＆ 全 8 シェーダー Naga 検証",
+            |ui| {
+                static CACHED_CHECKS: std::sync::OnceLock<Vec<ve_render::WgslValidationSummary>> =
+                    std::sync::OnceLock::new();
+                let checks = CACHED_CHECKS
+                    .get_or_init(ve_render::validate_all_builtin_wgsl_shaders);
+                if ui
+                    .button("⚡ 全 8 WGSL シェーダー検証 ＋ 360° GPU/CPU ベンチ実行")
+                    .clicked()
+                {
+                    let rep = ve_render::benchmark_v100_gpu_or_cpu(640, 360);
+                    let valid_cnt = checks.iter().filter(|c| c.valid).count();
+                    self.gpu_pool_status_msg = format!(
+                        "v10.0 WGSL 検証: {}/{} valid (all_ok={}) | {} ({}) | 360° OverCapture 640×360 = {:.2} ms (GPU={})",
+                        valid_cnt,
+                        rep.validated_shader_count,
+                        rep.all_shaders_valid,
+                        rep.adapter_name,
+                        rep.backend_name,
+                        rep.spatial_360_ms,
+                        rep.used_gpu
+                    );
+                }
+                for s in checks {
+                    let icon = if s.valid { "✅" } else { "❌" };
+                    ui.monospace(format!("{icon} [{}] {}", s.milestone, s.name));
+                }
+            },
+        );
     }
 
     // =========================================================================

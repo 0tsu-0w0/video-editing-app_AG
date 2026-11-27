@@ -207,9 +207,10 @@ pub use smart_dam::{
     find_similar_shots, relink_missing_assets_from_dir,
 };
 pub use spatial_video::{
-    GyroOrientationSample, Projection360Mode, Spatial360Preset, SpatialVideoConfig, StereoLayout,
-    build_spatial_preset_command, compass_heading_label, equirect_uv_for_ray,
-    evaluate_horizon_locked_euler, project_screen_to_equirect_uv, rotate_ray_ypr,
+    GyroOrientationSample, Projection360Mode, RotationYprMatrix, Spatial360Preset,
+    SpatialVideoConfig, StereoLayout, build_spatial_preset_command, compass_heading_label,
+    equirect_uv_for_ray, evaluate_horizon_locked_euler, project_screen_to_equirect_uv,
+    project_screen_to_equirect_uv_fast, rotate_ray_ypr,
 };
 pub use speed_ramp::{
     DetectedSceneCut, SpeedRampConfig, SpeedRampKnot, SpeedRampPreset, build_scene_cut_commands,

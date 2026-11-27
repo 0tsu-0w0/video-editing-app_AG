@@ -347,25 +347,94 @@ pub fn equirect_uv_for_ray(dir: [f32; 3]) -> (f32, f32) {
     (u, v)
 }
 
+/// フレーム単位で 1 度だけ `sin`/`cos` を事前計算する 3×3 YPR 回転行列（1080p/4K CPU パスを大幅高速化）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RotationYprMatrix {
+    /// 行優先 3×3 回転行列（Roll → Pitch → Yaw 合成）
+    pub m: [[f32; 3]; 3],
+    pub yaw_deg: f32,
+    pub pitch_deg: f32,
+}
+
+impl RotationYprMatrix {
+    #[inline]
+    pub fn from_ypr_deg(yaw_deg: f32, pitch_deg: f32, roll_deg: f32) -> Self {
+        let (sr, cr) = roll_deg.to_radians().sin_cos();
+        let (sp, cp) = pitch_deg.to_radians().sin_cos();
+        let (sy, cy) = yaw_deg.to_radians().sin_cos();
+
+        // Roll(Z) -> Pitch(X) -> Yaw(Y) の展開合成行列
+        let m00 = cy * cr + sy * sp * sr;
+        let m01 = -cy * sr + sy * sp * cr;
+        let m02 = sy * cp;
+
+        let m10 = cp * sr;
+        let m11 = cp * cr;
+        let m12 = -sp;
+
+        let m20 = -sy * cr + cy * sp * sr;
+        let m21 = sy * sr + cy * sp * cr;
+        let m22 = cy * cp;
+
+        Self {
+            m: [[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]],
+            yaw_deg,
+            pitch_deg,
+        }
+    }
+
+    #[inline]
+    pub fn apply(&self, v: [f32; 3]) -> [f32; 3] {
+        [
+            self.m[0][0] * v[0] + self.m[0][1] * v[1] + self.m[0][2] * v[2],
+            self.m[1][0] * v[0] + self.m[1][1] * v[1] + self.m[1][2] * v[2],
+            self.m[2][0] * v[0] + self.m[2][1] * v[1] + self.m[2][2] * v[2],
+        ]
+    }
+}
+
 /// カメラ姿勢 `(yaw, pitch, roll)`（度）でレイを回転させる（Roll → Pitch → Yaw 順）
 #[inline]
 pub fn rotate_ray_ypr(v: [f32; 3], yaw_deg: f32, pitch_deg: f32, roll_deg: f32) -> [f32; 3] {
-    let (sr, cr) = roll_deg.to_radians().sin_cos();
-    let (sp, cp) = pitch_deg.to_radians().sin_cos();
-    let (sy, cy) = yaw_deg.to_radians().sin_cos();
+    RotationYprMatrix::from_ypr_deg(yaw_deg, pitch_deg, roll_deg).apply(v)
+}
 
-    // Roll (Z 軸)
-    let x1 = v[0] * cr - v[1] * sr;
-    let y1 = v[0] * sr + v[1] * cr;
-    let z1 = v[2];
-
-    // Pitch (X 軸)
-    let y2 = y1 * cp - z1 * sp;
-    let z2 = y1 * sp + z1 * cp;
-    let x2 = x1;
-
-    // Yaw (Y 軸)
-    [x2 * cy + z2 * sy, y2, -x2 * sy + z2 * cy]
+/// 事前計算済み `RotationYprMatrix` と視野角タンジェントを使って高速に 360° Equirectangular UV を計算する
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn project_screen_to_equirect_uv_fast(
+    nx: f32,
+    ny: f32,
+    aspect: f32,
+    mode: Projection360Mode,
+    rot: &RotationYprMatrix,
+    tan_half_x: f32,
+    tan_half_y: f32,
+    inv_tiny_zoom: f32,
+) -> (f32, f32) {
+    match mode {
+        Projection360Mode::Off | Projection360Mode::EquirectangularReview => {
+            let u = ((nx * 0.5 + 0.5) + rot.yaw_deg / 360.0).rem_euclid(1.0);
+            let v = (0.5 - ny * 0.5 - rot.pitch_deg / 180.0).clamp(0.0, 1.0);
+            (u, v)
+        }
+        Projection360Mode::OverCapture => {
+            let ray_world = rot.apply([nx * tan_half_x, ny * tan_half_y, 1.0]);
+            equirect_uv_for_ray(ray_world)
+        }
+        Projection360Mode::TinyPlanet => {
+            // 逆ステレオ投影: 画面中心が南極（または指定向き）、外周が天頂へ回り込むリトルプラネット変換
+            let px = nx * aspect.max(0.1) * inv_tiny_zoom;
+            let py = ny * inv_tiny_zoom;
+            let r2 = px * px + py * py;
+            let inv_denom = 1.0 / (1.0 + r2);
+            let sx = (2.0 * px) * inv_denom;
+            let sy = (2.0 * py) * inv_denom;
+            let sz = (1.0 - r2) * inv_denom;
+            let ray_world = rot.apply([sx, sy, sz]);
+            equirect_uv_for_ray(ray_world)
+        }
+    }
 }
 
 /// 正規化スクリーン座標 `(nx, ny) ∈ [-1, 1]`（+ny=上）を 360° Equirectangular UV へ逆射影する
@@ -381,35 +450,21 @@ pub fn project_screen_to_equirect_uv(
     fov_deg: f32,
     tiny_planet_zoom: f32,
 ) -> (f32, f32) {
-    match mode {
-        Projection360Mode::Off | Projection360Mode::EquirectangularReview => {
-            let u = ((nx * 0.5 + 0.5) + yaw_deg / 360.0).rem_euclid(1.0);
-            let v = (0.5 - ny * 0.5 - pitch_deg / 180.0).clamp(0.0, 1.0);
-            (u, v)
-        }
-        Projection360Mode::OverCapture => {
-            let half_fov = (fov_deg.clamp(25.0, 155.0) * 0.5).to_radians();
-            let tan_half_x = half_fov.tan();
-            let tan_half_y = tan_half_x / aspect.max(0.1);
-            let ray_cam = [nx * tan_half_x, ny * tan_half_y, 1.0];
-            let ray_world = rotate_ray_ypr(ray_cam, yaw_deg, pitch_deg, roll_deg);
-            equirect_uv_for_ray(ray_world)
-        }
-        Projection360Mode::TinyPlanet => {
-            // 逆ステレオ投影: 画面中心が南極（または指定向き）、外周が天頂へ回り込むリトルプラネット変換
-            let zoom = tiny_planet_zoom.clamp(0.25, 4.0);
-            let px = (nx * aspect.max(0.1)) / zoom;
-            let py = ny / zoom;
-            let r2 = px * px + py * py;
-            let denom = 1.0 + r2;
-            // 南極中心ステレオ逆写影（r=0 → [0, 0, 1], r→∞ → [0, 0, -1]）
-            let sx = (2.0 * px) / denom;
-            let sy = (2.0 * py) / denom;
-            let sz = (1.0 - r2) / denom;
-            let ray_world = rotate_ray_ypr([sx, sy, sz], yaw_deg, pitch_deg, roll_deg);
-            equirect_uv_for_ray(ray_world)
-        }
-    }
+    let rot = RotationYprMatrix::from_ypr_deg(yaw_deg, pitch_deg, roll_deg);
+    let half_fov = (fov_deg.clamp(25.0, 155.0) * 0.5).to_radians();
+    let tan_half_x = half_fov.tan();
+    let tan_half_y = tan_half_x / aspect.max(0.1);
+    let inv_tiny_zoom = 1.0 / tiny_planet_zoom.clamp(0.25, 4.0);
+    project_screen_to_equirect_uv_fast(
+        nx,
+        ny,
+        aspect,
+        mode,
+        &rot,
+        tan_half_x,
+        tan_half_y,
+        inv_tiny_zoom,
+    )
 }
 
 /// プリセット適用用の 1-Undo `EditCommand` を生成する

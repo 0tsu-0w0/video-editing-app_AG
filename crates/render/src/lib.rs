@@ -3,6 +3,7 @@ pub mod color;
 pub mod color_grading;
 pub mod finishing_render;
 pub mod generative_render;
+pub mod gpu_v100;
 pub mod gpu_v30;
 pub mod gpu_v70;
 pub mod graph;
@@ -52,6 +53,11 @@ pub use gpu_v70::{
     GpuV70Status, PoolSurfaceFormat, ResidentFramePool, benchmark_v70_frame_pool,
     compose_ab_split_linear, detect_gpu_v70_status, execute_fast_blend_mask_cpu,
     execute_v70_aces_or_cpu, execute_v70_blend_mask_or_cpu, render_ab_compare_scene,
+};
+pub use gpu_v100::{
+    FLUID_2D_ADVECTION_WGSL, GpuV100BenchmarkReport, GpuV100ComputePipeline,
+    SPATIAL_360_EQUIRECT_WGSL, WgslValidationSummary, benchmark_v100_gpu_or_cpu,
+    execute_v100_spatial_360_or_cpu, validate_all_builtin_wgsl_shaders,
 };
 pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph, render_frame_batch_parallel};
 pub use hot_shader::{
