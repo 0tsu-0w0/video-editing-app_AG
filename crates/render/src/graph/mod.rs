@@ -271,6 +271,10 @@ impl RenderGraph {
         self.video_frame_cache.len()
     }
 
+    pub fn lut_cache_len(&self) -> usize {
+        self.lut_cache.len()
+    }
+
     fn insert_mem_precomp(&mut self, key: String, img: LinearImage) {
         if !self.mem_precomp_cache.contains_key(&key)
             && self.mem_precomp_cache.len() >= MAX_MEM_PRECOMP_FRAMES
@@ -435,28 +439,9 @@ impl RenderGraph {
         Some(rgba)
     }
 
-    /// プレビュー用の任意解像度 `(target_w, target_h)` へシーン全体の座標・文字サイズ・図形サイズを
-    /// 正確にスケーリングしてレンダリングする（ギズモ座標と描画ピクセルを 1:1 一致させる）。
-    pub fn render_project_scene_scaled(
-        &mut self,
-        project: &Project,
-        scene_id: SceneId,
-        time: RationalTime,
-        target_w: u32,
-        target_h: u32,
-        transparent_bg: bool,
-    ) -> Option<LinearImage> {
-        let orig_scene = project.scene(scene_id)?;
-        let tw = target_w.max(1);
-        let th = target_h.max(1);
+    fn scale_scene_for_target(orig_scene: &Scene, tw: u32, th: u32) -> std::borrow::Cow<'_, Scene> {
         if orig_scene.width == tw && orig_scene.height == th {
-            return Some(self.render_scene_inner(
-                Some(project),
-                orig_scene,
-                time,
-                transparent_bg,
-                0,
-            ));
+            return std::borrow::Cow::Borrowed(orig_scene);
         }
 
         let mut scaled = orig_scene.clone();
@@ -568,7 +553,107 @@ impl RenderGraph {
             scaled.optical_vfx.bokeh_radius_px =
                 (scaled.optical_vfx.bokeh_radius_px * uniform).max(0.5);
         }
-        Some(self.render_scene_inner(Some(project), &scaled, time, transparent_bg, 0))
+        std::borrow::Cow::Owned(scaled)
+    }
+
+    /// プレビュー用の任意解像度 `(target_w, target_h)` へシーン全体の座標・文字サイズ・図形サイズを
+    /// 正確にスケーリングしてレンダリングする（ギズモ座標と描画ピクセルを 1:1 一致させる）。
+    pub fn render_project_scene_scaled(
+        &mut self,
+        project: &Project,
+        scene_id: SceneId,
+        time: RationalTime,
+        target_w: u32,
+        target_h: u32,
+        transparent_bg: bool,
+    ) -> Option<LinearImage> {
+        let orig_scene = project.scene(scene_id)?;
+        let tw = target_w.max(1);
+        let th = target_h.max(1);
+        let scene_ref = Self::scale_scene_for_target(orig_scene, tw, th);
+        Some(self.render_scene_inner(Some(project), scene_ref.as_ref(), time, transparent_bg, 0))
+    }
+
+    /// v11.0 #64: パス別マイクロ秒実測とキャッシュメトリクス収集を伴うレンダリング。
+    /// `project.profiler_hud.enabled` が有効な場合はプレビュー左上へダークガラス HUD も合成する。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_project_scene_profiled(
+        &mut self,
+        project: &Project,
+        scene_id: SceneId,
+        time: RationalTime,
+        target_w: u32,
+        target_h: u32,
+        transparent_bg: bool,
+        adaptive_divisor: u32,
+    ) -> Option<(LinearImage, ve_core::FrameProfileReport)> {
+        let orig_scene = project.scene(scene_id)?;
+        let tw = target_w.max(1);
+        let th = target_h.max(1);
+        let total_t0 = std::time::Instant::now();
+
+        let scale_t0 = std::time::Instant::now();
+        let scene_ref = Self::scale_scene_for_target(orig_scene, tw, th);
+        let scale_us = scale_t0.elapsed().as_micros() as u64;
+
+        let mut pass_breakdown: Vec<ve_core::PassTimingSample> = Vec::with_capacity(8);
+        if scale_us > 0 {
+            pass_breakdown.push(ve_core::PassTimingSample {
+                pass_name: "SceneScale".into(),
+                duration_us: scale_us,
+            });
+        }
+
+        let mut active_layer_count = 0usize;
+        let mut active_item_count = 0usize;
+        for layer in &orig_scene.layers {
+            if !layer.visible {
+                continue;
+            }
+            let cnt = layer.items.iter().filter(|it| it.contains(time)).count();
+            if cnt > 0 {
+                active_layer_count += 1;
+                active_item_count += cnt;
+            }
+        }
+
+        let mut canvas = self.render_scene_inner_profiled(
+            Some(project),
+            scene_ref.as_ref(),
+            time,
+            transparent_bg,
+            0,
+            Some(&mut pass_breakdown),
+        );
+        let total_us = total_t0.elapsed().as_micros() as u64;
+        let pool_metrics = self.frame_pool.metrics(0);
+        let report = ve_core::FrameProfileReport {
+            width: tw,
+            height: th,
+            total_us,
+            active_layer_count,
+            active_item_count,
+            gpu_zero_copy_used: false,
+            adaptive_divisor: adaptive_divisor.clamp(1, 4),
+            pass_breakdown,
+            text_cache_hits: self.text_renderer.text_cache_hits(),
+            text_cache_misses: self.text_renderer.text_cache_misses(),
+            text_cache_bytes: self.text_renderer.text_cache_bytes(),
+            frame_pool_reuses: pool_metrics.pool_reuses,
+            frame_pool_bytes: pool_metrics.resident_bytes,
+            lut_cache_entries: self.lut_cache.len(),
+        };
+
+        if project.profiler_hud.enabled {
+            crate::gpu_v110::draw_profiler_hud_overlay(
+                &mut canvas,
+                &report,
+                &project.profiler_hud,
+                orig_scene.gpu_graph.show_gpu_direct_badge,
+            );
+        }
+
+        Some((canvas, report))
     }
 
     fn render_scene_inner(
@@ -579,6 +664,19 @@ impl RenderGraph {
         transparent_bg: bool,
         depth: u8,
     ) -> LinearImage {
+        self.render_scene_inner_profiled(project, scene, time, transparent_bg, depth, None)
+    }
+
+    fn render_scene_inner_profiled(
+        &mut self,
+        project: Option<&Project>,
+        scene: &Scene,
+        time: RationalTime,
+        transparent_bg: bool,
+        depth: u8,
+        mut profile_passes: Option<&mut Vec<ve_core::PassTimingSample>>,
+    ) -> LinearImage {
+        let comp_t0 = profile_passes.as_ref().map(|_| std::time::Instant::now());
         let mut canvas =
             if depth == 0 && scene.motion_blur.enabled && scene.motion_blur.shutter_angle_deg > 0.5
             {
@@ -638,35 +736,69 @@ impl RenderGraph {
             } else {
                 self.render_scene_single_frame(project, scene, time, transparent_bg, depth)
             };
+        if let (Some(passes), Some(t0)) = (profile_passes.as_deref_mut(), comp_t0) {
+            passes.push(ve_core::PassTimingSample {
+                pass_name: "LayerComposite".into(),
+                duration_us: t0.elapsed().as_micros() as u64,
+            });
+        }
 
         // v0.8 #13: シーン全体の非破壊カラーグレーディング（3-Way + .cube 3D LUT）
         if scene.color_grade.enabled {
+            let t0 = profile_passes.as_ref().map(|_| std::time::Instant::now());
             let lut = scene
                 .color_grade
                 .lut_path
                 .as_deref()
                 .and_then(|p| self.resolve_lut(p));
             apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_deref());
+            if let (Some(passes), Some(t0)) = (profile_passes.as_deref_mut(), t0) {
+                passes.push(ve_core::PassTimingSample {
+                    pass_name: "ColorGrade".into(),
+                    duration_us: t0.elapsed().as_micros() as u64,
+                });
+            }
         }
 
         // v4.0 #33: ACEScg / OpenColorIO プロカラー管理（IDT → Working → Gamut Compress → Tone Map → ODT）
         if scene.color_management.enabled {
+            let t0 = profile_passes.as_ref().map(|_| std::time::Instant::now());
             apply_scene_color_management(&mut canvas, &scene.color_management);
+            if let (Some(passes), Some(t0)) = (profile_passes.as_deref_mut(), t0) {
+                passes.push(ve_core::PassTimingSample {
+                    pass_name: "ACEScg".into(),
+                    duration_us: t0.elapsed().as_micros() as u64,
+                });
+            }
         }
 
         // v8.0 #51: シネマ光学 VFX（擬似深度ボケ Rack Focus・ゴッドレイ・Brown-Conrady レンズ歪み＆物理色収差）
         if scene.optical_vfx.is_active() {
+            let t0 = profile_passes.as_ref().map(|_| std::time::Instant::now());
             crate::v80_render::apply_cinema_optical_vfx(&mut canvas, &scene.optical_vfx);
+            if let (Some(passes), Some(t0)) = (profile_passes.as_deref_mut(), t0) {
+                passes.push(ve_core::PassTimingSample {
+                    pass_name: "OpticalVFX".into(),
+                    duration_us: t0.elapsed().as_micros() as u64,
+                });
+            }
         }
 
         // v5.0 #40: シネマフィニッシング（35mm ハレーション・アナモルフィックフレア・グレイン・レターボックス・バーンイン）
         if scene.cinema_finishing.enabled {
+            let t0 = profile_passes.as_ref().map(|_| std::time::Instant::now());
             crate::finishing_render::apply_cinema_finishing(
                 &mut canvas,
                 &scene.cinema_finishing,
                 time,
                 scene.fps,
             );
+            if let (Some(passes), Some(t0)) = (profile_passes.as_deref_mut(), t0) {
+                passes.push(ve_core::PassTimingSample {
+                    pass_name: "CinemaFinishing".into(),
+                    duration_us: t0.elapsed().as_micros() as u64,
+                });
+            }
         }
 
         // v8.0 #52: ADR カウント収録 3-2-1 映像ストリーマ
@@ -683,11 +815,18 @@ impl RenderGraph {
 
         // v10.0 #57: 360° 全天球投影（OverCapture / Tiny Planet / 水平ロック）＆ ステレオスコピック空間 3D パス
         if depth == 0 && scene.spatial_video.enabled {
+            let t0 = profile_passes.as_ref().map(|_| std::time::Instant::now());
             canvas = crate::v100_render::render_spatial_360_and_stereo_pass(
                 &canvas,
                 &scene.spatial_video,
                 time.as_seconds() as f32,
             );
+            if let (Some(passes), Some(t0)) = (profile_passes, t0) {
+                passes.push(ve_core::PassTimingSample {
+                    pass_name: "Spatial360".into(),
+                    duration_us: t0.elapsed().as_micros() as u64,
+                });
+            }
         }
 
         canvas

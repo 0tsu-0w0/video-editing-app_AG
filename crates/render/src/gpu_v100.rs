@@ -231,7 +231,7 @@ pub struct WgslValidationSummary {
     pub error: Option<String>,
 }
 
-/// ワークスペース内の全 8 本の組み込み WGSL シェーダーを `naga` で一括静的検証する
+/// ワークスペース内の全 9 本の組み込み WGSL シェーダー（v0.2〜v11.0）を `naga` で一括静的検証する
 pub fn validate_all_builtin_wgsl_shaders() -> Vec<WgslValidationSummary> {
     let shaders: &[(&'static str, &'static str, &'static str)] = &[
         ("effects.wgsl", "v0.2", EFFECTS_WGSL_SOURCE),
@@ -258,6 +258,11 @@ pub fn validate_all_builtin_wgsl_shaders() -> Vec<WgslValidationSummary> {
             SPATIAL_360_EQUIRECT_WGSL,
         ),
         ("fluid_2d_advection.wgsl", "v10.0", FLUID_2D_ADVECTION_WGSL),
+        (
+            "zero_copy_composite_grade.wgsl",
+            "v11.0",
+            crate::gpu_v110::ZERO_COPY_COMPOSITE_GRADE_WGSL,
+        ),
     ];
 
     shaders
@@ -802,7 +807,7 @@ mod tests {
     #[test]
     fn all_eight_builtin_wgsl_shaders_from_v02_to_v100_pass_naga_validation() {
         let checks = validate_all_builtin_wgsl_shaders();
-        assert_eq!(checks.len(), 8);
+        assert_eq!(checks.len(), 9);
         for c in &checks {
             assert!(
                 c.valid,
@@ -815,7 +820,7 @@ mod tests {
     #[test]
     fn v100_spatial_360_gpu_or_cpu_fallback_and_benchmark_work_cleanly() {
         let rep = benchmark_v100_gpu_or_cpu(160, 90);
-        assert_eq!(rep.validated_shader_count, 8);
+        assert_eq!(rep.validated_shader_count, 9);
         assert!(rep.all_shaders_valid);
         assert!(rep.spatial_360_ms >= 0.0 && rep.spatial_360_ms.is_finite());
     }

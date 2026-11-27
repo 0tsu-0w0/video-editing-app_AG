@@ -1,8 +1,8 @@
 # 機能追加ロードマップ（Future Features Roadmap）
 
 > 更新日: 2026-11-27  
-> **v0.1〜v10.0 全 60 項目完全達成済み（全 100 MCP ツール / 10 ドメイン・Pure Rust / ゼロ `unsafe` / ゼロ追加依存）＋ v10.1 最適化＆軽量化ハードニング完了**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **100 MCP ツール / 10 ドメイン**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ・Brown-Conrady レンズ補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチ・MAD デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆5.1ch/FOA Ambisonics バス・2 バスライブスイッチャー＆RTMP/SRT/スティンガー/`.veproj` 同時生成・VTuber 2D 三角メッシュ変形＆Verlet 物理揺れ＆UDP OSC/VMC 顔トラッキング・OSC/MIDI-over-UDP/Stream Deck RFC 6455 WebSocket ハードウェア連携・ローカル スマート DAM（代表色/BPM/LUFS 索引・16D 類似検索・スマートビン・SHA-256 一括自動再リンク）・360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ステレオスコピック空間 3D 編集・決定論 2D Navier-Stokes 流体（煙・炎・インク・プラズマ）＆PBD クロス物理＋3D PCF シャドウマップ＆Equirectangular HDRI IBL・Pure-Rust `.bvh`＆動画シルエットモーションキャプチャ→2D/3D 足接地ロックリターゲット・LAN 分散レンダーファーム（RFC 2104 HMAC-SHA256）＆自律 AI シネマプロデューサー（台本→絵コンテ・視聴維持率予測・A/B 自動編集・全 100 MCP ツール）。  
-> 以下に **v0.8〜v10.0（✅ 全 60 項目完全実装済み）** および、次期世代の **v11.0〜v14.0（🗺 #61〜#76 ロードマップ）** を整理しています。
+> **v0.1〜v11.0 全 64 項目完全達成済み（全 104 MCP ツール / 11 ドメイン・全 9 本組み込み WGSL シェーダー・Pure Rust / ゼロ `unsafe` / ゼロ追加依存）＋ v10.1 最適化＆軽量化ハードニング完了**: コアエンジン・AE 融合・音声 AI / 立ち絵 / 3D・PSD / WGSL / プラグイン・実メディア描画＆非同期書き出し・AviUtl2 実用機能群・無音自動カット・`wgpu` GPU オフロード・プレビュー直接操作ギズモ・RAM 先読みプレビュー・縦動画リフレーム・BGM 自動ダッキング＆オーディオリアクティブ・台本一括生成・SRT / ASS / `.exo` / OTIO 互換・レンダーキュー・自由ベジェマスク＆自動モーショントラッカー・Pure-Rust WASM サンドボックスプラグイン・AI ハイライト自動ショート生成・プリセット管理・テキストベース編集＆フィラー自動除去・BGM ビート自動検出＆スナップ・`.cube` 3D LUT＆3-Way カラーホイール＆リアルタイムビデオスコープ・Pure-Rust エクスプレッションエンジン・モーショングラフィックス＆プロジェクトテンプレート（`.mogrt` 相当）・決定論的 2D/3D パーティクル＆自由ベジェベクターシェイプ＆3D ライト＆シャッター角モーションブラー・マルチカメラ編集＆音声相互相関自動同期・HW デコード＆並列書き出し＆`wgpu` コンピュートコンポジタ＆SSD 永続フレームキャッシュ・プロ NLE トリム＆トラックミキサー＆マイク録音＆スペクトル NR/ディエッサー/ボーカル分離・納品検証＆ZIP アーカイブ＆HDR10 PQ 10-bit・カスタムキーバインド/多言語/テーマ/SHA-256 公式拡張レジストリ/マルチ OS 配布＆ゴールデン視覚回帰テスト・第 3 ワークスペース「ノード合成空間」＆ローカル AI ビジョン＆AI 編集ディレクター＆Git-Friendly 3-Way マージ/レビュー・RGB トーンカーブ/HSL 二次補正/自動カラーマッチ・自動 2D 手ぶれ補正＆4 点コーナーピン・3D バイノーラル音響＆マルチバンドコンプ＆4× True-Peak リミッター・キネティック字幕＆多言語 CSV 切替・フル GPU コンピュート WGSL パイプライン＆4K ベンチ・3D メッシュ/glTF 2.0 PBR シーン合成＆3D カメラトラッカー・完全オフライン多言語 AI 吹替 WAV 合成＆音素リップシンク・Lamport/Vector-Clock CRDT ＆ ローカル LAN TCP リアルタイム同時共同編集・ACEScg / OpenColorIO v2 プロカラー管理＆カメラ Log IDT・決定論的 2D リジッドボディ物理演算＆自動キーフレームベイク・6 種プロシージャル背景＆48kHz Foley/SFX シンセ・放送 QC 監査（ITU-R BS.1770/BT.1702）＆高 CTR サムネイル抽出＆HTML5 レビュープレイヤー・2D スケルトンボーン＆2-Bone IK パペットリギング・オフライン自動 BGM コンポーザー（6 ジャンル＆小節マーカー）・解析積分スピードランプ＆自動シーンカット検出・35mm ハレーション/アナモルフィックフレア/グレイン/SMPTE バーンイン＆CMX 3600 EDL / FCPXML v1.10 書き出し・データ駆動モーショングラフィックス＆インフォグラフィックチャート（CSV/JSON 4 種）・非破壊 VFX ペイント/クローンスタンプ/ワイヤー消しインペインティング/秘匿ぼかし・マルチトラックポッドキャスト話者ダイアリゼーション＆-16 LUFS 自動レベラー・マルチプラットフォーム 1 クリック納品バンドルパッケージャー・役割別 6 スタジオ Hub 統合＆`Ctrl+K` ファジー検索コマンドパレット・内蔵 MCP ドメイン別モジュール分割（全 **104 MCP ツール / 11 ドメイン**）・GPU-Resident 4K/8K 合成フレームプール＆WGSL 高速パス・10,000+ クリップ区間木 $O(\log N)$ 検索＆プロキシ⇔原本 SMPTE TC 自動コンフォーム＆A/B スプリット比較ビュー・4 点平面ホモグラフィトラッカー＆Sobel エッジ吸着キーフレームロトブラシ・SVG `<path>` インポート＆等弧長パスモーフィング＆Text-on-Path＆4×4 双三次グリッドワープ/輝度変位・シネマ光学 VFX（擬似深度 Rack Focus ボケ・ゴッドレイ・Brown-Conrady レンズ補正＆物理色収差）・オーディオ修復（50/60Hz 縦続ノッチ・MAD デクリック・適応 De-Reverb）＆ADR 3-2-1 カウント収録＆5.1ch/FOA Ambisonics バス・2 バスライブスイッチャー＆RTMP/SRT/スティンガー/`.veproj` 同時生成・VTuber 2D 三角メッシュ変形＆Verlet 物理揺れ＆UDP OSC/VMC 顔トラッキング・OSC/MIDI-over-UDP/Stream Deck RFC 6455 WebSocket ハードウェア連携・ローカル スマート DAM（代表色/BPM/LUFS 索引・16D 類似検索・スマートビン・SHA-256 一括自動再リンク）・360° 全天球動画（OverCapture / Tiny Planet / 水平ロック）＆ステレオスコピック空間 3D 編集・決定論 2D Navier-Stokes 流体（煙・炎・インク・プラズマ）＆PBD クロス物理＋3D PCF シャドウマップ＆Equirectangular HDRI IBL・Pure-Rust `.bvh`＆動画シルエットモーションキャプチャ→2D/3D 足接地ロックリターゲット・LAN 分散レンダーファーム（RFC 2104 HMAC-SHA256）＆自律 AI シネマプロデューサー・**v11.0 完全ゼロコピー GPU レンダリンググラフ（VRAM 常駐 Ping-Pong 連結 WGSL・全 9 シェーダー Naga 検証）・EMA ヒステリシス適応解像度 8K 再生＆複雑度ホットスポット事前レンダリング・SHA-256 FastBin 高速スナップショット＆構造共有差分＆1-Undo メモリコンパクション・リアルタイムプロファイラ HUD（p95/p99・パス内訳フレームグラフ・自動ボトルネック診断＆1-Undo 最適化）**。  
+> 以下に **v0.8〜v11.0（✅ 全 64 項目完全実装済み）** および、次期世代の **v12.0〜v14.0（🗺 #65〜#76 ロードマップ）** を整理しています。
 
 ## 全体マイルストーン俯瞰
 
@@ -22,7 +22,7 @@ flowchart LR
   V80["✅ v8.0 シネマVFX＆音響修復\n平面ホモグラフィ追跡＆ロトブラシ・SVGワープ\nシネマ光学ボケ/歪み・De-Reverb/ADR/Ambisonics"]
   V90["✅ v9.0 ライブ配信＆VTuber＆HW\nRTMP/SRTスイッチャー・VTuber 2Dメッシュ/VMC\nOSC/MIDI/StreamDeck・スマートDAM索引(90)"]
   V100["✅ v10.0 空間映像＆流体＆自律AI\n360°全天球＆空間3D・2D流体/クロス＆HDRI\nBVHリターゲット・分散レンダー＆100 MCP"]
-  V110["🗺 v11.0 ゼロコピーGPU＆8K即時エンジン\nVRAM常駐GPUグラフ・適応プロキシ先読み\n構造共有Undo・リアルタイムプロファイラ"]
+  V110["✅ v11.0 ゼロコピーGPU＆8K即時エンジン\nVRAM常駐GPUグラフ(9 WGSL)・適応プロキシ先読み\nFastBin/SHA-256軽量化・プロファイラHUD(104 MCP)"]
   V120["🗺 v12.0 シネマHDR＆DAW＆日本語組版2.0\nHLG/PQ 4000nit・パワーウィンドウ/カラーワーパー\nPhase Vocoder DAW・縦書き/ルビ＆3Dベベル"]
   V130["🗺 v13.0 次世代3Dシネマ＆ボリューメトリックVFX\nglTF/VRMスキニング・WGSLビジュアルシェーダー\nVoronoi破壊/流体連成・EXR16bit＆Z深度再照明"]
   V140["🗺 v14.0 オープン制作OS＆スウォームAI\nブランドデザインシステム・スタイル学習120+MCP\nWASMプラグインv2・長期互換CI＆WCAG AAA"]
@@ -50,7 +50,7 @@ flowchart LR
 | **v9.0** | Live Broadcast, VTuber & Hardware Ecosystem（RTMP/SRT スイッチャー・VTuber メッシュ/VMC・OSC/MIDI/StreamDeck・スマート DAM） | **#53〜#56** | ✅ 完了 |
 | **v10.0** | Spatial Computing, Physics Fluids & Autonomous Cinema OS（360°/空間 3D・流体/クロス＆HDRI・BVH リターゲット・分散レンダー＆100 MCP） | **#57〜#60** | ✅ 完了 |
 | **v10.1** | 最適化＆軽量化ハードニング（Undo `Arc` 50% 省メモリ・RAM プレビュー f16 50% 削減＆ゼロクローン再生・テキスト BBox LRU・LUT `Arc`・合成/ブラー/回転/スコープ高速化） | Performance & Memory | ✅ 完了 |
-| **v11.0** | Zero-Copy GPU Engine, Real-Time 8K & Native Studio Performance | **#61〜#64** | 🗺 計画中 |
+| **v11.0** | Zero-Copy GPU Engine, Real-Time 8K & Native Studio Performance（ゼロコピー GPU グラフ・適応 8K＆スマート先読み・FastBin SHA-256 省メモリ・プロファイラ HUD＆104 MCP） | **#61〜#64** | ✅ 完了 |
 | **v12.0** | Cinema Color Science, HDR Mastering, Pro DAW & Typography 2.0 | **#65〜#68** | 🗺 計画中 |
 | **v13.0** | Next-Gen 3D Cinema, Volumetric VFX & Procedural Simulation | **#69〜#72** | 🗺 計画中 |
 | **v14.0** | Open Ecosystem, Autonomous Production Studio & Enterprise Scale | **#73〜#76** | 🗺 計画中 |
@@ -425,35 +425,34 @@ flowchart LR
 
 ---
 
-## 🗺 v11.0（次期ロードマップ・Zero-Copy GPU Engine, Real-Time 8K & Native Studio Performance）：ゼロコピー GPU グラフ・適応先読み・構造共有軽量化・プロファイラ
+## ✅ v11.0（実装済み・Zero-Copy GPU Engine, Real-Time 8K & Native Studio Performance）：ゼロコピー GPU グラフ・適応 8K 再生・FastBin 軽量化・プロファイラ HUD
 
-> 設計原則は v1.0〜v10.0 から変わらず **Pure Rust・ゼロ `unsafe`・新規外部クレート追加ゼロ（または厳格精査）・完全オフライン完結・MIT OR Apache-2.0** を堅持します。
+> Pure Rust・ゼロ `unsafe`・新規外部クレート追加ゼロ・完全オフライン完結・MIT OR Apache-2.0 を堅持して全 4 項目（#61〜#64）を実装完了。
 
-### 61. 完全ゼロコピー GPU レンダリンググラフ（VRAM 常駐テクスチャ合成 ＆ WGSL 全パス連結）
-- **目的**: CPU 側でのフルフレーム合成→毎フレーム PCIe 転送というボトルネックを根本解消し、4K 60fps / 8K 30fps の多レイヤー・カラーグレーディング・光学 VFX・360°・2D 流体移流を VRAM 常駐テクスチャのまま 1 コマンドバッファで連結実行する。
-- **実装方針**:
-  - `ve-render`: `gpu_graph` モジュール — レイヤー単位の `wgpu::Texture`（`Rgba16Float`）常駐キャッシュと依存 DAG スケジューラを構築し、ブレンド/トラックマット（#47）・3D LUT/ACEScg（#29/#47）・光学 VFX（#51）・360° 逆射影＆流体移流（v10.0 WGSL）を CPU リードバック無しで連続ディスパッチ（ヘッドレス／非 GPU 環境では現行の決定論 CPU パスへ自動フォールバックし、画素誤差 `< 1/255` を回帰テストで保証）。
-  - `ve-app` / `ve-mcp`: プレビューヘッダーの `GPU Direct` バッジ＆パス実行内訳表示、MCP `configure_gpu_render_graph` ツール。
+### 61. ~~完全ゼロコピー GPU レンダリンググラフ（VRAM 常駐テクスチャ合成 ＆ WGSL 全パス連結）~~ ✅ 実装済み（v11.0）
+- **目的**: CPU 側でのフルフレーム合成→毎フレーム PCIe 転送というボトルネックを根本解消し、4K 60fps / 8K 30fps の多レイヤー・カラーグレーディング・光学 VFX・360°・2D 流体移流を VRAM 常駐バッファのまま 1 コマンドバッファで連結実行する。
+- **実装内容**:
+  - `ve-core`: `perf_engine` モジュール — `GpuRenderGraphConfig` / `GpuGraphPassKind` / `GpuGraphExecutionPlan` / `build_gpu_render_graph_plan`（VRAM 見積り・PCIe 転送削減試算・8K タイリング判定・`Scene::gpu_graph` / `EditCommand::SetGpuRenderGraph`）。
+  - `ve-render`: `gpu_v110` モジュール — 第 9 本目の組み込み WGSL Compute `ZERO_COPY_COMPOSITE_GRADE_WGSL`（IEEE-754 f16 ビットキャスト）＋`GpuZeroCopyRenderGraph`（1 コマンドバッファ内で合成・グレーディング→`SPATIAL_360_EQUIRECT_WGSL` を中間 CPU リードバック 0 回で連続ディスパッチ）＋決定論 CPU リファレンス `execute_zero_copy_gpu_graph_or_cpu` ＋全 9 WGSL シェーダー Naga 一括検証。
+  - `ve-app` / `ve-mcp`: VFX & Motion Hub 内「⚡ ゼロコピー GPU グラフ (#61)」タブ、MCP `configure_gpu_render_graph` ツール。
 
-### 62. 適応解像度プロキシ自動切替 ＆ スマートバックグラウンド事前レンダリングスケジューラ
+### 62. ~~適応解像度プロキシ自動切替 ＆ スマートバックグラウンド事前レンダリングスケジューラ~~ ✅ 実装済み（v11.0）
 - **目的**: 高負荷エフェクト（ボケ・流体・3D シャドウ等）が重なる区間でも、再生フレームドロップをゼロに近づけ、アイドル時間を使って重い区間だけを自動で先読みキャッシュ化する。
-- **実装方針**:
-  - `ve-render` / `ve-app`: フレーム生成時間の移動平均から動的プレビュー倍率（`1/1` → `1/2` → `1/4`）を自動調整し、停止時に即座にフル解像度へ鮮明化する Adaptive Playback Engine。
-  - `ve-core` / `ve-app`: クリップ複雑度スコア（エフェクト段数・流体/3D/光学 VFX 有無）に基づき重い区間から優先して `cache/frames/` へアイドル事前レンダリングする `SmartPrerenderScheduler` とタイムライン上の状態バー（青＝スマートキャッシュ済 / 緑＝RAM 済）。
-  - `ve-mcp`: 負荷区間解析・スマートキャッシュ事前生成を行う `manage_adaptive_playback_and_prerender` ツール。
+- **実装内容**:
+  - `ve-core`: `AdaptivePlaybackConfig` / `AdaptiveScaleState`（EMA 指数移動平均＋ヒステリシス 3 連続超過で 1/1→1/2→1/4 縮小・6 連続余裕で復帰・再生停止時 1/1 即復帰・`Project::adaptive_playback` / `EditCommand::SetAdaptivePlayback`）および 1 秒刻み複雑度ホットスポット解析 `plan_smart_prerender_schedule`。
+  - `ve-app` / `ve-mcp`: `EditorApp` プレビュー描画ループへのリアルタイム適応スケーリング統合、Edit Hub 内「🎯 適応解像度 8K＆スマート先読み (#62)」タブ、MCP `manage_adaptive_playback_and_prerender` ツール。
 
-### 63. 大規模プロジェクト超軽量化アーキテクチャ（Structural Sharing 差分 Undo・高速バイナリスナップショット・遅延素材ロード）
+### 63. ~~大規模プロジェクト超軽量化アーキテクチャ（構造共有差分・高速バイナリスナップショット・メモリ監査＆コンパクション）~~ ✅ 実装済み（v11.0）
 - **目的**: 数時間尺・10,000+ クリップ・数千アセット規模の案件でも、起動時間・保存時間・Undo メモリ使用量を最小限に抑える。
-- **実装方針**:
-  - `ve-core`: v10.1 の `Arc<Project>` 隣接共有をさらに進化させ、`Scene` / `Layer` 単位の `Arc` 構造共有（Copy-on-Write）と差分パッチ Undo を導入し、大規模タイムラインの Undo メモリ使用量を 1/10 以下へ圧縮。
-  - `ve-core`: 人間可読・Git フレンドリーな `project.json` を正としつつ、高速再起動用バイナリキャッシュ（`cache/project.fastbin`・SHA-256 整合性検証付）および未表示レイヤー素材のオンデマンド遅延デコードを導入。
-  - `ve-mcp`: プロジェクト軽量化・未使用キャッシュ自動パージ・メモリ監査を行う `audit_and_compact_project_memory` ツール。
+- **実装内容**:
+  - `ve-core`: Pure-Rust RLE 圧縮＋FIPS 180-4 SHA-256 整合性検証付きバイナリスナップショット `VEFAST11`（`encode_project_fastbin` / `decode_project_fastbin` / `save_project_fastbin_to_folder` / `load_project_fastbin_from_folder` → `cache/project.fastbin`）、レイヤー単位構造共有差分 `compute_structural_layer_diff`、参照グラフ・Undo `Arc` 共有率・キャッシュ容量一括監査 `audit_project_memory`、および 1-Undo 未使用アセット＆キャッシュ整理 `compact_project_and_caches`。
+  - `ve-app` / `ve-mcp`: Deliver Hub 内「💾 超軽量 FastBin＆メモリ監査 (#63)」タブ、MCP `audit_and_compact_project_memory` ツール。
 
-### 64. リアルタイム・パフォーマンスプロファイラ HUD ＆ 自動ボトルネック診断
+### 64. ~~リアルタイム・パフォーマンスプロファイラ HUD ＆ 自動ボトルネック診断~~ ✅ 実装済み（v11.0）
 - **目的**: 「どのレイヤー／どのエフェクトが重いか」「RAM / VRAM / SSD キャッシュをどれだけ消費しているか」をリアルタイム可視化し、ワンクリックまたは AI 経由で最適化できるようにする。
-- **実装方針**:
-  - `ve-render` / `ve-app`: パス別・レイヤー別のマイクロ秒計測トレース `FrameProfileReport`（フレームグラフバー・95/99 パーセンタイルフレーム時間・テキスト/LUT/RAM/SSD キャッシュヒット率）をプレビュー HUD と Deliver/Edit Hub に統合。
-  - `ve-core` / `ve-mcp`: 重いレイヤーの自動 Smart Precompose 化・プロキシ生成・キャッシュ最適化案を提示・適用する `profile_timeline_bottlenecks` ツール（**全 104 MCP ツール / 11 ドメイン `v110_performance_gpu`**）。
+- **実装内容**:
+  - `ve-core` / `ve-render`: `ProfilerHudConfig` / `FrameProfileReport` / `RollingProfilerHistory`（直近 120 フレーム平均・p95・p99・推定 FPS・予算超過率）・`RenderGraph::render_project_scene_profiled`（パス別マイクロ秒実測＋キャッシュ統計収集）・Pure-Rust ダークガラス HUD オーバーレイ `draw_profiler_hud_overlay`（予算ゲージ・`GPU DIRECT` バッジ・`1/N` ドット・パス比率フレームグラフバー）、自動ボトルネック診断 `diagnose_timeline_bottlenecks` ＆ 1-Undo 非破壊最適化 `build_auto_optimize_scene_commands`。
+  - `ve-app` / `ve-mcp`: Deliver Hub 内「📈 プロファイラ HUD＆自動診断 (#64)」タブ（ミニフレームグラフ＋1-Undo 最適化ボタン）、MCP `profile_timeline_bottlenecks` ツール（第 11 ドメイン `v110_performance_gpu`・**全 104 MCP ツール / 11 ドメイン**）、およびゴールデン視覚回帰テスト `golden_v110_zero_copy_gpu_graph_adaptive_fastbin_and_profiler_hud`。
 
 ---
 

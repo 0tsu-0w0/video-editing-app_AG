@@ -237,6 +237,7 @@ pub fn build_reformatted_scene_command(
         live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
         spatial_video: src.spatial_video.clone(),
         lighting_3d_adv: src.lighting_3d_adv.clone(),
+        gpu_graph: src.gpu_graph.clone(),
         layers: new_layers,
     };
 

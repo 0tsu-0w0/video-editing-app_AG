@@ -283,6 +283,7 @@ pub(super) fn apply_command(
                 live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
                 spatial_video: crate::spatial_video::SpatialVideoConfig::default(),
                 lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig::default(),
+                gpu_graph: crate::perf_engine::GpuRenderGraphConfig::default(),
                 layers: new_layers,
             };
             project.scenes.push(new_scene);
@@ -1407,6 +1408,32 @@ pub(super) fn apply_command(
         }
         EditCommand::SetRenderFarm { render_farm } => {
             project.render_farm = render_farm.clone();
+            Ok(())
+        }
+        EditCommand::SetGpuRenderGraph { gpu_graph } => {
+            let scene = project
+                .active_scene_mut()
+                .ok_or(CommandError::NoActiveScene)?;
+            let mut next = gpu_graph.clone();
+            next.max_vram_textures_mib = next.max_vram_textures_mib.clamp(64, 16_384);
+            scene.gpu_graph = next;
+            Ok(())
+        }
+        EditCommand::SetAdaptivePlayback { adaptive_playback } => {
+            let mut next = adaptive_playback.clone();
+            next.target_fps = next.target_fps.clamp(15.0, 240.0);
+            next.min_scale_divisor = next.min_scale_divisor.clamp(1, 4);
+            next.max_scale_divisor = next.max_scale_divisor.clamp(next.min_scale_divisor, 4);
+            next.drop_threshold_ratio = next.drop_threshold_ratio.clamp(1.0, 3.0);
+            next.recover_threshold_ratio = next.recover_threshold_ratio.clamp(0.2, 0.95);
+            next.prerender_budget_frames = next.prerender_budget_frames.clamp(1, 2000);
+            project.adaptive_playback = next;
+            Ok(())
+        }
+        EditCommand::SetProfilerHud { profiler_hud } => {
+            let mut next = profiler_hud.clone();
+            next.warn_frame_ms = next.warn_frame_ms.clamp(4.0, 200.0);
+            project.profiler_hud = next;
             Ok(())
         }
         EditCommand::Batch { commands, .. } => {

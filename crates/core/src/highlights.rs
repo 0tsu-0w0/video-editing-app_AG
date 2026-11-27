@@ -366,6 +366,7 @@ pub fn build_shorts_clip_scene_command(
         live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
         spatial_video: crate::spatial_video::SpatialVideoConfig::default(),
         lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig::default(),
+        gpu_graph: crate::perf_engine::GpuRenderGraphConfig::default(),
         layers: new_layers,
     };
 

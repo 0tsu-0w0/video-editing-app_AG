@@ -1946,6 +1946,9 @@ pub struct Scene {
     /// v10.0 #58: 3D シャドウマップ（PCF ソフトシャドウ）＆ Equirectangular HDRI IBL 環境照明設定
     #[serde(default)]
     pub lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig,
+    /// v11.0 #61: 完全ゼロコピー GPU レンダリンググラフ設定（VRAM 常駐テクスチャ連結・8K タイル実行）
+    #[serde(default)]
+    pub gpu_graph: crate::perf_engine::GpuRenderGraphConfig,
     pub layers: Vec<Layer>,
 }
 
@@ -1975,6 +1978,7 @@ impl Scene {
             live_switcher: crate::live_switcher::LiveSwitcherConfig::default(),
             spatial_video: crate::spatial_video::SpatialVideoConfig::default(),
             lighting_3d_adv: crate::fluid_cloth::Lighting3DAdvConfig::default(),
+            gpu_graph: crate::perf_engine::GpuRenderGraphConfig::default(),
             layers: vec![
                 Layer::new("Layer 1"),
                 Layer::new("Layer 2"),
@@ -2095,6 +2099,12 @@ pub struct Project {
     /// v10.0 #60: LAN 分散レンダーファーム設定（HMAC-SHA256 チャンク分散＆並列結合）
     #[serde(default)]
     pub render_farm: crate::cinema_os::RenderFarmConfig,
+    /// v11.0 #62: 適応解像度プロキシ自動切替＆スマート事前レンダリング設定
+    #[serde(default)]
+    pub adaptive_playback: crate::perf_engine::AdaptivePlaybackConfig,
+    /// v11.0 #64: リアルタイム・パフォーマンスプロファイラ HUD 設定
+    #[serde(default)]
+    pub profiler_hud: crate::perf_engine::ProfilerHudConfig,
 }
 
 impl Project {
@@ -2116,6 +2126,8 @@ impl Project {
             hardware_ctrl: crate::hardware_ctrl::HardwareControllerConfig::default(),
             smart_dam: crate::smart_dam::SmartDamIndex::default(),
             render_farm: crate::cinema_os::RenderFarmConfig::default(),
+            adaptive_playback: crate::perf_engine::AdaptivePlaybackConfig::default(),
+            profiler_hud: crate::perf_engine::ProfilerHudConfig::default(),
         }
     }
 

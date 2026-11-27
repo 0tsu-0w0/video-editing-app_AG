@@ -4,6 +4,7 @@ pub mod color_grading;
 pub mod finishing_render;
 pub mod generative_render;
 pub mod gpu_v100;
+pub mod gpu_v110;
 pub mod gpu_v30;
 pub mod gpu_v70;
 pub mod graph;
@@ -58,6 +59,11 @@ pub use gpu_v100::{
     FLUID_2D_ADVECTION_WGSL, GpuV100BenchmarkReport, GpuV100ComputePipeline,
     SPATIAL_360_EQUIRECT_WGSL, WgslValidationSummary, benchmark_v100_gpu_or_cpu,
     execute_v100_spatial_360_or_cpu, validate_all_builtin_wgsl_shaders,
+};
+pub use gpu_v110::{
+    GpuZeroCopyExecutionStats, GpuZeroCopyRenderGraph, ZERO_COPY_COMPOSITE_GRADE_WGSL,
+    benchmark_v110_zero_copy_graph, draw_profiler_hud_overlay,
+    execute_zero_copy_chain_cpu_reference, execute_zero_copy_gpu_graph_or_cpu,
 };
 pub use graph::{EFFECTS_WGSL_SOURCE, RenderGraph, render_frame_batch_parallel};
 pub use hot_shader::{

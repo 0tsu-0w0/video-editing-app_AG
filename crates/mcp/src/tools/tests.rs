@@ -606,7 +606,7 @@ fn v09_mcp_tools_expressions_templates_and_fx() {
 
     // Verify exact MCP tool count = 58 (v2.0)
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -801,7 +801,7 @@ fn v10_mcp_tools_multicam_nle_delivery_and_ecosystem() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1078,7 +1078,7 @@ fn v20_mcp_tools_node_graph_ai_vision_director_and_collab() {
     );
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1294,7 +1294,7 @@ fn v21_mcp_tools_color_vfx_spatial_and_kinetic() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
 }
 
 #[test]
@@ -1487,7 +1487,7 @@ fn v30_mcp_tools_gpu_3d_dubbing_and_crdt() {
     }
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1695,7 +1695,7 @@ fn v40_mcp_tools_aces_physics_generative_and_qc() {
     assert!(html_body.contains("data:image/png;base64,"));
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -1916,7 +1916,7 @@ fn v50_mcp_tools_rig2d_bgm_speed_ramp_and_finishing() {
     assert!(xml_path.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2096,7 +2096,7 @@ fn v60_mcp_tools_dataviz_vfxpaint_podcast_and_packager() {
     assert!(bundle_dir.join("subtitles/shorts_reels_9x16.srt").exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2183,8 +2183,8 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     .unwrap();
     let cat_json: Value =
         serde_json::from_str(cat_res["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(cat_json["domain_count"], 10);
-    assert_eq!(cat_json["total_tools"], 100);
+    assert_eq!(cat_json["domain_count"], 11);
+    assert_eq!(cat_json["total_tools"], 104);
 
     let verify_res = call_tool(
         &session,
@@ -2195,7 +2195,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     let verify_json: Value =
         serde_json::from_str(verify_res["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(verify_json["valid"], true);
-    assert_eq!(verify_json["unique_tool_count"], 100);
+    assert_eq!(verify_json["unique_tool_count"], 104);
 
     // 3. #47 gpu_v70_frame_pool: status, benchmark (custom lightweight), run_fast_blend_aces
     let gpu_st_res = call_tool(
@@ -2312,7 +2312,7 @@ fn v70_mcp_tools_hub_catalog_gpu_pool_index_conform_and_ab() {
     assert!(!ab_png["content"][0]["data"].as_str().unwrap().is_empty());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
 }
 
 #[test]
@@ -2639,7 +2639,7 @@ fn v80_mcp_tools_planar_roto_svg_morph_optical_and_audio_restoration() {
     assert!(wav_foa.exists());
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -2893,7 +2893,7 @@ fn v90_mcp_tools_live_switcher_vtuber_hardware_and_smart_dam() {
     assert_eq!(relink_json["applied"], true);
 
     let defs = tool_definitions();
-    assert_eq!(defs.as_array().unwrap().len(), 100);
+    assert_eq!(defs.as_array().unwrap().len(), 104);
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
@@ -3074,9 +3074,9 @@ fn v100_mcp_tools_spatial_fluids_mocap_farm_and_cinema_os_100_tools() {
     .unwrap();
     let sum_json: Value =
         serde_json::from_str(sum_res["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(sum_json["mcp_domains"], 10);
-    assert_eq!(sum_json["mcp_total_tools"], 100);
-    assert_eq!(sum_json["roadmap_completed"], "60/60");
+    assert_eq!(sum_json["mcp_domains"], 11);
+    assert_eq!(sum_json["mcp_total_tools"], 104);
+    assert_eq!(sum_json["roadmap_completed"], "64/76");
 }
 
 #[test]
@@ -3085,12 +3085,12 @@ fn v100_mcp_all_100_tools_schema_audit_and_error_resilience() {
     let arr = defs
         .as_array()
         .expect("tool_definitions must be JSON array");
-    assert_eq!(arr.len(), 100, "must expose exactly 100 MCP tools");
+    assert_eq!(arr.len(), 104, "must expose exactly 104 MCP tools");
 
     let catalog = tool_domain_catalog();
-    assert_eq!(catalog.len(), 10, "must have exactly 10 domains");
+    assert_eq!(catalog.len(), 11, "must have exactly 11 domains");
     let catalog_sum: usize = catalog.iter().map(|d| d.tool_count).sum();
-    assert_eq!(catalog_sum, 100);
+    assert_eq!(catalog_sum, 104);
 
     let mut seen = std::collections::BTreeSet::new();
     for def in arr {
@@ -3112,7 +3112,7 @@ fn v100_mcp_all_100_tools_schema_audit_and_error_resilience() {
         );
     }
 
-    // 不正・空引数や未知ツール名でもパニックせず安全に Ok/Err を返すことを全 100 ツール横断で検証
+    // 不正・空引数や未知ツール名でもパニックせず安全に Ok/Err を返すことを全 104 ツール横断で検証
     let proj = Project::new("ResilienceAudit", ProjectSettings::default());
     let session = Arc::new(Mutex::new(EditorSession::new(proj)));
     assert!(call_tool(&session, "nonexistent_tool_xyz", &json!({})).is_err());
@@ -3127,6 +3127,10 @@ fn v100_mcp_all_100_tools_schema_audit_and_error_resilience() {
         "manage_lan_render_farm",
         "produce_storyboard_animatic_from_script",
         "predict_retention_and_generate_ab_variants",
+        "configure_gpu_render_graph",
+        "manage_adaptive_playback_and_prerender",
+        "audit_and_compact_project_memory",
+        "profile_timeline_bottlenecks",
         "mcp_catalog_introspect",
         "studio_hub_control",
     ] {
@@ -3136,4 +3140,179 @@ fn v100_mcp_all_100_tools_schema_audit_and_error_resilience() {
             "tool {tool_name} must not panic on empty args"
         );
     }
+}
+
+#[test]
+fn v110_mcp_all_four_performance_gpu_tools_work_end_to_end() {
+    let tmp_dir = std::env::temp_dir().join(format!("ve_mcp_v110_{}", Uuid::new_v4()));
+    let mut proj = Project::new("McpV110", ProjectSettings::default());
+    // 未使用アセットを1件入れてコンパクションで整理されることを検証する
+    proj.assets.push(AssetRef {
+        id: Uuid::new_v4(),
+        name: "OrphanClip.mp4".into(),
+        kind: MediaKind::Video,
+        relative_path: Some(PathBuf::from("assets/orphan.mp4")),
+        fallback_absolute_path: None,
+        collected: false,
+    });
+    let folder = ve_core::ProjectFolder::init(&tmp_dir, &proj).unwrap();
+    let mut ed = EditorSession::new(proj);
+    ed.folder = Some(folder);
+    let session = Arc::new(Mutex::new(ed));
+
+    // 高負荷流体クリップを配置してホットスポットとボトルネック診断を検証可能にする
+    call_tool(
+        &session,
+        "add_or_update_fluid_simulation",
+        &json!({ "action": "add", "layer_index": 0, "start_sec": 1.0, "duration_sec": 3.0, "preset": "bonfire_flame" }),
+    )
+    .unwrap();
+
+    // 1. #61 configure_gpu_render_graph (configure + 8K plan + benchmark)
+    let gpu_cfg = call_tool(
+        &session,
+        "configure_gpu_render_graph",
+        &json!({
+            "action": "configure",
+            "enabled": true,
+            "prefer_zero_copy_vram": true,
+            "max_vram_textures_mib": 2048,
+            "allow_8k_tiling": true,
+            "target_width": 7680,
+            "target_height": 4320
+        }),
+    )
+    .unwrap();
+    let gpu_json: Value =
+        serde_json::from_str(gpu_cfg["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(gpu_json["builtin_wgsl_shader_count"], 9);
+    assert_eq!(gpu_json["all_wgsl_shaders_valid"], true);
+    assert_eq!(gpu_json["execution_plan"]["requires_8k_tiling"], true);
+
+    let gpu_bench = call_tool(
+        &session,
+        "configure_gpu_render_graph",
+        &json!({ "action": "benchmark", "target_width": 160, "target_height": 90 }),
+    )
+    .unwrap();
+    let bench_json: Value =
+        serde_json::from_str(gpu_bench["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(bench_json["benchmark"]["validated_shader_count"], 9);
+    assert_eq!(bench_json["benchmark"]["intermediate_cpu_readbacks"], 0);
+
+    // 2. #62 manage_adaptive_playback_and_prerender (configure + simulate_adaptive)
+    let ad_res = call_tool(
+        &session,
+        "manage_adaptive_playback_and_prerender",
+        &json!({
+            "action": "simulate_adaptive",
+            "sample_frame_ms_list": [30.0, 32.0, 34.0, 33.0, 31.0, 30.0, 31.0]
+        }),
+    )
+    .unwrap();
+    let ad_json: Value =
+        serde_json::from_str(ad_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(ad_json["simulation"]["pause_restored_divisor"], 1);
+    assert!(
+        !ad_json["prerender_plan"]["hotspots"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // 3. #63 audit_and_compact_project_memory (audit -> save_fastbin -> load_fastbin -> compact)
+    let audit_res = call_tool(
+        &session,
+        "audit_and_compact_project_memory",
+        &json!({ "action": "audit" }),
+    )
+    .unwrap();
+    let audit_json: Value =
+        serde_json::from_str(audit_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        audit_json["audit"]["unreferenced_asset_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let fb_save = call_tool(
+        &session,
+        "audit_and_compact_project_memory",
+        &json!({ "action": "save_fastbin" }),
+    )
+    .unwrap();
+    let fb_save_json: Value =
+        serde_json::from_str(fb_save["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(fb_save_json["saved_to_disk"], true);
+    assert_eq!(fb_save_json["sha256_verified"], true);
+
+    let fb_load = call_tool(
+        &session,
+        "audit_and_compact_project_memory",
+        &json!({ "action": "load_fastbin" }),
+    )
+    .unwrap();
+    let fb_load_json: Value =
+        serde_json::from_str(fb_load["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(fb_load_json["from_disk"], true);
+    assert_eq!(fb_load_json["matches_active_project"], true);
+
+    let comp_res = call_tool(
+        &session,
+        "audit_and_compact_project_memory",
+        &json!({ "action": "compact", "remove_unused_assets": true, "write_fastbin": true }),
+    )
+    .unwrap();
+    let comp_json: Value =
+        serde_json::from_str(comp_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(comp_json["applied_undoable_command"], true);
+    assert_eq!(comp_json["compaction_report"]["removed_unused_assets"], 1);
+    assert_eq!(
+        comp_json["audit_after"]["unreferenced_asset_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // 4. #64 profile_timeline_bottlenecks (configure_hud -> profile_frame -> auto_optimize)
+    call_tool(
+        &session,
+        "configure_gpu_render_graph",
+        &json!({ "action": "configure", "enabled": false }),
+    )
+    .unwrap();
+    let hud_res = call_tool(
+        &session,
+        "profile_timeline_bottlenecks",
+        &json!({
+            "action": "configure_hud",
+            "hud_enabled": true,
+            "show_frame_graph": true,
+            "warn_frame_ms": 16.67,
+            "target_width": 160,
+            "target_height": 90
+        }),
+    )
+    .unwrap();
+    let hud_json: Value =
+        serde_json::from_str(hud_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(hud_json["profiler_hud"]["enabled"], true);
+    assert_eq!(hud_json["has_pending_auto_optimize"], true);
+    assert!(hud_json["recommendation_count"].as_u64().unwrap() >= 1);
+
+    let opt_res = call_tool(
+        &session,
+        "profile_timeline_bottlenecks",
+        &json!({ "action": "auto_optimize", "target_width": 160, "target_height": 90 }),
+    )
+    .unwrap();
+    let opt_json: Value =
+        serde_json::from_str(opt_res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(opt_json["auto_optimized"], true);
+    assert_eq!(opt_json["has_pending_auto_optimize"], false);
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
