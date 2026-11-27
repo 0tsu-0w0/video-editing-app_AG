@@ -637,6 +637,11 @@ pub fn apply_scene_color_grade(
     ];
     let gain = grade.gain;
     let lut_mix = grade.lut_intensity.clamp(0.0, 1.0);
+    let gamma_active = [
+        (gamma_exp[0] - 1.0).abs() > 1e-5,
+        (gamma_exp[1] - 1.0).abs() > 1e-5,
+        (gamma_exp[2] - 1.0).abs() > 1e-5,
+    ];
 
     // v2.1 #25: トーンカーブ LUT をループ外で事前構築（ゼロ割り当て＆高速化）
     let curves_luts = if grade.curves.enabled {
@@ -666,15 +671,18 @@ pub fn apply_scene_color_grade(
         let mut sg = linear_to_srgb(lg);
         let mut sb = linear_to_srgb(lb);
 
-        sr = (sr * gain[0] + lift[0] * (1.0 - sr))
-            .clamp(0.0, 1.0)
-            .powf(gamma_exp[0]);
-        sg = (sg * gain[1] + lift[1] * (1.0 - sg))
-            .clamp(0.0, 1.0)
-            .powf(gamma_exp[1]);
-        sb = (sb * gain[2] + lift[2] * (1.0 - sb))
-            .clamp(0.0, 1.0)
-            .powf(gamma_exp[2]);
+        sr = (sr * gain[0] + lift[0] * (1.0 - sr)).clamp(0.0, 1.0);
+        if gamma_active[0] {
+            sr = sr.powf(gamma_exp[0]);
+        }
+        sg = (sg * gain[1] + lift[1] * (1.0 - sg)).clamp(0.0, 1.0);
+        if gamma_active[1] {
+            sg = sg.powf(gamma_exp[1]);
+        }
+        sb = (sb * gain[2] + lift[2] * (1.0 - sb)).clamp(0.0, 1.0);
+        if gamma_active[2] {
+            sb = sb.powf(gamma_exp[2]);
+        }
 
         sr = ((sr - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
         sg = ((sg - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
@@ -793,7 +801,7 @@ impl Default for VideoScopeData {
     }
 }
 
-/// プレビュー画像（Linear Premultiplied）から 4 種のビデオスコープを高速算出する（< 0.5ms）
+/// プレビュー画像（Linear Premultiplied）から 4 種のビデオスコープを高速算出する（< 0.5ms・8193段 LUT 利用）
 pub fn compute_video_scopes(img: &LinearImage) -> VideoScopeData {
     let mut data = VideoScopeData::default();
     let w = img.width as usize;
@@ -811,6 +819,7 @@ pub fn compute_video_scopes(img: &LinearImage) -> VideoScopeData {
     let mut peak_luma = 0.0f32;
     let mut clipped_cnt = 0u64;
     let mut crushed_cnt = 0u64;
+    const INV_255: f32 = 1.0 / 255.0;
 
     let mut y = 0usize;
     while y < h {
@@ -821,9 +830,9 @@ pub fn compute_video_scopes(img: &LinearImage) -> VideoScopeData {
             let (sr, sg, sb) = if px.a > 1e-6 {
                 let inv_a = 1.0 / px.a;
                 (
-                    linear_to_srgb((px.r * inv_a).clamp(0.0, 1.0)),
-                    linear_to_srgb((px.g * inv_a).clamp(0.0, 1.0)),
-                    linear_to_srgb((px.b * inv_a).clamp(0.0, 1.0)),
+                    f32::from(crate::color::linear_to_srgb_u8(px.r * inv_a)) * INV_255,
+                    f32::from(crate::color::linear_to_srgb_u8(px.g * inv_a)) * INV_255,
+                    f32::from(crate::color::linear_to_srgb_u8(px.b * inv_a)) * INV_255,
                 )
             } else {
                 (0.0, 0.0, 0.0)

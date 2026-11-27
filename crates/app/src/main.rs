@@ -37,7 +37,7 @@ use graph_editor::GraphEditorState;
 use ime_poc::ImePocPanel;
 use inspector_extras::InspectorExtrasState;
 use preview_canvas::PreviewCanvasState;
-use ram_preview::{RamFrameKey, RamPreviewManager};
+use ram_preview::{PackedRamFrame, RamFrameKey, RamPreviewManager};
 use render_queue::RenderQueueState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -2070,10 +2070,11 @@ impl eframe::App for EditorApp {
                     self.ram_preview.clear();
                     self.preview_dirty = true;
                 }
+                let ram_mb = self.ram_preview.cached_bytes() as f64 / (1024.0 * 1024.0);
                 if ui
                     .checkbox(
                         &mut self.ram_preview.enabled,
-                        format!("⚡ RAM先読み ({ram_cnt}枚)"),
+                        format!("⚡ RAM先読み ({ram_cnt}枚 / {ram_mb:.1}MB)"),
                     )
                     .changed()
                 {
@@ -2322,7 +2323,22 @@ impl eframe::App for EditorApp {
         let (pw, ph) = self.compute_preview_dims(scene_w, scene_h);
         let cur_frame_idx = current_time.to_frame_floor(scene_fps).max(0);
 
-        if self.ram_preview.enabled {
+        if self.ram_preview.enabled
+            && self
+                .ram_preview
+                .needs_target_update(revision, active_id, cur_frame_idx, pw, ph)
+            && !self.ram_preview.try_update_center_frame_fast(
+                folder_snap.as_ref(),
+                self.render_graph.use_proxies,
+                self.render_graph.proxy_count(),
+                self.waveforms.len(),
+                revision,
+                active_id,
+                cur_frame_idx,
+                pw,
+                ph,
+            )
+        {
             let proj_for_ram = self.session.lock().unwrap().project.clone();
             let proxies = self.render_graph.proxy_paths_snapshot();
             self.ram_preview.update_target(
@@ -2404,18 +2420,33 @@ impl eframe::App for EditorApp {
                         width: pw,
                         height: ph,
                     };
-                    let cached_img = if self.ram_preview.enabled && !ab_active {
+                    let cached_packed = if self.ram_preview.enabled && !ab_active {
                         self.ram_preview.get_frame(ram_key)
                     } else {
                         None
                     };
-                    let rendered = if let Some(hit) = cached_img {
+                    if let Some(packed) = cached_packed {
                         self.last_ram_cached_hit = true;
-                        Some(hit)
+                        if self.color_scopes.show_scopes
+                            && let Some(unpacked) = packed.to_linear_image()
+                        {
+                            self.color_scopes.latest_scopes = compute_video_scopes(&unpacked);
+                        }
+                        pipe.upload_rgba16f_process_and_present(
+                            &wgpu_state.device,
+                            &wgpu_state.queue,
+                            packed.width,
+                            packed.height,
+                            &packed.rgba16f,
+                            &active_gpu_passes,
+                            current_time.as_seconds() as f32,
+                        );
+                        self.last_rendered_key = Some(render_key);
+                        self.preview_dirty = false;
                     } else {
                         self.last_ram_cached_hit = false;
                         let proj_clone = self.session.lock().unwrap().project.clone();
-                        if ab_active {
+                        let rendered = if ab_active {
                             render_ab_compare_scene(
                                 &mut self.render_graph,
                                 &proj_clone,
@@ -2425,40 +2456,37 @@ impl eframe::App for EditorApp {
                                 ph,
                                 self.v70_hub.frozen_still_a.as_ref(),
                             )
-                            .map(Arc::new)
                         } else {
-                            self.render_graph
-                                .render_project_scene_scaled(
-                                    &proj_clone,
-                                    active_id,
-                                    current_time,
-                                    pw,
-                                    ph,
-                                    false,
-                                )
-                                .map(|img| {
-                                    let arc = Arc::new(img);
-                                    if self.ram_preview.enabled {
-                                        self.ram_preview.insert_frame(ram_key, Arc::clone(&arc));
-                                    }
-                                    arc
-                                })
-                        }
-                    };
+                            self.render_graph.render_project_scene_scaled(
+                                &proj_clone,
+                                active_id,
+                                current_time,
+                                pw,
+                                ph,
+                                false,
+                            )
+                        };
 
-                    if let Some(linear_img) = rendered {
-                        if self.color_scopes.show_scopes {
-                            self.color_scopes.latest_scopes = compute_video_scopes(&linear_img);
+                        if let Some(linear_img) = rendered {
+                            if self.ram_preview.enabled && !ab_active {
+                                self.ram_preview.insert_frame(
+                                    ram_key,
+                                    Arc::new(PackedRamFrame::from_linear_image(&linear_img)),
+                                );
+                            }
+                            if self.color_scopes.show_scopes {
+                                self.color_scopes.latest_scopes = compute_video_scopes(&linear_img);
+                            }
+                            pipe.upload_process_and_present(
+                                &wgpu_state.device,
+                                &wgpu_state.queue,
+                                &linear_img,
+                                &active_gpu_passes,
+                                current_time.as_seconds() as f32,
+                            );
+                            self.last_rendered_key = Some(render_key);
+                            self.preview_dirty = false;
                         }
-                        pipe.upload_process_and_present(
-                            &wgpu_state.device,
-                            &wgpu_state.queue,
-                            &linear_img,
-                            &active_gpu_passes,
-                            current_time.as_seconds() as f32,
-                        );
-                        self.last_rendered_key = Some(render_key);
-                        self.preview_dirty = false;
                     }
                 }
             }

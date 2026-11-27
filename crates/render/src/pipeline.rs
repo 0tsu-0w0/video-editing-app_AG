@@ -462,7 +462,41 @@ impl WgpuPreviewPipeline {
         else {
             return;
         };
+        self.present_ping_pong_to_output(device, queue, final_is_ping);
+    }
 
+    /// 既にパック済みの `Rgba16Float`（8 B/px）バイト列を f32↔f16 再変換ゼロで直接 GPU アップロード＆表示する（RAM プレビュー高速パス）
+    #[allow(clippy::too_many_arguments)]
+    pub fn upload_rgba16f_process_and_present(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        rgba16f_bytes: &[u8],
+        passes: &[GpuPostProcessPass],
+        time_sec: f32,
+    ) {
+        let Some(final_is_ping) = self.upload_rgba16f_and_run_ping_pong(
+            device,
+            queue,
+            width,
+            height,
+            rgba16f_bytes,
+            passes,
+            time_sec,
+        ) else {
+            return;
+        };
+        self.present_ping_pong_to_output(device, queue, final_is_ping);
+    }
+
+    fn present_ping_pong_to_output(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        final_is_ping: bool,
+    ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("ve_preview_present_encoder"),
         });
@@ -511,6 +545,40 @@ impl WgpuPreviewPipeline {
             return None;
         }
         image.write_rgba16f_bytes(&mut self.staging_f16);
+        let bytes = std::mem::take(&mut self.staging_f16);
+        let res = self.upload_rgba16f_and_run_ping_pong(
+            device,
+            queue,
+            image.width,
+            image.height,
+            &bytes,
+            passes,
+            time_sec,
+        );
+        self.staging_f16 = bytes;
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upload_rgba16f_and_run_ping_pong(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        rgba16f_bytes: &[u8],
+        passes: &[GpuPostProcessPass],
+        time_sec: f32,
+    ) -> Option<bool> {
+        if width != self.width || height != self.height {
+            return None;
+        }
+        let expected = (self.width as usize)
+            .checked_mul(self.height as usize)?
+            .checked_mul(8)?;
+        if rgba16f_bytes.len() != expected {
+            return None;
+        }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.ping_texture,
@@ -518,7 +586,7 @@ impl WgpuPreviewPipeline {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &self.staging_f16,
+            rgba16f_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 8),

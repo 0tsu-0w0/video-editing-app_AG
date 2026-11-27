@@ -1,6 +1,7 @@
 use crate::color::{LinearImage, LinearPremul};
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use ve_core::{ColorPalette, RgbaColor, TextAnimator, TextStyle};
 
 /// AviUtl2 インライン制御文字（`<#ff0000>`, `<@強調赤>`, `<s64>`, `<fFont>`, `<p10,-5>`, `<b1>`, `</>`）で分割された装飾スパン
@@ -190,11 +191,155 @@ pub fn strip_inline_tags(input: &str, palette: &ColorPalette) -> String {
         .collect()
 }
 
+const MAX_TEXT_CACHE_ENTRIES: usize = 64;
+const MAX_TEXT_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TextCacheKey {
+    hash_a: u64,
+    hash_b: u64,
+    width: u32,
+    height: u32,
+}
+
+/// 透過領域を切り落とした省メモリなテキスト描画キャッシュエントリ
+#[derive(Debug, Clone)]
+struct CachedTextBbox {
+    ox: u32,
+    oy: u32,
+    sub_w: u32,
+    sub_h: u32,
+    pixels: Vec<LinearPremul>,
+    last_used_tick: u64,
+}
+
+impl CachedTextBbox {
+    fn from_image(img: &LinearImage, tick: u64) -> Self {
+        let Some((min_x, min_y, max_x, max_y)) = alpha_bounds(img) else {
+            return Self {
+                ox: 0,
+                oy: 0,
+                sub_w: 0,
+                sub_h: 0,
+                pixels: Vec::new(),
+                last_used_tick: tick,
+            };
+        };
+        let sub_w = max_x - min_x + 1;
+        let sub_h = max_y - min_y + 1;
+        let w = img.width as usize;
+        let mut pixels = Vec::with_capacity((sub_w as usize) * (sub_h as usize));
+        for y in min_y..=max_y {
+            let row_start = (y as usize) * w + (min_x as usize);
+            pixels.extend_from_slice(&img.pixels[row_start..row_start + sub_w as usize]);
+        }
+        Self {
+            ox: min_x,
+            oy: min_y,
+            sub_w,
+            sub_h,
+            pixels,
+            last_used_tick: tick,
+        }
+    }
+
+    fn byte_len(&self) -> usize {
+        self.pixels.len() * std::mem::size_of::<LinearPremul>()
+    }
+
+    fn expand_to_image(&self, full_w: u32, full_h: u32) -> LinearImage {
+        let mut out = LinearImage::new(full_w, full_h, LinearPremul::TRANSPARENT);
+        if self.sub_w == 0 || self.sub_h == 0 {
+            return out;
+        }
+        let dst_w = full_w as usize;
+        let sw = self.sub_w as usize;
+        for row in 0..(self.sub_h as usize) {
+            let src_start = row * sw;
+            let dst_start = (self.oy as usize + row) * dst_w + (self.ox as usize);
+            out.pixels[dst_start..dst_start + sw]
+                .copy_from_slice(&self.pixels[src_start..src_start + sw]);
+        }
+        out
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_text_cache_key(
+    text: &str,
+    font_family: &str,
+    font_size: f32,
+    color: RgbaColor,
+    style: &TextStyle,
+    palette: &ColorPalette,
+    animator_settled: bool,
+    width: u32,
+    height: u32,
+) -> TextCacheKey {
+    let mut h1 = DefaultHasher::new();
+    let mut h2 = 0xcbf2_9ce4_8422_2325_u64;
+    let mut mix = |bytes: &[u8]| {
+        bytes.hash(&mut h1);
+        for &b in bytes {
+            h2 ^= u64::from(b);
+            h2 = h2.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    mix(text.as_bytes());
+    mix(&[0xFF]);
+    mix(font_family.as_bytes());
+    mix(&font_size.to_bits().to_le_bytes());
+    mix(&color.r.to_bits().to_le_bytes());
+    mix(&color.g.to_bits().to_le_bytes());
+    mix(&color.b.to_bits().to_le_bytes());
+    mix(&color.a.to_bits().to_le_bytes());
+    mix(&style.outline_width.to_bits().to_le_bytes());
+    mix(&style.outline_color.r.to_bits().to_le_bytes());
+    mix(&style.outline_color.g.to_bits().to_le_bytes());
+    mix(&style.outline_color.b.to_bits().to_le_bytes());
+    mix(&style.outline_color.a.to_bits().to_le_bytes());
+    mix(&style.shadow_offset[0].to_bits().to_le_bytes());
+    mix(&style.shadow_offset[1].to_bits().to_le_bytes());
+    mix(&style.shadow_blur.to_bits().to_le_bytes());
+    mix(&style.shadow_color.r.to_bits().to_le_bytes());
+    mix(&style.shadow_color.g.to_bits().to_le_bytes());
+    mix(&style.shadow_color.b.to_bits().to_le_bytes());
+    mix(&style.shadow_color.a.to_bits().to_le_bytes());
+    mix(&[u8::from(style.box_enabled), u8::from(animator_settled)]);
+    mix(&style.box_color.r.to_bits().to_le_bytes());
+    mix(&style.box_color.g.to_bits().to_le_bytes());
+    mix(&style.box_color.b.to_bits().to_le_bytes());
+    mix(&style.box_color.a.to_bits().to_le_bytes());
+    mix(&style.box_padding[0].to_bits().to_le_bytes());
+    mix(&style.box_padding[1].to_bits().to_le_bytes());
+    mix(&style.box_radius.to_bits().to_le_bytes());
+    if text.contains("<@") {
+        for entry in &palette.colors {
+            mix(entry.name.as_bytes());
+            mix(&entry.color.r.to_bits().to_le_bytes());
+            mix(&entry.color.g.to_bits().to_le_bytes());
+            mix(&entry.color.b.to_bits().to_le_bytes());
+            mix(&entry.color.a.to_bits().to_le_bytes());
+        }
+    }
+    TextCacheKey {
+        hash_a: h1.finish(),
+        hash_b: h2,
+        width,
+        height,
+    }
+}
+
 /// `cosmic-text` + `swash` による動画内テキスト描画エンジン
-/// （日本語・マルチライン・AviUtl2インライン制御文字・縁取り/シャドウ/座布団・文字ごとアニメーター対応）
+/// （日本語・マルチライン・AviUtl2インライン制御文字・縁取り/シャドウ/座布団・文字ごとアニメーター・省メモリ BBox LRU キャッシュ対応）
 pub struct TextRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    text_cache: HashMap<TextCacheKey, CachedTextBbox>,
+    text_cache_bytes: usize,
+    text_cache_tick: u64,
+    text_cache_hits: u64,
+    text_cache_misses: u64,
 }
 
 impl Default for TextRenderer {
@@ -208,7 +353,58 @@ impl TextRenderer {
         Self {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            text_cache: HashMap::new(),
+            text_cache_bytes: 0,
+            text_cache_tick: 0,
+            text_cache_hits: 0,
+            text_cache_misses: 0,
         }
+    }
+
+    pub fn text_cache_hits(&self) -> u64 {
+        self.text_cache_hits
+    }
+
+    pub fn text_cache_misses(&self) -> u64 {
+        self.text_cache_misses
+    }
+
+    pub fn text_cache_bytes(&self) -> usize {
+        self.text_cache_bytes
+    }
+
+    pub fn clear_text_cache(&mut self) {
+        self.text_cache.clear();
+        self.text_cache_bytes = 0;
+    }
+
+    fn insert_text_cache(&mut self, key: TextCacheKey, img: &LinearImage) {
+        self.text_cache_tick = self.text_cache_tick.wrapping_add(1);
+        let entry = CachedTextBbox::from_image(img, self.text_cache_tick);
+        let entry_bytes = entry.byte_len();
+        if entry_bytes > MAX_TEXT_CACHE_BYTES {
+            return;
+        }
+        if let Some(prev) = self.text_cache.remove(&key) {
+            self.text_cache_bytes = self.text_cache_bytes.saturating_sub(prev.byte_len());
+        }
+        while self.text_cache.len() >= MAX_TEXT_CACHE_ENTRIES
+            || self.text_cache_bytes + entry_bytes > MAX_TEXT_CACHE_BYTES
+        {
+            let Some(oldest_k) = self
+                .text_cache
+                .iter()
+                .min_by_key(|(_, v)| v.last_used_tick)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            if let Some(removed) = self.text_cache.remove(&oldest_k) {
+                self.text_cache_bytes = self.text_cache_bytes.saturating_sub(removed.byte_len());
+            }
+        }
+        self.text_cache_bytes += entry_bytes;
+        self.text_cache.insert(key, entry);
     }
 
     pub fn loaded_font_count(&self) -> usize {
@@ -314,11 +510,62 @@ impl TextRenderer {
         max_width: u32,
         max_height: u32,
     ) -> LinearImage {
-        let mut glyphs = LinearImage::new(max_width, max_height, LinearPremul::TRANSPARENT);
         if text.is_empty() || max_width == 0 || max_height == 0 {
-            return glyphs;
+            return LinearImage::new(max_width, max_height, LinearPremul::TRANSPARENT);
         }
 
+        // 静的テキストまたは文字ごとアニメーション完了後の定常状態は省メモリ BBox LRU キャッシュで O(1) 再利用
+        let spans = parse_inline_text_spans(text, font_family, font_size, color, palette);
+        let cache_key = if !animator.enabled {
+            Some(compute_text_cache_key(
+                text,
+                font_family,
+                font_size,
+                color,
+                style,
+                palette,
+                false,
+                max_width,
+                max_height,
+            ))
+        } else {
+            let char_count: usize = spans
+                .iter()
+                .map(|s| s.text.chars().filter(|&c| c != '\n').count())
+                .sum();
+            let settled_sec = char_count.saturating_sub(1) as f32
+                * animator.delay_per_char_sec.max(0.0)
+                + animator.duration_per_char_sec.max(0.01);
+            if local_time_sec >= settled_sec {
+                Some(compute_text_cache_key(
+                    text,
+                    font_family,
+                    font_size,
+                    color,
+                    style,
+                    palette,
+                    true,
+                    max_width,
+                    max_height,
+                ))
+            } else {
+                None
+            }
+        };
+
+        if let Some(key) = cache_key
+            && let Some(cached) = self.text_cache.get_mut(&key)
+        {
+            self.text_cache_tick = self.text_cache_tick.wrapping_add(1);
+            cached.last_used_tick = self.text_cache_tick;
+            self.text_cache_hits += 1;
+            return cached.expand_to_image(max_width, max_height);
+        }
+        if cache_key.is_some() {
+            self.text_cache_misses += 1;
+        }
+
+        let mut glyphs = LinearImage::new(max_width, max_height, LinearPremul::TRANSPARENT);
         let pad_x = if style.box_enabled {
             style.box_padding[0].max(0.0).round() as i32
         } else {
@@ -330,7 +577,6 @@ impl TextRenderer {
             style.outline_width.ceil() as i32
         };
 
-        let spans = parse_inline_text_spans(text, font_family, font_size, color, palette);
         let has_rich_spans = spans.len() > 1
             || spans.first().is_some_and(|s| {
                 s.bold
@@ -459,11 +705,15 @@ impl TextRenderer {
             || style.shadow_blur > 0.1
             || style.shadow_offset[0].abs() > 0.1
             || style.shadow_offset[1].abs() > 0.1;
-        if !needs_style {
-            return glyphs;
+        let result = if !needs_style {
+            glyphs
+        } else {
+            apply_text_style(&glyphs, style)
+        };
+        if let Some(key) = cache_key {
+            self.insert_text_cache(key, &result);
         }
-
-        apply_text_style(&glyphs, style)
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -562,11 +812,12 @@ fn apply_text_style(glyphs: &LinearImage, style: &TextStyle) -> LinearImage {
     let w = glyphs.width;
     let h = glyphs.height;
     let mut out = LinearImage::new(w, h, LinearPremul::TRANSPARENT);
+    let Some((min_x, min_y, max_x, max_y)) = alpha_bounds(glyphs) else {
+        return out;
+    };
 
     // 1. 座布団背景（文字のバウンディングボックスをパディング付き角丸矩形で描画）
-    if style.box_enabled
-        && let Some((min_x, min_y, max_x, max_y)) = alpha_bounds(glyphs)
-    {
+    if style.box_enabled {
         let px = style.box_padding[0].max(0.0);
         let py = style.box_padding[1].max(0.0);
         let x0 = (min_x as f32 - px).max(0.0);
@@ -611,14 +862,18 @@ fn apply_text_style(glyphs: &LinearImage, style: &TextStyle) -> LinearImage {
         let oy = style.shadow_offset[1].round() as i32;
         let blur_r = style.shadow_blur.round().clamp(0.0, 12.0) as i32;
         let mut mask = vec![0.0f32; (w * h) as usize];
-        for y in 0..h as i32 {
-            let sy = y - oy;
-            if sy < 0 || sy >= h as i32 {
+        let src_y0 = min_y as i32;
+        let src_y1 = max_y as i32;
+        let src_x0 = min_x as i32;
+        let src_x1 = max_x as i32;
+        for sy in src_y0..=src_y1 {
+            let y = sy + oy;
+            if y < 0 || y >= h as i32 {
                 continue;
             }
-            for x in 0..w as i32 {
-                let sx = x - ox;
-                if sx < 0 || sx >= w as i32 {
+            for sx in src_x0..=src_x1 {
+                let x = sx + ox;
+                if x < 0 || x >= w as i32 {
                     continue;
                 }
                 mask[(y as u32 * w + x as u32) as usize] =
@@ -642,7 +897,7 @@ fn apply_text_style(glyphs: &LinearImage, style: &TextStyle) -> LinearImage {
         }
     }
 
-    // 3. 縁取り（円形カーネル膨張）
+    // 3. 縁取り（円形カーネル膨張・グリフ外接矩形 + rad のみに限定して透過領域を完全スキップ）
     if style.outline_width > 0.1 {
         let rad = style.outline_width.ceil().clamp(1.0, 16.0) as i32;
         let rad_sq = style.outline_width * style.outline_width;
@@ -655,8 +910,12 @@ fn apply_text_style(glyphs: &LinearImage, style: &TextStyle) -> LinearImage {
             }
         }
         let oc = LinearPremul::from_srgb_straight(style.outline_color);
-        for y in 0..h as i32 {
-            for x in 0..w as i32 {
+        let oy0 = (min_y as i32 - rad).max(0);
+        let oy1 = (max_y as i32 + rad).min(h as i32 - 1);
+        let ox0 = (min_x as i32 - rad).max(0);
+        let ox1 = (max_x as i32 + rad).min(w as i32 - 1);
+        for y in oy0..=oy1 {
+            for x in ox0..=ox1 {
                 let mut max_a = 0.0f32;
                 for &(dx, dy) in &offsets {
                     let sx = x + dx;

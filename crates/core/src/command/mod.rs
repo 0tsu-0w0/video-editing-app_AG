@@ -25,7 +25,8 @@ use crate::template::{
 use crate::time::RationalTime;
 use apply::apply_command;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -633,8 +634,8 @@ impl EditCommand {
 #[derive(Debug, Clone)]
 struct UndoRecord {
     coalesce_key: Option<String>,
-    before: Project,
-    after: Project,
+    before: Arc<Project>,
+    after: Arc<Project>,
     command: EditCommand,
     source: CommandSource,
 }
@@ -722,6 +723,17 @@ impl CommandBus {
         self.redo_stack.len()
     }
 
+    /// Undo / Redo スタック上で実際に確保されている一意な `Arc<Project>` スナップショット数（隣接共有による省メモリ計測用）
+    pub fn unique_snapshot_count(&self) -> usize {
+        let mut ptrs: HashSet<*const Project> =
+            HashSet::with_capacity(self.undo_stack.len() + self.redo_stack.len() + 2);
+        for rec in self.undo_stack.iter().chain(self.redo_stack.iter()) {
+            ptrs.insert(Arc::as_ptr(&rec.before));
+            ptrs.insert(Arc::as_ptr(&rec.after));
+        }
+        ptrs.len()
+    }
+
     /// v2.0 #23: Undo スタック上の直近実行コマンド列を古い順で返す（編集レシピの自動記録用）
     pub fn recent_commands(&self, limit: usize) -> Vec<EditCommand> {
         let len = self.undo_stack.len();
@@ -749,7 +761,7 @@ impl CommandBus {
         let mut working = project.clone();
         apply_command(&mut working, &command)?;
 
-        // コミット確定 & Command Coalescing（Project クローン回数を最小化）
+        // コミット確定 & Command Coalescing ＋ 隣接 `Arc<Project>` 共有（Undo メモリ使用量を約 50% 削減）
         self.redo_stack.clear();
         let can_coalesce = coalesce_key.is_some_and(|key| {
             self.undo_stack.back().is_some_and(|last| {
@@ -759,19 +771,31 @@ impl CommandBus {
 
         if can_coalesce {
             if let Some(last) = self.undo_stack.back_mut() {
-                last.after = working.clone();
+                last.after = Arc::new(working.clone());
                 last.command = command.clone();
             }
             *project = working;
         } else {
-            let before = std::mem::replace(project, working.clone());
+            let shared_prev_after = self
+                .undo_stack
+                .back()
+                .filter(|last| last.after.as_ref() == project)
+                .map(|last| Arc::clone(&last.after));
+            let after_arc = Arc::new(working.clone());
+            let before_arc = match shared_prev_after {
+                Some(prev) => {
+                    *project = working;
+                    prev
+                }
+                None => Arc::new(std::mem::replace(project, working)),
+            };
             if self.undo_stack.len() >= self.max_undo_depth.max(1) {
                 self.undo_stack.pop_front();
             }
             self.undo_stack.push_back(UndoRecord {
                 coalesce_key: coalesce_key.map(str::to_owned),
-                before,
-                after: working,
+                before: before_arc,
+                after: after_arc,
                 command: command.clone(),
                 source,
             });
@@ -801,7 +825,7 @@ impl CommandBus {
 
     pub fn undo(&mut self, project: &mut Project) -> bool {
         if let Some(record) = self.undo_stack.pop_back() {
-            *project = record.before.clone();
+            *project = (*record.before).clone();
             self.redo_stack.push(record);
             self.revision = self.revision.wrapping_add(1);
             true
@@ -812,7 +836,7 @@ impl CommandBus {
 
     pub fn redo(&mut self, project: &mut Project) -> bool {
         if let Some(record) = self.redo_stack.pop() {
-            *project = record.after.clone();
+            *project = (*record.after).clone();
             if self.undo_stack.len() >= self.max_undo_depth.max(1) {
                 self.undo_stack.pop_front();
             }

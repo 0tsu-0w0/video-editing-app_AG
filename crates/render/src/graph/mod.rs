@@ -17,6 +17,7 @@ use effects::{apply_effect_chain, apply_group_transform, apply_transition, resol
 pub(crate) use effects::{apply_named_effect, box_blur_separable, rotate_linear_image};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
 use ve_audio::WaveformPeaks;
 use ve_core::{
@@ -42,6 +43,7 @@ const MAX_VIDEO_STREAMS: usize = 4;
 
 type VideoFrameCacheKey = (Uuid, i64, u32, u32, bool);
 type VideoStreamKey = (Uuid, u32, u32, bool);
+type SceneSigCacheKey = (SceneId, u64, bool, bool, bool);
 
 /// 仕様書 2.2 / 4.2 の評価順序に従う Render Graph 評価器:
 /// 1. 各オブジェクトのキーフレーム／エクスプレッション評価・実動画/画像デコード・パーティクル・ベクターシェイプ・立ち絵口パク・3Dカメラ透視投影/照明/影/DoF・個別エフェクト＆プラグイン適用
@@ -69,8 +71,10 @@ pub struct RenderGraph {
     video_streams: HashMap<VideoStreamKey, VideoStreamDecoder>,
     png_cache: HashMap<PathBuf, LinearImage>,
     psd_cache: HashMap<PathBuf, PsdCharacterAsset>,
-    /// v0.8 #13: `.cube` 3D LUT メモリキャッシュ
-    lut_cache: HashMap<String, Option<CubeLut3D>>,
+    /// v0.8 #13: `.cube` 3D LUT メモリキャッシュ（`Arc` 共有で毎フレームの 430KB クローンをゼロ化）
+    lut_cache: HashMap<String, Option<Arc<CubeLut3D>>>,
+    /// SSD 永続フレームキャッシュ向けのシーンハッシュ署名キャッシュ（リビジョン不変時の毎フレーム JSON 化を排除）
+    cached_scene_sig: Option<(SceneSigCacheKey, String)>,
     /// 音声アセットIDごとの事前解析波形（立ち絵の音量連動口パク参照用）
     pub asset_waveforms: HashMap<Uuid, WaveformPeaks>,
     /// Phase 4: OSS プラグインレジストリ（ビネット・セピア・外部プラグイン）
@@ -114,6 +118,7 @@ impl RenderGraph {
             png_cache: HashMap::new(),
             psd_cache: HashMap::new(),
             lut_cache: HashMap::new(),
+            cached_scene_sig: None,
             asset_waveforms: HashMap::new(),
             plugins: PluginRegistry::with_builtins(),
             hot_shaders: ShaderHotReloader::new(),
@@ -171,11 +176,22 @@ impl RenderGraph {
     }
 
     pub fn set_project_folder(&mut self, folder: Option<ProjectFolder>) {
-        self.project_folder = folder;
-        self.lut_cache.clear();
+        let same_root = match (&self.project_folder, &folder) {
+            (Some(a), Some(b)) => a.root() == b.root(),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_root {
+            self.project_folder = folder;
+            self.lut_cache.clear();
+            self.cached_scene_sig = None;
+        }
     }
 
     pub fn register_proxy(&mut self, asset_id: Uuid, proxy_path: PathBuf) {
+        if self.proxy_paths.get(&asset_id) == Some(&proxy_path) {
+            return;
+        }
         self.proxy_paths.insert(asset_id, proxy_path);
         // プロキシ切替時に古いデコード済みフレームと開いているストリームを破棄
         self.video_frame_cache
@@ -199,22 +215,24 @@ impl RenderGraph {
         self.png_cache.clear();
         self.psd_cache.clear();
         self.lut_cache.clear();
+        self.cached_scene_sig = None;
+        self.text_renderer.clear_text_cache();
         self.proxy_paths.clear();
         self.frame_pool.clear();
         self.interval_index.invalidate();
     }
 
-    /// `.cube` 3D LUT を組み込みプリセット / プロジェクト `luts/` / 絶対パスから解決してキャッシュする
-    fn resolve_lut(&mut self, spec: &str) -> Option<CubeLut3D> {
+    /// `.cube` 3D LUT を組み込みプリセット / プロジェクト `luts/` / 絶対パスから解決して `Arc` キャッシュする
+    fn resolve_lut(&mut self, spec: &str) -> Option<Arc<CubeLut3D>> {
         let key = spec.trim();
         if key.is_empty() {
             return None;
         }
         if let Some(cached) = self.lut_cache.get(key) {
-            return cached.clone();
+            return cached.as_ref().map(Arc::clone);
         }
         let loaded = if key.starts_with("builtin:") {
-            CubeLut3D::builtin_preset(key)
+            CubeLut3D::builtin_preset(key).map(Arc::new)
         } else {
             let raw_path = PathBuf::from(key);
             let candidate = if raw_path.is_absolute() && raw_path.exists() {
@@ -236,7 +254,7 @@ impl RenderGraph {
             } else {
                 None
             };
-            candidate.and_then(|p| CubeLut3D::load_file(&p).ok())
+            candidate.and_then(|p| CubeLut3D::load_file(&p).ok().map(Arc::new))
         };
         if self.lut_cache.len() >= 16 {
             self.lut_cache.clear();
@@ -361,13 +379,38 @@ impl RenderGraph {
         let frame_idx = time.to_frame_floor(scene.fps);
 
         let cache_key = if self.disk_frame_cache.is_some() {
-            let scene_json = serde_json::to_vec(scene).unwrap_or_default();
-            let sig = format!(
-                "{}|t={transparent_bg}|p={}|mb={}",
-                content_hash_hex(&scene_json),
-                self.use_proxies,
-                self.high_quality_motion_blur
-            );
+            let sig = if self.active_revision > 0 {
+                let sig_key: SceneSigCacheKey = (
+                    scene_id,
+                    self.active_revision,
+                    transparent_bg,
+                    self.use_proxies,
+                    self.high_quality_motion_blur,
+                );
+                if let Some((cached_k, cached_s)) = self.cached_scene_sig.as_ref()
+                    && *cached_k == sig_key
+                {
+                    cached_s.clone()
+                } else {
+                    let scene_json = serde_json::to_vec(scene).unwrap_or_default();
+                    let computed = format!(
+                        "{}|t={transparent_bg}|p={}|mb={}",
+                        content_hash_hex(&scene_json),
+                        self.use_proxies,
+                        self.high_quality_motion_blur
+                    );
+                    self.cached_scene_sig = Some((sig_key, computed.clone()));
+                    computed
+                }
+            } else {
+                let scene_json = serde_json::to_vec(scene).unwrap_or_default();
+                format!(
+                    "{}|t={transparent_bg}|p={}|mb={}",
+                    content_hash_hex(&scene_json),
+                    self.use_proxies,
+                    self.high_quality_motion_blur
+                )
+            };
             Some(PersistentFrameCache::frame_key(&sig, tw, th, frame_idx))
         } else {
             None
@@ -603,7 +646,7 @@ impl RenderGraph {
                 .lut_path
                 .as_deref()
                 .and_then(|p| self.resolve_lut(p));
-            apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_ref());
+            apply_scene_color_grade(&mut canvas, &scene.color_grade, lut.as_deref());
         }
 
         // v4.0 #33: ACEScg / OpenColorIO プロカラー管理（IDT → Working → Gamut Compress → Tone Map → ODT）
@@ -1576,14 +1619,23 @@ impl RenderGraph {
                     shapes.blink_r =
                         ve_core::evaluate_track(shapes.blink_r, k, local_time).clamp(0.0, 1.0);
                 }
-                let custom_tex = scaled_cfg.asset_id.and_then(|aid| {
+                let custom_path = scaled_cfg.asset_id.and_then(|aid| {
                     let proj = project?;
-                    let (p, _) = self.resolve_asset_path(proj, aid, false)?;
-                    load_png_linear(&p)
+                    self.resolve_asset_path(proj, aid, false).map(|(p, _)| p)
                 });
+                if let Some(ref p) = custom_path
+                    && !self.png_cache.contains_key(p)
+                    && let Some(loaded) = load_png_linear(p)
+                {
+                    if self.png_cache.len() >= MAX_PNG_CACHE_ENTRIES {
+                        self.png_cache.clear();
+                    }
+                    self.png_cache.insert(p.clone(), loaded);
+                }
+                let custom_tex = custom_path.as_ref().and_then(|p| self.png_cache.get(p));
                 Some(crate::v90_render::render_vtuber_avatar(
                     &scaled_cfg,
-                    custom_tex.as_ref(),
+                    custom_tex,
                     t_sec,
                     &shapes,
                 ))
@@ -1912,6 +1964,7 @@ pub fn render_frame_batch_parallel(
 
     let make_graph = || {
         let mut g = RenderGraph::new();
+        g.active_revision = 1;
         g.set_project_folder(folder.cloned());
         g.use_proxies = use_proxies;
         g.high_quality_motion_blur = high_quality_motion_blur;
